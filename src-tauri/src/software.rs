@@ -19,6 +19,17 @@ pub fn repo_dir() -> Option<PathBuf> {
         .map(Path::to_path_buf)
 }
 
+/// Why there is nothing to update here. A copy from a package (the AUR's
+/// mailroom, in /usr/bin) is updated by the package manager, not by git.
+fn not_a_clone() -> String {
+    let packaged = std::env::current_exe().map(|exe| exe.starts_with("/usr/")).unwrap_or(false);
+    if packaged {
+        "Mailroom was installed as a package, so update it with your package manager (on Arch: yay -Syu).".into()
+    } else {
+        "Mailroom is not running from a copy it can update.".into()
+    }
+}
+
 fn git(repo: &Path, args: &[&str]) -> Result<String, String> {
     let out = Command::new("git")
         .args(args)
@@ -57,7 +68,7 @@ pub struct UpdateStatus {
 }
 
 pub fn check(current: &str) -> Result<UpdateStatus, String> {
-    let repo = repo_dir().ok_or("Mailroom is not running from a copy it can update.")?;
+    let repo = repo_dir().ok_or_else(not_a_clone)?;
     git(&repo, &["fetch", "--quiet", "origin"]).map_err(|e| format!("Could not reach GitHub: {e}"))?;
     let upstream = git(&repo, &["rev-parse", "--abbrev-ref", "@{upstream}"]).unwrap_or_else(|_| "origin/main".into());
     let behind: usize = git(&repo, &["rev-list", "--count", &format!("HEAD..{upstream}")])?.parse().unwrap_or(0);
@@ -90,7 +101,7 @@ pub fn log_path() -> PathBuf {
 /// Start the update script on its own. It builds, then closes this copy and
 /// starts the new one; if the build fails, this copy keeps running.
 pub fn update() -> Result<(), String> {
-    let repo = repo_dir().ok_or("Mailroom is not running from a copy it can update.")?;
+    let repo = repo_dir().ok_or_else(not_a_clone)?;
     let log = log_path();
     if let Some(dir) = log.parent() {
         let _ = std::fs::create_dir_all(dir);

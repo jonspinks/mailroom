@@ -1,0 +1,16 @@
+[Desktop Entry]
+Type=Application
+Name=Mailroom
+GenericName=Mail
+Comment=Unified mail and calendar for Microsoft 365, Outlook.com and Gmail
+Exec=mailroom %u
+Icon=io.github.jonspinks.mailroom
+Terminal=false
+Categories=Office;Email;
+MimeType=x-scheme-handler/mailto;
+StartupWMClass=mailroom
+Actions=compose;
+
+[Desktop Action compose]
+Name=New message
+Exec=mailroom --compose

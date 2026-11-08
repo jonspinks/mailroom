@@ -1,0 +1,54 @@
+# Maintainer: Jon Spinks <jonspinks at users dot noreply dot github dot com>
+pkgname=mailroom
+pkgver=1.0.5
+pkgrel=1
+pkgdesc="Unified mail for Omarchy: Microsoft 365, Outlook.com and Gmail in one native window"
+arch=('x86_64' 'aarch64')
+url="https://github.com/jonspinks/mailroom"
+license=('MIT')
+depends=('webkit2gtk-4.1' 'gtk3' 'glib2' 'cairo' 'gdk-pixbuf2' 'pango' 'libsoup3' 'dbus' 'gcc-libs' 'glibc')
+makedepends=('cargo')
+optdepends=(
+  'hunspell-en_ca: spell check (or another hunspell dictionary)'
+  'xdg-utils: open links and attachments in your usual apps'
+  'gnome-keyring: a Secret Service keyring for sign-in tokens (or KeePassXC)'
+)
+options=('!lto')
+source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
+sha256sums=('SKIP')
+
+prepare() {
+  cd "$pkgname-$pkgver/src-tauri"
+  export RUSTUP_TOOLCHAIN=stable
+  cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
+}
+
+build() {
+  cd "$pkgname-$pkgver/src-tauri"
+  export RUSTUP_TOOLCHAIN=stable
+  export CARGO_TARGET_DIR=target
+  cargo build --frozen --release --bin mailroom
+}
+
+check() {
+  cd "$pkgname-$pkgver/src-tauri"
+  export RUSTUP_TOOLCHAIN=stable
+  cargo test --frozen --release --lib
+}
+
+package() {
+  cd "$pkgname-$pkgver"
+  install -Dm755 src-tauri/target/release/mailroom "$pkgdir/usr/bin/mailroom"
+  install -Dm644 packaging/io.github.jonspinks.mailroom.desktop \
+    "$pkgdir/usr/share/applications/io.github.jonspinks.mailroom.desktop"
+  install -Dm644 src-tauri/icons/icon.svg \
+    "$pkgdir/usr/share/icons/hicolor/scalable/apps/io.github.jonspinks.mailroom.svg"
+  install -Dm644 src-tauri/icons/32x32.png \
+    "$pkgdir/usr/share/icons/hicolor/32x32/apps/io.github.jonspinks.mailroom.png"
+  install -Dm644 src-tauri/icons/128x128.png \
+    "$pkgdir/usr/share/icons/hicolor/128x128/apps/io.github.jonspinks.mailroom.png"
+  install -Dm644 src-tauri/icons/128x128@2x.png \
+    "$pkgdir/usr/share/icons/hicolor/256x256/apps/io.github.jonspinks.mailroom.png"
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+  install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
+}
