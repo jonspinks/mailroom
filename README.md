@@ -56,6 +56,8 @@ conversation you're working on or the results you asked about. The
 assistant has no tools, so it can't send, move or delete anything, and its
 answers are shown as plain text, never run as markup.
 
+![Help me write with Claude: a request, a draft, "Shorter", and a shorter draft beside the reply, each ready to insert](screenshots/7-write.png)
+
 ![An answer drawn from the conversation and its attachment](screenshots/3-ask.png)
 
 **Writing that behaves.** Undo send, send later, server drafts saved as you
