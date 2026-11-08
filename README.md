@@ -37,10 +37,26 @@ join Teams, Zoom, Google Meet or Webex from the reminder.
 
 ![The work week: work and personal calendars together, with the morning stand-up and Thursday's launch review](screenshots/2-calendar.png)
 
-**Ask your mail.** Bring your own Claude or Grok key and "Help me write"
-drafts, rewrites and shortens; "Ask" answers a question from every matching
-message, PDF attachments included, and says what it left out. Nothing is
-sent without you.
+**An assistant that knows your mail.** Add your own Claude or Grok API key
+in Settings > Assistants and Mailroom gains two helpers:
+
+- **Help me write.** A panel beside the message you're writing (or its own
+  window). Ask for a first draft, a rewrite or a shorter reply. It reads the
+  conversation you're answering, and asks a question back when your request
+  is vague. Nothing is sent until you press Send.
+- **Ask your mail.** Search, then ask a question about the results: "When
+  is the launch review, and what should I bring?" or "How much did I spend
+  with Northgate this year?". It reads up to a hundred matching messages,
+  plus the text of their PDF attachments, answers from what it found, and
+  says what it left out.
+
+Your key, your provider. Keys are kept in the system keyring. Requests go
+straight from your machine to Anthropic or xAI, carrying only the
+conversation you're working on or the results you asked about. The
+assistant has no tools, so it can't send, move or delete anything, and its
+answers are shown as plain text, never run as markup.
+
+![Help me write with Claude: a request, a draft, "Shorter", and a shorter draft beside the reply, each ready to insert](screenshots/7-write.png)
 
 ![An answer drawn from the conversation and its attachment](screenshots/3-ask.png)
 
@@ -202,6 +218,11 @@ In the app, add an account, choose Google, and paste the client ID and secret (o
 Gmail labels show as folders. A message lives in one: the Inbox while it is there, its label once archived, Archive when it has none. Categories, rules, automatic replies, send later, contacts and who's free stay Microsoft-only for now.
 
 The screen is `index.html`. Scope that is not built yet is in `SPEC.md`.
+
+## How it was made
+
+Mailroom was first written with xAI's Grok 4.7 and finished with
+Anthropic's Claude Opus 5.5. The weekly Outlook check runs on Claude too.
 
 ## Not affiliated
 

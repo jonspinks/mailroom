@@ -129,6 +129,19 @@ await shoot("4-reply", () => {
   const body = document.querySelector("#compose-body");
   if (body) body.innerHTML = "<p>10:00 works. I'll bring the roof photos and the revised timeline.</p><p>Sam</p>";
 });
+// Help me write, beside the reply above: one request, one draft to insert.
+await shoot("7-write", () => {
+  aiProvider = "claude";
+  assistTurns = [
+    { role: "user", text: "Tell Priya 10:00 works and I'll bring the roof photos. Friendly, short." },
+    { role: "assistant", text: "Hi Priya,\n\n10:00 on Thursday works for me. I'll bring Tom's roof photos and the revised timeline, so we can go straight into the open risks.\n\nThanks,\nSam" },
+    { role: "user", text: "Shorter." },
+    { role: "assistant", text: "Hi Priya,\n\n10:00 works. I'll bring the roof photos and the revised timeline.\n\nSam" }
+  ];
+  document.body.dataset.assist = "open";
+  markHelpExpanded(true);
+  paintAssist();
+});
 await shoot("5-omarchy", () => { setView("settings"); settingsPage = "omarchy"; render(); });
 execFileSync("magick", [
   path.join(out, "default-look.png"), "-bordercolor", "white", "-border", "0x0",
