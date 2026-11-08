@@ -22,7 +22,7 @@ ksni = { version = "0.3", features = ["blocking"] }
 notify-rust = "4"
 rand = "0.10"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
-rusqlite = { version = "0.32", features = ["bundled"] }
+rusqlite = { version = "0.41", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 pdf-extract = "0.12"
