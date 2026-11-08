@@ -219,6 +219,11 @@ Gmail labels show as folders. A message lives in one: the Inbox while it is ther
 
 The screen is `index.html`. Scope that is not built yet is in `SPEC.md`.
 
+## How it was made
+
+Mailroom was first written with xAI's Grok 4.7 and finished with
+Anthropic's Claude Opus 5.5. The weekly Outlook check runs on Claude too.
+
 ## Not affiliated
 
 Mailroom is an independent project. It is not made, endorsed or supported
