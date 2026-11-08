@@ -1,6 +1,5 @@
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
-use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
@@ -822,14 +821,31 @@ fn pkce_challenge(verifier: &str) -> String {
     URL_SAFE_NO_PAD.encode(digest)
 }
 
+/// Bytes from the operating system's random source. There is no safe
+/// fallback for state, PKCE verifiers or ids, so a failure stops here, as
+/// rand's OsRng did before 0.10.
+pub(crate) fn system_random(bytes: &mut [u8]) {
+    use rand::TryRng;
+    rand::rngs::SysRng.try_fill_bytes(bytes).expect("the system random source failed");
+}
+
 fn random_token(len: usize) -> String {
     const CHARSET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~";
-    let mut bytes = vec![0u8; len];
-    rand::rngs::OsRng.fill_bytes(&mut bytes);
-    bytes
-        .into_iter()
-        .map(|byte| CHARSET[(byte as usize) % CHARSET.len()] as char)
-        .collect()
+    // Only bytes below a multiple of the alphabet's size, so every
+    // character is equally likely.
+    let limit = (256 / CHARSET.len() * CHARSET.len()) as u8;
+    let mut out = String::with_capacity(len);
+    let mut bytes = [0u8; 64];
+    while out.len() < len {
+        system_random(&mut bytes);
+        for &byte in bytes.iter().filter(|&&byte| byte < limit) {
+            if out.len() == len {
+                break;
+            }
+            out.push(CHARSET[byte as usize % CHARSET.len()] as char);
+        }
+    }
+    out
 }
 
 fn form_encode(value: &str) -> String {
@@ -877,6 +893,14 @@ fn clip(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn random_tokens_use_only_the_pkce_alphabet() {
+        let token = random_token(128);
+        assert_eq!(token.len(), 128);
+        assert!(token.bytes().all(|b| b.is_ascii_alphanumeric() || b"-._~".contains(&b)), "{token}");
+        assert_ne!(random_token(43), random_token(43));
+    }
 
     #[test]
     fn form_decode_survives_a_percent_before_a_wide_character() {

@@ -625,6 +625,7 @@ pub struct DeltaPage {
     pub delta_link: String,
 }
 
+#[cfg(test)]
 pub fn latest_delta_url(folder_id: &str) -> Result<String, String> {
     let id = folder_id.trim();
     if id.is_empty() {
@@ -639,7 +640,8 @@ pub fn latest_delta_url(folder_id: &str) -> Result<String, String> {
 /// A delta over the sync window: mail received since `since`. Graph's mail
 /// delta takes only this filter, and the link it ends with keeps it, so the
 /// first round walks the cached window (about the cached count), not years
-/// of a busy Inbox. With no window, from now on.
+/// of a busy Inbox. With no window, from now on. (Kept for its tests.)
+#[cfg(test)]
 pub fn window_delta_url(folder_id: &str, since: &str) -> Result<String, String> {
     delta_url(folder_id, since, MESSAGE_SELECT)
 }
