@@ -15,6 +15,10 @@ your desktop. Mailroom is a native client that talks to Microsoft Graph and
 the Gmail API directly, so it gets Focused Inbox, categories, rules, Teams
 meetings and the rest, not a lowest-common-denominator IMAP view.
 
+**A restomod, not a replica.** The layout, the shortcuts and the Join
+button you know from Outlook, rebuilt as a native Linux app that wears your
+Omarchy theme.
+
 **All your accounts, one window.** Sign in to as many Microsoft 365,
 Outlook.com and Gmail accounts as you have. Group them into Work and
 Personal, flip between the two, or put both calendars side by side.
