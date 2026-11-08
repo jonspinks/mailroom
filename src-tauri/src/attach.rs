@@ -6,7 +6,6 @@
 
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
-use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use std::io::Write;
 use std::path::PathBuf;
@@ -57,7 +56,7 @@ pub fn valid_id(id: &str) -> bool {
 
 fn new_id() -> String {
     let mut bytes = [0u8; 16];
-    rand::rngs::OsRng.fill_bytes(&mut bytes);
+    crate::auth::system_random(&mut bytes);
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
