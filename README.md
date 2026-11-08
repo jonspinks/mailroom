@@ -203,6 +203,12 @@ Gmail labels show as folders. A message lives in one: the Inbox while it is ther
 
 The screen is `index.html`. Scope that is not built yet is in `SPEC.md`.
 
+## Not affiliated
+
+Mailroom is an independent project. It is not made, endorsed or supported
+by Microsoft or Google. Microsoft, Outlook and Microsoft 365 are trademarks
+of Microsoft; Gmail is a trademark of Google.
+
 ## Licence
 
 MIT. See [LICENSE](LICENSE).
