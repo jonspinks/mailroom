@@ -62,6 +62,8 @@ Super+Shift+E opens it, and an envelope with your unread count sits in the
 bar. It still runs on any Linux desktop; the Omarchy parts only appear on
 Omarchy.
 
+![The same inbox twice: Mailroom's own Outlook-like light look on the left, following Omarchy's Tokyo Night on the right](screenshots/6-looks.png)
+
 ![Settings: following Tokyo Night, the mail-app keys and the bar widget](screenshots/5-omarchy.png)
 
 **Private by design.** Mailroom talks straight from your machine to

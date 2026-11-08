@@ -2,6 +2,7 @@
 // Tokyo Night theme. Nothing here comes from a real mailbox.
 //   cd e2e && node screenshots.mjs        # writes ../screenshots/*.png
 import fs from "node:fs";
+import { execFileSync } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import puppeteer from "puppeteer-core";
@@ -114,6 +115,9 @@ const shoot = async (name, fn) => {
 };
 
 await shoot("1-mail");
+// The same inbox in Mailroom's own Outlook-like look, beside Omarchy's.
+await shoot("default-look", () => { setView("mail"); selected = "launch-2"; setTheme("light"); render(); });
+await page.evaluate(() => { setTheme("omarchy"); render(); });
 await shoot("2-calendar", () => { setView("calendar"); calView = "work"; calendarBoth = true; render(); calTopHour = 8; calendarPinHour = 8; applyHourScale(); });
 await shoot("3-ask", () => {
   setView("mail");
@@ -126,6 +130,13 @@ await shoot("4-reply", () => {
   if (body) body.innerHTML = "<p>10:00 works. I'll bring the roof photos and the revised timeline.</p><p>Sam</p>";
 });
 await shoot("5-omarchy", () => { setView("settings"); settingsPage = "omarchy"; render(); });
+execFileSync("magick", [
+  path.join(out, "default-look.png"), "-bordercolor", "white", "-border", "0x0",
+  "(", "-size", "48x1720", "xc:none", ")",
+  path.join(out, "1-mail.png"), "+append", "-resize", "2880x", path.join(out, "6-looks.png")
+]);
+fs.unlinkSync(path.join(out, "default-look.png"));
+console.log("wrote screenshots/6-looks.png");
 
 await browser.close();
 server.close();
