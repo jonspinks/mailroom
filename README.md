@@ -15,6 +15,10 @@ your desktop. Mailroom is a native client that talks to Microsoft Graph and
 the Gmail API directly, so it gets Focused Inbox, categories, rules, Teams
 meetings and the rest, not a lowest-common-denominator IMAP view.
 
+**A restomod, not a replica.** The layout, the shortcuts and the Join
+button you know from Outlook, rebuilt as a native Linux app that wears your
+Omarchy theme.
+
 **All your accounts, one window.** Sign in to as many Microsoft 365,
 Outlook.com and Gmail accounts as you have. Group them into Work and
 Personal, flip between the two, or put both calendars side by side.
@@ -57,6 +61,8 @@ corners, live. One click makes it the mail app: email links open here,
 Super+Shift+E opens it, and an envelope with your unread count sits in the
 bar. It still runs on any Linux desktop; the Omarchy parts only appear on
 Omarchy.
+
+![The same inbox twice: Mailroom's own Outlook-like light look on the left, following Omarchy's Tokyo Night on the right](screenshots/6-looks.png)
 
 ![Settings: following Tokyo Night, the mail-app keys and the bar widget](screenshots/5-omarchy.png)
 
@@ -196,6 +202,12 @@ In the app, add an account, choose Google, and paste the client ID and secret (o
 Gmail labels show as folders. A message lives in one: the Inbox while it is there, its label once archived, Archive when it has none. Categories, rules, automatic replies, send later, contacts and who's free stay Microsoft-only for now.
 
 The screen is `index.html`. Scope that is not built yet is in `SPEC.md`.
+
+## Not affiliated
+
+Mailroom is an independent project. It is not made, endorsed or supported
+by Microsoft or Google. Microsoft, Outlook and Microsoft 365 are trademarks
+of Microsoft; Gmail is a trademark of Google.
 
 ## Licence
 
