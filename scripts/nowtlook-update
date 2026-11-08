@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# The update script's name up to 0.35, kept so an old ~/.local/bin link works.
+exec "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/mailroom-update" "$@"

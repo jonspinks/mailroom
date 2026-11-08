@@ -1,0 +1,72 @@
+name: Weekly Outlook check
+
+# Every Monday, Claude reads what Microsoft has shipped or announced for
+# Outlook, compares it with FEATURES.md, and keeps one open issue listing
+# what Mailroom doesn't have yet. Needs the ANTHROPIC_API_KEY secret.
+on:
+  schedule:
+    - cron: "23 7 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+  id-token: write
+
+concurrency:
+  group: outlook-parity
+  cancel-in-progress: false
+
+jobs:
+  compare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - uses: anthropics/claude-code-action@v1
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          claude_args: |
+            --model claude-sonnet-5-5
+            --max-turns 40
+            --allowedTools "Read,Grep,Glob,WebFetch,WebSearch,Bash(gh issue:*),Bash(gh label:*)"
+          prompt: |
+            You keep Mailroom's feature list honest against Microsoft Outlook.
+            Mailroom is a Linux desktop mail and calendar client for Microsoft 365,
+            Outlook.com and Gmail. FEATURES.md in this repository is its feature list,
+            laid out next to Outlook's.
+
+            1. Read FEATURES.md. Read README.md for context.
+            2. Find what Microsoft has shipped or announced for Outlook in the last
+               three months, for the new Outlook for Windows, Outlook on the web and
+               Outlook for Mac (not classic Outlook). Use Microsoft's own pages:
+               the "What's new in Outlook" support pages, the Microsoft 365 roadmap
+               (filter to Outlook), and the Microsoft 365 / Outlook blogs on
+               techcommunity.microsoft.com. Prefer primary Microsoft sources; ignore
+               rumours, mobile-only features and admin/Exchange-server-only features.
+            3. For each Outlook feature, decide from FEATURES.md (and by grepping the
+               code: app.js and src-tauri/src) whether Mailroom has it, has part of it,
+               or lacks it. Do not trust FEATURES.md blindly; if the code clearly has
+               something FEATURES.md marks as missing, or the reverse, say so.
+            4. Keep exactly one open issue with the label `outlook-parity`:
+               - Create the label if it doesn't exist:
+                 gh label create outlook-parity --color 0f6cbd --description "Weekly Outlook comparison" || true
+               - Find it: gh issue list --label outlook-parity --state open --json number,title,body
+               - If one is open, edit its body with the new report and add a short
+                 comment summarising what changed since last week. If none is open,
+                 create it, titled "Outlook feature check".
+            5. The report body, in Markdown:
+               - "New in Outlook, not in Mailroom": one line each with what it does,
+                 who it's for, a link to Microsoft's page, and your judgement of fit
+                 for a desktop Linux client (worth doing / maybe / not for Mailroom),
+                 with a one-sentence reason.
+               - "FEATURES.md is out of date": rows that disagree with the code.
+               - "Checked": the Microsoft pages you read, with dates.
+               Be concrete and brief. Do not invent features; every item needs a
+               Microsoft link. If nothing new turned up, say so plainly.
+            Do not open pull requests, change files, or mention anyone with @.

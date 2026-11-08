@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+# Update Mailroom: pull, build the release version, and restart it.
+#   mailroom-update            # the copy this script belongs to
+#   MAILROOM_DIR=... mailroom-update
+# Install with: ln -s <clone>/scripts/mailroom-update ~/.local/bin/
+set -euo pipefail
+echo "$(date '+%Y-%m-%d %H:%M') mailroom-update"
+
+# The clone this script lives in, following the ~/.local/bin symlink.
+here="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
+dir="${MAILROOM_DIR:-$here}"
+cd "$dir"
+
+echo "Fetching the new version…"
+before="$(git rev-parse --short HEAD)"
+git pull --ff-only --quiet
+after="$(git rev-parse --short HEAD)"
+version="$(grep -m1 -o '"version": "[0-9.]*"' src-tauri/tauri.conf.json | grep -o '[0-9][0-9.]*' || true)"
+
+echo "Building Mailroom ${version} (release)…"
+# Not --quiet: Settings > Software reads the "Compiling" lines from the log.
+cargo build --release --manifest-path src-tauri/Cargo.toml
+# How long this took, so the next update's progress bar can estimate.
+state="$HOME/.local/state/mailroom"
+mkdir -p "$state" && echo "$SECONDS" > "$state/update-seconds"
+
+bin="$dir/src-tauri/target/release/mailroom"
+# Stop only this clone's Mailroom, found by its program file, never by a
+# pattern over command lines (which any other process can imitate). The app
+# passes its own pid; run by hand, look for this user's copies of the binary.
+# The app was called nowtlook up to 0.35; a copy still running as that counts.
+is_ours() {
+  local exe
+  exe="$(readlink "/proc/$1/exe" 2>/dev/null)" || return 1
+  exe="${exe% (deleted)}"
+  [ "$exe" = "$bin" ] || [ "$exe" = "$dir/src-tauri/target/release/nowtlook" ]
+}
+pids=()
+if [ -n "${MAILROOM_PID:-}" ]; then
+  is_ours "$MAILROOM_PID" && pids+=("$MAILROOM_PID")
+else
+  for proc in /proc/[0-9]*; do
+    pid="${proc#/proc/}"
+    [ -O "$proc" ] && is_ours "$pid" && pids+=("$pid")
+  done
+fi
+if [ "${#pids[@]}" -gt 0 ]; then
+  echo "Restarting Mailroom…"
+  kill "${pids[@]}" 2>/dev/null || true
+  for _ in $(seq 40); do
+    alive=0
+    for pid in "${pids[@]}"; do is_ours "$pid" && alive=1; done
+    [ "$alive" = 0 ] && break
+    sleep 0.25
+  done
+fi
+setsid "$bin" >/dev/null 2>&1 < /dev/null &
+
+if [ "$before" = "$after" ]; then
+  echo "Mailroom ${version} was already up to date; rebuilt and restarted."
+else
+  echo "Mailroom updated to ${version} (${before} → ${after}) and restarted."
+fi

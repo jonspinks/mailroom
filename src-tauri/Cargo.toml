@@ -1,0 +1,37 @@
+[package]
+name = "mailroom"
+version = "1.0.0"
+description = "Mailroom: unified mail for Omarchy"
+edition = "2021"
+# src/bin/nowtlook.rs is a launcher for the old name; this is the app.
+default-run = "mailroom"
+
+[lib]
+# The lib name must differ from the package name. On Windows the bin and the
+# lib would otherwise collide. https://github.com/rust-lang/cargo/issues/8519
+name = "mailroom_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+base64 = "0.22"
+keyring = { version = "3", features = ["sync-secret-service", "crypto-rust"] }
+ksni = { version = "0.3", features = ["blocking"] }
+notify-rust = "4"
+rand = "0.8"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+pdf-extract = "0.12"
+sha2 = "0.10"
+spellbook = "0.4"
+tauri = { version = "2", features = [] }
+tauri-plugin-single-instance = "2"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+dbus-secret-service = "4"
+gtk = "0.18"
+webkit2gtk = "2.0"

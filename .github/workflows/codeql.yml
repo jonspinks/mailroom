@@ -1,0 +1,29 @@
+name: CodeQL
+
+# GitHub's code scanning for the front end and the workflows, weekly and on
+# every pull request. Findings appear under Security > Code scanning.
+on:
+  schedule:
+    - cron: "5 7 * * 1"
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+  security-events: write
+
+jobs:
+  analyze:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [javascript-typescript, actions]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: github/codeql-action/init@v3
+        with:
+          languages: ${{ matrix.language }}
+          queries: security-extended
+      - uses: github/codeql-action/analyze@v3

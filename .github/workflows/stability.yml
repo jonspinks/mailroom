@@ -1,0 +1,50 @@
+name: Weekly stability
+
+# Every Monday: the full test suites against the latest stable Rust and a
+# fresh install of every dependency, then a release build, so a change
+# upstream shows up here before it shows up for someone updating.
+on:
+  schedule:
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  rust:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: System libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential libssl-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev libdbus-1-dev
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - name: Update dependencies within their ranges
+        run: cargo update --manifest-path src-tauri/Cargo.toml
+      - name: Tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml
+      - name: Clippy (errors only)
+        run: cargo clippy --manifest-path src-tauri/Cargo.toml -- -A warnings
+      - name: Release build
+        run: cargo build --release --manifest-path src-tauri/Cargo.toml
+
+  browser:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install
+        working-directory: e2e
+        run: npm ci
+      # Three passes: a test that passes only sometimes is a bug too.
+      - name: Browser tests, three passes
+        working-directory: e2e
+        env:
+          CHROME: /usr/bin/google-chrome
+        run: for pass in 1 2 3; do echo "pass $pass"; node run.mjs || exit 1; done

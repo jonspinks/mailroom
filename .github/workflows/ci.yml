@@ -1,0 +1,48 @@
+name: CI
+
+# A branch push that also opens or updates a pull request would otherwise
+# run twice and mail a failure twice. Pull requests cover branches. Main
+# covers the merge.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: System libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential libssl-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev libdbus-1-dev
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - name: Tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml
+
+  browser:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: e2e/package-lock.json
+      - name: Install
+        working-directory: e2e
+        run: npm ci
+      - name: Browser tests
+        working-directory: e2e
+        env:
+          CHROME: /usr/bin/google-chrome
+        run: node run.mjs

@@ -1,0 +1,462 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mailroom</title>
+<meta name="description" content="Mailroom is a Linux desktop client for Microsoft 365, Outlook.com and Gmail. Version 1.0.0. Build it, register a public Entra application, and sign in.">
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #1b1a19;
+    --panel: #292827;
+    --ink: #f3f2f1;
+    --muted: #c8c6c4;
+    --faint: #a19f9d;
+    --line: #3b3a39;
+    --blue: #4fa3e3;
+    --blue-ink: #9cccf5;
+    --rail: #000;
+    --soft: #323130;
+    --red: #f08a8c;
+    --font: "Segoe UI", "Adwaita Sans", Cantarell, system-ui, sans-serif;
+    --mono: ui-monospace, "Cascadia Code", "Source Code Pro", monospace;
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: var(--font);
+    font-size: 16px;
+    line-height: 24px;
+  }
+  a { color: var(--blue-ink); }
+  a:hover { color: #fff; }
+  :focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+  .skip {
+    position: absolute;
+    left: 12px;
+    top: -40px;
+    background: var(--panel);
+    color: var(--ink);
+    padding: 8px 12px;
+    z-index: 3;
+  }
+  .skip:focus { top: 12px; }
+
+  .shell {
+    display: grid;
+    grid-template-columns: 220px minmax(0, 1fr);
+    min-height: 100vh;
+  }
+  .side {
+    background: var(--rail);
+    border-right: 1px solid #141312;
+    padding: 22px 18px 28px;
+    position: sticky;
+    top: 0;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+  }
+  .mark {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    color: var(--ink);
+    text-decoration: none;
+    font-weight: 650;
+    font-size: 16px;
+  }
+  .mark:hover { color: var(--ink); }
+  .glyph {
+    width: 28px;
+    height: 28px;
+    border-radius: 6px;
+    background: #0f6cbd;
+    color: #fff;
+    display: grid;
+    place-items: center;
+    font-size: 15px;
+    font-weight: 650;
+  }
+  .tag {
+    margin: 10px 0 28px;
+    color: var(--faint);
+    font-size: 12px;
+    line-height: 16px;
+  }
+  .side nav { display: flex; flex-direction: column; gap: 2px; }
+  .side nav a {
+    color: var(--muted);
+    text-decoration: none;
+    padding: 6px 10px;
+    border-radius: 6px;
+    font-size: 14px;
+  }
+  .side nav a:hover { background: #1b1a19; color: var(--ink); }
+  .ver {
+    margin-top: auto;
+    color: var(--faint);
+    font-size: 12px;
+    padding-left: 10px;
+  }
+
+  main { min-width: 0; }
+  .wrap { max-width: 920px; padding: 40px 40px 72px; }
+  h1 {
+    margin: 0 0 12px;
+    font-size: 40px;
+    line-height: 48px;
+    font-weight: 650;
+    letter-spacing: -0.02em;
+  }
+  .lede {
+    margin: 0;
+    max-width: 40em;
+    color: var(--muted);
+    font-size: 18px;
+    line-height: 28px;
+  }
+  h2 {
+    margin: 48px 0 12px;
+    font-size: 22px;
+    line-height: 28px;
+    font-weight: 650;
+  }
+  h3 {
+    margin: 28px 0 8px;
+    font-size: 16px;
+    line-height: 24px;
+    font-weight: 650;
+  }
+  p { margin: 0 0 12px; max-width: 42em; }
+  .quiet { color: var(--muted); }
+
+  .stage {
+    margin-top: 32px;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    overflow: hidden;
+    background: #000;
+    box-shadow: 0 18px 40px rgba(0, 0, 0, .35);
+  }
+  .chrome {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    height: 36px;
+    padding: 0 12px;
+    background: #000;
+    color: var(--muted);
+    font-size: 13px;
+  }
+  .dots { display: flex; gap: 6px; margin-right: 8px; }
+  .dots i {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: #3b3a39;
+    display: block;
+  }
+  .app {
+    display: grid;
+    grid-template-columns: 44px 168px minmax(180px, 240px) minmax(0, 1fr);
+    min-height: 292px;
+    background: var(--bg);
+  }
+  .rail {
+    background: #000;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+    padding-top: 12px;
+    border-right: 1px solid #141312;
+  }
+  .rail span {
+    width: 28px;
+    height: 28px;
+    border-radius: 6px;
+    color: var(--muted);
+    display: grid;
+    place-items: center;
+  }
+  .rail span svg { width: 18px; height: 18px; }
+  .rail span.on { background: #3b3a39; color: var(--ink); }
+  .folders, .list, .read { min-width: 0; }
+  .folders { background: #000; padding: 10px 8px; color: var(--muted); font-size: 13px; }
+  .folders b { display: block; color: var(--faint); font-size: 11px; font-weight: 650; letter-spacing: .04em; text-transform: uppercase; padding: 6px 8px; }
+  .folders div { padding: 6px 8px; border-radius: 6px; }
+  .folders .on { background: #3b3a39; color: var(--ink); }
+  .list { border-right: 1px solid #141312; }
+  .row {
+    display: grid;
+    grid-template-columns: 28px minmax(0, 1fr);
+    gap: 8px;
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--line);
+    background: var(--panel);
+  }
+  .row.on { background: var(--soft); }
+  .avatar {
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    background: #0f6cbd;
+    color: #fff;
+    font-size: 11px;
+    font-weight: 650;
+    display: grid;
+    place-items: center;
+  }
+  .row strong, .row em, .row small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .row strong { font-size: 13px; font-weight: 650; }
+  .row em { font-style: normal; font-size: 13px; color: var(--muted); }
+  .row small { font-size: 12px; color: var(--faint); }
+  .row .when { float: right; font-size: 12px; color: var(--faint); font-weight: 400; }
+  .row .when.draft { color: var(--red); font-weight: 650; }
+  .read { padding: 16px 18px 20px; }
+  .subject { margin: 0 0 12px; font-size: 18px; line-height: 24px; font-weight: 650; }
+  .who { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: baseline; font-size: 13px; }
+  .who .mail { color: var(--faint); }
+  .stamp { color: var(--faint); font-size: 12px; margin: 2px 0 12px; }
+  .letter { margin: 0; color: var(--muted); font-size: 14px; line-height: 20px; max-width: 36em; }
+
+  .split {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 16px;
+    margin-top: 8px;
+  }
+  .split section {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 14px 16px 6px;
+  }
+  .split h3 { margin-top: 0; }
+  .split p { font-size: 14px; line-height: 20px; color: var(--muted); }
+
+  ol.steps { margin: 8px 0 0; padding-left: 1.2em; max-width: 42em; }
+  ol.steps > li { margin: 0 0 18px; }
+  ol.steps h3 { margin: 0 0 6px; }
+  ul.plain { margin: 8px 0 12px; padding-left: 1.2em; }
+  ul.plain li { margin: 2px 0; }
+  code, pre {
+    font-family: var(--mono);
+    font-size: 13px;
+    line-height: 20px;
+  }
+  code {
+    background: var(--soft);
+    padding: 1px 5px;
+    border-radius: 4px;
+  }
+  pre {
+    margin: 8px 0 12px;
+    padding: 12px 14px;
+    background: #141312;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    overflow-x: auto;
+    max-width: 100%;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+  pre code { background: none; padding: 0; }
+  .label {
+    display: block;
+    margin-top: 8px;
+    color: var(--faint);
+    font-size: 12px;
+    font-weight: 650;
+    letter-spacing: .04em;
+    text-transform: uppercase;
+  }
+  footer {
+    margin-top: 36px;
+    padding-top: 16px;
+    border-top: 1px solid var(--line);
+    color: var(--faint);
+    font-size: 13px;
+  }
+
+  @media (max-width: 860px) {
+    .shell { grid-template-columns: 1fr; }
+    .side {
+      position: static;
+      height: auto;
+      display: flex;
+      flex-direction: row;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 8px 18px;
+      padding: 14px 16px;
+      border-right: 0;
+      border-bottom: 1px solid #141312;
+    }
+    .tag, .ver { display: none; }
+    .side nav { flex-direction: row; gap: 4px; }
+    .wrap { padding: 28px 18px 56px; }
+    h1 { font-size: 32px; line-height: 38px; }
+    .split { grid-template-columns: 1fr; }
+    .app { grid-template-columns: 148px minmax(0, 1fr); }
+    .rail, .read { display: none; }
+  }
+</style>
+</head>
+<body>
+<a class="skip" href="#about">Skip to content</a>
+<div class="shell">
+  <aside class="side">
+    <a class="mark" href="#top"><span class="glyph">M</span> Mailroom</a>
+    <p class="tag">Unified mail for Omarchy</p>
+    <nav>
+      <a href="#about">About</a>
+      <a href="#install">Install</a>
+      <a href="#sign-in">Sign in</a>
+    </nav>
+    <p class="ver">Version 1.0.0</p>
+  </aside>
+  <main id="top">
+    <div class="wrap">
+      <h1>Unified mail for Omarchy.</h1>
+      <p class="lede" id="about">Mailroom is a Linux desktop client for the Microsoft and Google mailboxes you already have. Sign in to more than one account and read them in one window.</p>
+
+      <div class="stage" aria-hidden="true">
+        <div class="chrome"><span class="dots"><i></i><i></i><i></i></span> Mailroom</div>
+        <div class="app">
+          <div class="rail">
+            <span class="on" title="Mail"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3.5 5.5h13v9h-13z" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M4 6.2L10 11l6-4.8" fill="none" stroke="currentColor" stroke-width="1.4"/></svg></span>
+            <span title="Calendar"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4.5 5.5h11v10h-11z" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M4.5 8.5h11M7 4v3M13 4v3" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg></span>
+            <span title="People"><svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="7.2" r="2.2" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M5.2 15.2c.6-2.4 2.4-3.6 4.8-3.6s4.2 1.2 4.8 3.6" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg></span>
+          </div>
+          <div class="folders">
+            <b>Timberworks</b>
+            <div class="on">Inbox</div>
+            <div>Drafts</div>
+            <div>Sent items</div>
+            <div>Archive</div>
+          </div>
+          <div class="list">
+            <div class="row on">
+              <div class="avatar">MC</div>
+              <div><strong>Maya Chen <span class="when">08:14</span></strong><em>Pipeline review moved to 10:00</em><small>Thursday, 10:00–11:00</small></div>
+            </div>
+            <div class="row">
+              <div class="avatar">LO</div>
+              <div><strong>Leah Okonkwo <span class="when">07:41</span></strong><em>Notes from design review</em><small>The deck is attached</small></div>
+            </div>
+            <div class="row">
+              <div class="avatar" style="background:#0e7c66">OP</div>
+              <div><strong>Owen Price <span class="when draft">Draft</span></strong><em>Cone 6 for the first batch</em><small>To: Owen Price</small></div>
+            </div>
+          </div>
+          <div class="read">
+            <h2 class="subject">Pipeline review moved to 10:00</h2>
+            <div class="who"><strong>Maya Chen</strong> <span class="mail">maya.chen@timberworks.example</span></div>
+            <div class="stamp">Thu 15/10/2026 08:14</div>
+            <p class="letter">Thursday, 10:00–11:00. Studio.</p>
+          </div>
+        </div>
+      </div>
+
+      <div class="split">
+        <section>
+          <h3>Mail</h3>
+          <p>Inbox, drafts, sent items, archive, and trash come from the server, including folders you added there. A reply fills the message view. Search looks through mail already on this computer, and Search deeper asks Microsoft.</p>
+        </section>
+        <section>
+          <h3>Calendar</h3>
+          <p>Work week, week, and month share one grid. Accept, decline, or mark a meeting tentative. Notes stay with the event.</p>
+        </section>
+        <section>
+          <h3>People</h3>
+          <p>Each mailbox brings its contacts. A contact you add in Mailroom is created on that account.</p>
+        </section>
+      </div>
+
+      <h2>What this version is</h2>
+      <p>Version 1.0.0 runs on Linux. There is no installer package yet, so you build it from source. It is not Microsoft Outlook. Microsoft mail, calendar, and contacts go through Microsoft Graph, and Google accounts through the Gmail and Google Calendar APIs, each with an application you register yourself.</p>
+      <p class="quiet">A reply shows the full email address next to the friendly name. The word Draft is red. Settings shows the version along the bottom. Recurring-meeting editing, and creating or renaming folders, are not in this build.</p>
+
+      <h2 id="install">Install</h2>
+      <p>You need a Linux desktop, Rust, and WebKitGTK 4.1. Clone <a href="https://github.com/jonspinks/mailroom">github.com/jonspinks/mailroom</a>. You need access to that repository.</p>
+
+      <ol class="steps">
+        <li>
+          <h3>Install the system libraries</h3>
+          <p>These are the Tauri 2 packages for a desktop build. Other distributions need the same WebKitGTK 4.1, GTK 3, and OpenSSL libraries. The <a href="https://v2.tauri.app/start/prerequisites/">Tauri prerequisites</a> list them.</p>
+          <span class="label">Arch</span>
+          <pre><code>sudo pacman -S --needed webkit2gtk-4.1 base-devel curl wget file openssl appmenu-gtk-module libappindicator-gtk3 librsvg xdotool</code></pre>
+          <span class="label">Debian and Ubuntu</span>
+          <pre><code>sudo apt install libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev</code></pre>
+        </li>
+        <li>
+          <h3>Install Rust</h3>
+          <p>Skip this if <code>cargo</code> is already on your path.</p>
+          <pre><code>curl --proto '=https' --tlsv1.2 https://sh.rustup.rs -sSf | sh</code></pre>
+        </li>
+        <li>
+          <h3>Build and run</h3>
+          <p>Run these from the repository root. The first build compiles the desktop shell and takes a while. Later builds are short.</p>
+          <pre><code>git clone https://github.com/jonspinks/mailroom.git
+cd mailroom
+cargo build --release --manifest-path src-tauri/Cargo.toml
+./src-tauri/target/release/mailroom</code></pre>
+          <p>The page is <code>index.html</code>, <code>styles.css</code> and <code>app.js</code>; each build copies them into <code>dist/</code>. Run <code>scripts/mailroom-update</code> later to pull, build and restart.</p>
+        </li>
+      </ol>
+
+      <h2 id="sign-in">Sign in to Microsoft</h2>
+      <p>Mailroom is a public client. You register an application id in Microsoft Entra and you do not create a client secret.</p>
+      <ol class="steps">
+        <li>
+          <h3>Register the application</h3>
+          <p>In the Entra admin centre, open App registrations and create a registration.</p>
+          <ul class="plain">
+            <li>Supported accounts: any organisational directory and personal Microsoft accounts. The app uses the <code>common</code> sign-in endpoint.</li>
+            <li>Add a platform: Mobile and desktop applications. Redirect URI: <code>http://localhost</code>. The app listens on a free localhost port, and that redirect matches it.</li>
+            <li>Under Authentication, allow public client flows.</li>
+            <li>Add these delegated permissions: <code>offline_access</code>, <code>User.Read</code>, <code>Mail.Read</code>, <code>Mail.ReadWrite</code>, <code>Mail.Send</code>, <code>Calendars.ReadWrite</code>, <code>Contacts.Read</code>, <code>Contacts.ReadWrite</code>, <code>MailboxSettings.ReadWrite</code>.</li>
+          </ul>
+          <p>A work tenant may ask an administrator to grant those permissions. Copy the application (client) id. It is a GUID. Do not paste a secret into Mailroom.</p>
+        </li>
+        <li>
+          <h3>Add the account</h3>
+          <p>Open Settings in Mailroom, save the application id, then add the account. A browser opens for Microsoft sign-in, so <code>xdg-open</code> has to work. The sign-in is stored in the desktop keyring, under the service name <code>mailroom</code>. A locked keyring cannot save the account.</p>
+          <p>The application id is kept in <code>~/.config/mailroom/client-id</code>. Mail already downloaded is kept in <code>~/.config/mailroom/mail.db</code>.</p>
+        </li>
+      </ol>
+
+      <h2 id="sign-in-google">Sign in to Google</h2>
+      <p>Gmail and Google Calendar accounts sign in through an OAuth client you make in Google Cloud, much as Microsoft accounts use your Entra app. Personal Gmail and Google Workspace accounts both work.</p>
+      <ol class="steps">
+        <li>
+          <h3>Make the Google client</h3>
+          <ul class="plain">
+            <li>In the <a href="https://console.cloud.google.com/">Google Cloud console</a>, create a project, then turn on the Gmail API and the Google Calendar API under APIs &amp; Services.</li>
+            <li>Set up the OAuth consent screen (Google Auth Platform). Audience: External for a personal account, or Internal if every account is in one Workspace. Add yourself as a test user.</li>
+            <li>Under Data Access, add the scopes <code>gmail.modify</code>, <code>calendar.events</code> and <code>calendar.calendarlist.readonly</code>.</li>
+            <li>Under Clients, create an OAuth client of the Desktop app type. Copy its client ID and secret, or download its JSON file.</li>
+          </ul>
+          <p>While an External app is in Testing, Google signs it out every seven days. Publish it (In production) to keep you signed in; Google then shows an unverified-app warning at sign-in, which you can pass, for up to 100 users. A Workspace administrator may also need to allow the app.</p>
+        </li>
+        <li>
+          <h3>Add the account</h3>
+          <p>In Mailroom, add an account and choose Google. Paste the client ID and secret, or the whole JSON file into the first box, then sign in in the browser and leave every permission ticked. The client is kept in <code>~/.config/mailroom/google-client.json</code>; the sign-in goes in the keyring with the others.</p>
+          <p>Gmail labels are folders here. Each message has one folder: Inbox while it is in the Inbox, its label once it is archived, and Archive when it has no label. Move to a folder files it under that label. Categories, rules, automatic replies, send later, contacts and who's free are for Microsoft accounts for now.</p>
+        </li>
+      </ol>
+
+      <footer>
+        <p>Mailroom 1.0.0. Linux only. Not affiliated with Microsoft or Google.</p>
+      </footer>
+    </div>
+  </main>
+</div>
+</body>
+</html>

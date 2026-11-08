@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "id": "blacksheep.mailroom",
+  "name": "Mailroom",
+  "version": "0.1.0",
+  "author": "Jon Spinks",
+  "license": "MIT",
+  "description": "Unread mail from Mailroom in the Omarchy bar",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "Mailroom",
+    "description": "An envelope with your unread count. Click to open Mailroom, right-click to check for new mail.",
+    "category": "Apps",
+    "defaultSection": "right",
+    "allowMultiple": false
+  }
+}
