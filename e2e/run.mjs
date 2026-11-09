@@ -287,6 +287,29 @@ test("quoted history folds for Outlook, Gmail and Apple replies", { fake: false 
   }
 });
 
+test("search leads with Top results: the flagged boiler quote beats newer mentions", { fake: true, setup: () => {
+  const at = mins => new Date(Date.now() - mins * 60000).toISOString().replace(/\.\d+Z$/, "Z");
+  const row = (id, from, email, subject, preview, mins, extra) => Object.assign({ id, thread: "conv-" + id, subject, fromName: from, fromEmail: email, received: at(mins), preview, bodyHtml: "<p>" + preview + "</p>", unread: false, flagged: false, hasAttachments: false, files: [], to: [{ name: "Jon", email: "jon@example.com" }], cc: [], bcc: [] }, extra || {});
+  // Six newer messages only mention the word in passing.
+  for (let i = 1; i <= 6; i++) window.__inbox.push(row("b" + i, "Neighbour " + i, "n" + i + "@example.org", "Street news " + i, "the boiler next door was loud", 60 * i));
+  // Older, but the word is in the subject and it is flagged.
+  window.__inbox.push(row("quote", "Warm Homes", "quotes@warmhomes.example", "Boiler service quote", "Your annual service", 60 * 24 * 3, { flagged: true }));
+} }, async ({ p }) => {
+  await wait(800);
+  await p.click("#q"); await p.keyboard.type("boiler"); await p.keyboard.press("Enter"); await wait(800);
+  const list = await p.evaluate(() => ({
+    groups: [...document.querySelectorAll("#rows .date-group")].map(g => g.textContent.trim()),
+    first: (document.querySelector("#rows .row") || {}).dataset?.id,
+    quoteRows: document.querySelectorAll('#rows .row[data-id="quote"]').length
+  }));
+  same(list.groups[0], "Top results", "the first heading is Top results");
+  same(list.first, "quote", "the flagged subject match leads");
+  same(list.quoteRows, 1, "it is not repeated further down");
+  await p.click("#q", { clickCount: 3 }); await p.keyboard.type("Kiln"); await p.keyboard.press("Enter"); await wait(800);
+  const short = await p.$$eval("#rows .date-group", gs => gs.map(g => g.textContent.trim()));
+  expect(!short.includes("Top results"), "a short result list stays in date order", short);
+});
+
 test("a forward with a note keeps what it forwards open; a reply still folds", { fake: true, setup: () => {
   const body = '<div>FYI</div><div id="appendonsend"></div><hr><div id="divRplyFwdMsg"><b>From:</b> Eternity<br><b>Sent:</b> Mon<br><b>Subject:</b> You are invited</div><div>THE INVITE</div>';
   const at = new Date().toISOString().replace(/\.\d+Z$/, "Z");
