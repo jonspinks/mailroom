@@ -477,12 +477,6 @@
           "markdownDescription": "Enables the pop_compose command without any pre-configured scope."
         },
         {
-          "description": "Enables the print_page command without any pre-configured scope.",
-          "type": "string",
-          "const": "allow-print-page",
-          "markdownDescription": "Enables the print_page command without any pre-configured scope."
-        },
-        {
           "description": "Enables the remote_image command without any pre-configured scope.",
           "type": "string",
           "const": "allow-remote-image",
@@ -1015,12 +1009,6 @@
           "type": "string",
           "const": "deny-pop-compose",
           "markdownDescription": "Denies the pop_compose command without any pre-configured scope."
-        },
-        {
-          "description": "Denies the print_page command without any pre-configured scope.",
-          "type": "string",
-          "const": "deny-print-page",
-          "markdownDescription": "Denies the print_page command without any pre-configured scope."
         },
         {
           "description": "Denies the remote_image command without any pre-configured scope.",
