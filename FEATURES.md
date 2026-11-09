@@ -31,7 +31,7 @@ compares them with this list, and opens an issue for anything new.
 | Block remote pictures | ✅ never, always, or safe senders only |
 | Unsubscribe | ✅ one-click (RFC 8058) or the sender's page |
 | Invite clashes | ✅ an invite says what it clashes with |
-| Print | ➖ |
+| Print | ✅ one message, or save it as a PDF (Ctrl+P) |
 | Translate | ➖ |
 | Immersive reader | ➖ |
 
