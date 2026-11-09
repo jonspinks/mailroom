@@ -650,7 +650,12 @@ fn ics_param<'a>(params: &'a [(String, String)], name: &str) -> &'a str {
 
 fn ics_email(value: &str) -> String {
     let value = value.trim();
-    let rest = if value.len() >= 7 && value[..7].eq_ignore_ascii_case("mailto:") { &value[7..] } else { value };
+    // `get`, not `[..7]`: an invite's address can be any text, and a
+    // multi-byte character across byte 7 must not panic.
+    let rest = match value.get(..7) {
+        Some(head) if head.eq_ignore_ascii_case("mailto:") => &value[7..],
+        _ => value,
+    };
     let email = rest.trim();
     if email.len() > 320 || !email.contains('@') || email.chars().any(|c| c.is_control() || c.is_whitespace()) {
         String::new()
@@ -669,10 +674,12 @@ fn basic_date(value: &str) -> Option<String> {
 
 fn basic_clock(value: &str) -> Option<String> {
     let value = value.trim().trim_end_matches('Z');
-    if value.len() < 15 || value.as_bytes().get(8) != Some(&b'T') {
+    // The first 15 bytes must be ASCII before they are sliced: an invite's
+    // DTSTART is untrusted text, and a multi-byte character would panic.
+    if !value.get(..15).is_some_and(|head| head.is_ascii()) || value.as_bytes()[8] != b'T' {
         return None;
     }
-    let seconds = value.get(13..15)?;
+    let seconds = &value[13..15];
     let parts = [&value[0..4], &value[4..6], &value[6..8], &value[9..11], &value[11..13], seconds];
     if parts.iter().any(|part| !part.bytes().all(|b| b.is_ascii_digit())) {
         return None;
@@ -1269,6 +1276,21 @@ pub fn end_series_before(email: &str, master_id: &str, date: &str) -> Result<boo
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn invite_text_with_wide_characters_does_not_panic() {
+        // Byte 7 of the address and bytes 0..15 of the time fall inside
+        // multi-byte characters: these are refused or kept, never a panic.
+        assert_eq!(ics_email("mailtö:ada@example.org"), "mailtö:ada@example.org");
+        assert_eq!(ics_email("日本語@example.org"), "日本語@example.org");
+        assert_eq!(ics_email("MAILTO:ada@example.org"), "ada@example.org");
+        assert!(basic_clock("2026€1024T090000").is_none());
+        assert!(basic_clock("20261024T€90000Z").is_none());
+        assert!(basic_clock("20261024T0900€0").is_none());
+        assert_eq!(basic_clock("20261024T090000Z").as_deref(), Some("2026-10-24T09:00:00"));
+        let raw = "BEGIN:VEVENT\nUID:wide@example.org\nDTSTART:20261024T€90000Z\nDTEND:20261024T100000Z\nORGANIZER:mailtö:x@example.org\nSUMMARY:Wide\nEND:VEVENT\n";
+        let _ = parse_ics(raw);
+    }
 
     #[test]
     fn event_keys_carry_the_calendar_and_have_no_at_sign() {
