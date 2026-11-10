@@ -8,9 +8,16 @@ use crate::{auth, graph};
 use base64::Engine;
 use serde::Serialize;
 
-const MAX_IMAGES: usize = 20;
-const MAX_IMAGE_BYTES: i64 = 3 * 1024 * 1024;
-const MAX_TOTAL_BYTES: i64 = 12 * 1024 * 1024;
+pub const MAX_IMAGES: usize = 20;
+// A phone photo is often 5-10 MB, and 3 MB dropped it without a trace
+// (2026-11-09). 25 MB is the most Gmail lets a whole message carry.
+pub const MAX_IMAGE_BYTES: i64 = 25 * 1024 * 1024;
+pub const MAX_TOTAL_BYTES: i64 = 40 * 1024 * 1024;
+
+/// Whether one more picture of `size` bytes fits, after `total` so far.
+pub fn fits(size: i64, total: i64) -> bool {
+    size > 0 && size <= MAX_IMAGE_BYTES && total + size <= MAX_TOTAL_BYTES
+}
 
 #[derive(Debug, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -146,6 +153,18 @@ pub fn preview_bytes(name: &str, content_type: &str, bytes: Vec<u8>) -> Result<P
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn a_phone_photo_in_the_body_is_not_dropped() {
+        // The planters email: one 8.9 MB JPEG, referenced by cid:.
+        assert!(fits(8_882_538, 0));
+        assert!(fits(MAX_IMAGE_BYTES, 0));
+        assert!(!fits(MAX_IMAGE_BYTES + 1, 0));
+        assert!(!fits(0, 0));
+        // Several big photos stop at the total, not the first one.
+        assert!(fits(9_000_000, 30_000_000));
+        assert!(!fits(9_000_000, 35_000_000));
+    }
 
     #[test]
     fn previews_are_pdfs_and_pictures_only() {
