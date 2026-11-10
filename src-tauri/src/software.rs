@@ -82,6 +82,52 @@ pub fn check(current: &str) -> Result<UpdateStatus, String> {
     })
 }
 
+/// One change already in this copy, for "What's new" (2026-11-09).
+#[derive(Clone, Debug, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Change {
+    /// The day it landed, YYYY-MM-DD.
+    pub date: String,
+    pub title: String,
+    /// The version its title names, as in "Print a message (1.1.0)".
+    pub version: String,
+    /// Its pull request on GitHub; 0 if none.
+    pub pr: u32,
+}
+
+/// The newest changes on this copy's branch, newest first. Each pull
+/// request is one squashed commit whose title ends "(x.y.z) (#n)".
+pub fn whats_new(limit: usize) -> Result<Vec<Change>, String> {
+    let repo = repo_dir().ok_or("Mailroom is not running from a copy with its history.")?;
+    let log = git(&repo, &["log", "--first-parent", "-n", &limit.to_string(), "--format=%cs%x09%s", "HEAD"])?;
+    Ok(log.lines().filter_map(change_from).collect())
+}
+
+fn change_from(line: &str) -> Option<Change> {
+    let (date, subject) = line.split_once('\t')?;
+    let subject = subject.trim();
+    if subject.is_empty() || subject.starts_with("Merge ") || subject.starts_with("Mark version") {
+        return None;
+    }
+    let (rest, pr) = match subject.rsplit_once(" (#") {
+        Some((rest, tail)) if tail.ends_with(')') => match tail[..tail.len() - 1].parse::<u32>() {
+            Ok(n) => (rest.trim_end(), n),
+            Err(_) => (subject, 0),
+        },
+        _ => (subject, 0),
+    };
+    let (title, version) = match rest.rsplit_once(" (") {
+        Some((head, tail)) if tail.ends_with(')') && is_version(&tail[..tail.len() - 1]) => (head.trim_end(), tail[..tail.len() - 1].to_string()),
+        _ => (rest, String::new()),
+    };
+    Some(Change { date: date.trim().to_string(), title: title.to_string(), version, pr })
+}
+
+fn is_version(text: &str) -> bool {
+    let parts: Vec<&str> = text.split('.').collect();
+    parts.len() == 3 && parts.iter().all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
+}
+
 pub fn log_path() -> PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
     PathBuf::from(home).join(".local/state/mailroom/update.log")
@@ -195,6 +241,20 @@ pub fn restart(app: &tauri::AppHandle) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    use super::{change_from, Change};
+
+    #[test]
+    fn whats_new_reads_squashed_pull_request_titles() {
+        let c = |date: &str, title: &str, version: &str, pr| Change { date: date.into(), title: title.into(), version: version.into(), pr };
+        assert_eq!(change_from("2026-11-09\tPrint a message (1.1.0) (#20)"), Some(c("2026-11-09", "Print a message", "1.1.0", 20)));
+        assert_eq!(change_from("2026-11-08\trand 0.10; no build warnings (#12)"), Some(c("2026-11-08", "rand 0.10; no build warnings", "", 12)));
+        assert_eq!(change_from("2026-11-08\tMailroom 1.0.0"), Some(c("2026-11-08", "Mailroom 1.0.0", "", 0)));
+        // A bracket that is not a version stays in the title.
+        assert_eq!(change_from("2026-11-08\tDependencies: tauri (Linux) (#14)"), Some(c("2026-11-08", "Dependencies: tauri (Linux)", "", 14)));
+        assert_eq!(change_from("2026-11-08\tMerge branch 'x'"), None);
+        assert_eq!(change_from("no tab here"), None);
+    }
+
     #[test]
     fn version_comes_from_the_config() {
         assert_eq!(super::version_in(r#"{ "productName": "Mailroom", "version": "0.14.0" }"#), "0.14.0");

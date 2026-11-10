@@ -5196,6 +5196,46 @@ async function checkForUpdate(quiet) {
   return status;
 }
 
+// What's new (2026-11-09): the latest changes already in this copy, read
+// from its git history, newest first. Each pull request is one squashed
+// commit, so its title, version and number come straight from there.
+const WHATS_NEW_SHOWN = 8;
+const MAILROOM_PULLS = "https://github.com/jonspinks/mailroom/pull/";
+
+function whatsNewItem(change) {
+  const day = /^\d{4}-\d{2}-\d{2}$/.test(change.date || "")
+    ? new Date(change.date + "T12:00:00").toLocaleDateString([], { day: "numeric", month: "short", year: "numeric" })
+    : "";
+  const pr = Number(change.pr) > 0 ? Number(change.pr) : 0;
+  return `<li>
+    <span class="news-title">${esc(change.title || "")}</span>
+    <span class="news-meta">${change.version ? `<span class="pill">${esc(change.version)}</span>` : ""}${day ? `<span>${esc(day)}</span>` : ""}${pr ? `<button class="link-btn" type="button" data-news-pr="${pr}">#${pr}</button>` : ""}</span>
+  </li>`;
+}
+
+function paintWhatsNew(body) {
+  const box = body.querySelector("#software-news");
+  const list = body.querySelector("#software-history");
+  if (!box || !list) return;
+  Promise.resolve(tauriInvoke("whats_new")).then(changes => {
+    if (!Array.isArray(changes) || !changes.length || !list.isConnected) return;
+    const first = changes.slice(0, WHATS_NEW_SHOWN).map(whatsNewItem).join("");
+    const rest = changes.slice(WHATS_NEW_SHOWN);
+    list.innerHTML = first;
+    if (rest.length) {
+      list.insertAdjacentHTML("afterend", `<details class="software-earlier"><summary>Earlier changes</summary><ol class="software-history">${rest.map(whatsNewItem).join("")}</ol></details>`);
+    }
+    box.hidden = false;
+    box.querySelectorAll("[data-news-pr]").forEach(btn => {
+      btn.onclick = () => {
+        const url = MAILROOM_PULLS + Number(btn.dataset.newsPr);
+        const pending = tauriInvoke("open_link", { url });
+        if (pending && pending.catch) pending.catch(err => toast(String(err && err.message || err)));
+      };
+    });
+  }).catch(() => {});
+}
+
 function renderSoftware(body) {
   const version = appVersion || APP_VERSION;
   if (!inDesktop()) {
@@ -5214,8 +5254,13 @@ function renderSoftware(body) {
         <button class="ghost" type="button" id="software-restart">Restart Mailroom</button>
         <button class="primary" type="button" id="software-update" hidden>Update and restart</button>
       </div>
+      <section class="software-news" id="software-news" aria-label="What's new" hidden>
+        <h3>What's new</h3>
+        <ol class="software-history" id="software-history"></ol>
+      </section>
       <details class="software-log" id="software-log" hidden><summary>Last update</summary><pre id="software-log-text"></pre></details>
     </section>`;
+  paintWhatsNew(body);
   const statusBox = body.querySelector("#software-status");
   const updateBtn = body.querySelector("#software-update");
   const paint = (status) => {
@@ -16740,7 +16785,7 @@ const folderBusy = new Set();
 let syncNote = "";
 const folderRun = new Map();
 const bodyLoads = new Set();
-const APP_VERSION = "1.2.0";
+const APP_VERSION = "1.3.0";
 let appVersion = APP_VERSION;
 
 prepareDesktopAccounts();

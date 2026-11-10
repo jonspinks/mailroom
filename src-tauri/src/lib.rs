@@ -1213,6 +1213,12 @@ async fn check_update(app: tauri::AppHandle) -> Result<software::UpdateStatus, S
     in_background(move || software::check(&current)).await
 }
 
+/// Settings > Software > What's new: this copy's latest changes.
+#[tauri::command]
+async fn whats_new() -> Result<Vec<software::Change>, String> {
+    in_background(|| software::whats_new(30)).await
+}
+
 #[tauri::command]
 async fn run_update() -> Result<(), String> {
     in_background(software::update).await
@@ -2063,6 +2069,7 @@ pub fn run() {
             save_rule,
             delete_rule,
             check_update,
+            whats_new,
             run_update,
             update_progress,
             update_log,
