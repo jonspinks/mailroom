@@ -111,6 +111,7 @@ fn main() {
             "save_rule",
             "delete_rule",
             "check_update",
+            "whats_new",
             "run_update",
             "update_progress",
             "update_log",

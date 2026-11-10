@@ -119,6 +119,11 @@
     auto_reply: () => window.__autoReply || { status: "disabled", externalAudience: "none", start: "", end: "", internal: "", external: "" },
     set_auto_reply: (a) => { window.__autoReply = a.reply; return null; },
     ensure_folder: () => "f-snoozed",
+    whats_new: () => window.__news || [
+      { date: "2026-11-09", title: "Print a message", version: "1.1.0", pr: 20 },
+      { date: "2026-11-08", title: "rand 0.10; no build warnings", version: "", pr: 12 },
+      { date: "2026-11-08", title: "Mailroom 1.0.0", version: "", pr: 0 }
+    ],
     check_update: () => window.__update || { current: "0.13.2", latest: "0.14.0", behind: 3, changes: ["Settings > Software", "Left-click the tray icon"], localChanges: false, repo: "/home/user/src/mailroom" },
     run_update: () => null, update_progress: () => window.__progress || { stage: "idle", detail: "", elapsed: 0, estimate: 0 }, update_log: () => window.__updateLog || "", restart_app: () => null,
     mail_rules: () => window.__rules || [], save_rule: (a) => Object.assign({ id: "r" + Math.random().toString(36).slice(2, 6), other: false }, a.rule), delete_rule: () => null,

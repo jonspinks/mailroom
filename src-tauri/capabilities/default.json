@@ -82,6 +82,7 @@
     "allow-save-rule",
     "allow-delete-rule",
     "allow-check-update",
+    "allow-whats-new",
     "allow-run-update",
     "allow-update-progress",
     "allow-update-log",

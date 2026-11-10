@@ -1928,6 +1928,22 @@ test("templates: save one from a message, insert it, edit and delete it in Setti
   same(await p.evaluate(() => loadTemplates()), [], "deleted");
 });
 
+test("software: What's new lists this copy's latest changes, each linked to its PR", { fake: true }, async ({ p, calls, clear }) => {
+  await p.evaluate(() => showSettings("software")); await wait(600);
+  expect(!(await p.$eval("#software-news", e => e.hidden)), "the section shows");
+  const rows = await p.$$eval("#software-history li", l => l.map(li => ({ title: li.querySelector(".news-title").textContent.trim(), meta: li.querySelector(".news-meta").textContent.replace(/\s+/g, " ").trim() })));
+  same(rows.map(r => r.title), ["Print a message", "rand 0.10; no build warnings", "Mailroom 1.0.0"], "newest first, titles only");
+  expect(rows[0].meta.includes("1.1.0") && rows[0].meta.includes("#20"), "version and PR number beside it", rows[0].meta);
+  same(await p.$$eval("#software-history [data-news-pr]", b => b.length), 2, "a link only where there is a PR");
+  await clear();
+  await p.click('#software-history [data-news-pr="20"]'); await wait(200);
+  same(await calls("open_link"), [{ url: "https://github.com/jonspinks/mailroom/pull/20" }], "the number opens the pull request");
+  // More than eight: the rest fold under Earlier changes.
+  await p.evaluate(() => { window.__news = Array.from({ length: 12 }, (_, i) => ({ date: "2026-11-0" + (1 + (i % 9)), title: "Change " + i, version: "", pr: 0 })); showSettings("software"); }); await wait(600);
+  same(await p.$$eval("#software-news > #software-history li", l => l.length), 8, "eight shown");
+  same(await p.$$eval(".software-earlier li", l => l.length), 4, "four under Earlier changes");
+});
+
 test("software: shows an update, updates and restarts", { fake: true }, async ({ p, calls, clear }) => {
   await p.evaluate(() => showSettings("software")); await wait(500);
   expect((await p.$eval("#software-status", e => e.textContent)).includes("0.14.0 is available"), "update shown");

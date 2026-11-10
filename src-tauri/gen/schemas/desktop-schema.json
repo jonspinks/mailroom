@@ -477,6 +477,12 @@
           "markdownDescription": "Enables the pop_compose command without any pre-configured scope."
         },
         {
+          "description": "Enables the print_page command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-print-page",
+          "markdownDescription": "Enables the print_page command without any pre-configured scope."
+        },
+        {
           "description": "Enables the remote_image command without any pre-configured scope.",
           "type": "string",
           "const": "allow-remote-image",
@@ -709,6 +715,12 @@
           "type": "string",
           "const": "allow-update-progress",
           "markdownDescription": "Enables the update_progress command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the whats_new command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-whats-new",
+          "markdownDescription": "Enables the whats_new command without any pre-configured scope."
         },
         {
           "description": "Denies the account_status command without any pre-configured scope.",
@@ -1011,6 +1023,12 @@
           "markdownDescription": "Denies the pop_compose command without any pre-configured scope."
         },
         {
+          "description": "Denies the print_page command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-print-page",
+          "markdownDescription": "Denies the print_page command without any pre-configured scope."
+        },
+        {
           "description": "Denies the remote_image command without any pre-configured scope.",
           "type": "string",
           "const": "deny-remote-image",
@@ -1243,6 +1261,12 @@
           "type": "string",
           "const": "deny-update-progress",
           "markdownDescription": "Denies the update_progress command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the whats_new command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-whats-new",
+          "markdownDescription": "Denies the whats_new command without any pre-configured scope."
         },
         {
           "description": "Default core plugins set.\n#### This default permission set includes:\n\n- `core:path:default`\n- `core:event:default`\n- `core:window:default`\n- `core:webview:default`\n- `core:app:default`\n- `core:image:default`\n- `core:resources:default`\n- `core:menu:default`\n- `core:tray:default`",
