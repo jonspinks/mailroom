@@ -4727,6 +4727,64 @@ function bindListOlder() {
   };
 }
 
+// ---- Top results (2026-11-09, Outlook web watch) ----
+// Outlook puts a few relevant matches above the date-ordered results. This
+// is the local version, so it works for every account: a match scores for
+// the words being in its subject or sender, a sender you have written to, a
+// thread you flagged or replied in, and being recent. The best few, if they
+// score well enough, lead the list under "Top results".
+const TOP_RESULTS = 3;
+const TOP_RESULTS_MIN_LIST = 6;
+const TOP_RESULTS_MIN_SCORE = 4;
+let writtenToCache = { key: "", set: new Set() };
+
+function writtenToAddresses() {
+  const key = messages.length + ":" + (messages.length ? messages[messages.length - 1].id : "");
+  if (writtenToCache.key === key) return writtenToCache.set;
+  const set = new Set();
+  messages.forEach(m => {
+    if (messageBox(m) !== "sent") return;
+    [m.to, m.cc].flat().forEach(raw => parseAddresses(raw).forEach(email => set.add(email.toLowerCase())));
+  });
+  writtenToCache = { key, set };
+  return set;
+}
+
+function topResultScore(conv, terms, wrote, now) {
+  const head = listSummary(conv).summary;
+  const subject = String(conv.topic || head.subject || "").toLowerCase();
+  const sender = (String(head.from || "") + " " + String(head.email || "")).toLowerCase();
+  let score = 0;
+  if (terms.every(t => subject.includes(t))) score += 3;
+  else if (terms.some(t => subject.includes(t))) score += 1;
+  if (terms.some(t => sender.includes(t))) score += 2;
+  if (wrote.has(String(head.email || "").toLowerCase())) score += 3;
+  if (conv.messages.some(m => m.flagged)) score += 2;
+  if (conv.messages.some(m => messageBox(m) === "sent")) score += 2;
+  const when = messageInstant(head);
+  const days = when ? (now - when.getTime()) / 86400000 : Infinity;
+  if (days <= 7) score += 2;
+  else if (days <= 30) score += 1;
+  return score;
+}
+
+// Ids of the conversations to lead with, best first. Only for a search
+// with words in it and a list long enough for order to matter.
+function topResultIds(items) {
+  if (!query.trim() || items.length < TOP_RESULTS_MIN_LIST) return [];
+  const parts = currentSearchParts();
+  const terms = [...parts.words, ...parts.phrases];
+  if (!terms.length) return [];
+  const wrote = writtenToAddresses();
+  const now = Date.now();
+  return items.filter(c => !isPinned(c.id))
+    .map(c => ({ id: c.id, score: topResultScore(c, terms, wrote, now), seq: listSummary(c).summary.seq || 0 }))
+    .filter(x => x.score >= TOP_RESULTS_MIN_SCORE)
+    .sort((a, b) => b.score - a.score || b.seq - a.seq)
+    .slice(0, TOP_RESULTS)
+    .map(x => x.id);
+}
+
 function renderList() {
   const listEl = document.querySelector(".list");
   const keepScroll = listEl ? listEl.scrollTop : 0;
@@ -4829,11 +4887,16 @@ function renderList() {
       ${rowFilesHtml(opts.shortcut)}
     </div>`;
   };
+  const top = topResultIds(items);
   const orderedItems = items.slice().sort((a, b) => {
     const ap = isPinned(a.id);
     const bp = isPinned(b.id);
     if (ap !== bp) return ap ? -1 : 1;
     if (ap && bp) return pinnedOrder.indexOf(a.id) - pinnedOrder.indexOf(b.id);
+    const at = top.indexOf(a.id);
+    const bt = top.indexOf(b.id);
+    if ((at < 0) !== (bt < 0)) return at >= 0 ? -1 : 1;
+    if (at >= 0) return at - bt;
     const aHead = listSummary(a).summary;
     const bHead = listSummary(b).summary;
     const byDay = messageDay(bHead) - messageDay(aHead);
@@ -4847,7 +4910,7 @@ function renderList() {
     const head = listed.summary;
     const many = shown.length > 1;
     const open = many && openThreads.has(c.id);
-    const group = isPinned(c.id) ? { id: "pinned", label: "Pinned" } : mailGroupFor(head);
+    const group = isPinned(c.id) ? { id: "pinned", label: "Pinned" } : top.includes(c.id) ? { id: "top", label: "Top results" } : mailGroupFor(head);
     const hidden = collapsedMailGroups.has(group.id);
     const heading = group.id === lastGroup ? "" : `<button class="date-group" type="button" data-mail-group="${esc(group.id)}" aria-expanded="${hidden ? "false" : "true"}" aria-label="${esc((hidden ? "Expand " : "Collapse ") + group.label)}">${sectionChevron()}${esc(group.label)}</button>`;
     lastGroup = group.id;
