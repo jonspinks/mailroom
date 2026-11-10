@@ -1,6 +1,6 @@
 [package]
 name = "mailroom"
-version = "1.0.7"
+version = "1.1.0"
 description = "Mailroom: unified mail for Omarchy"
 edition = "2021"
 # src/bin/nowtlook.rs is a launcher for the old name; this is the app.

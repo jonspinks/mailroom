@@ -63,6 +63,7 @@ fn main() {
             "message_files",
             "open_attachment",
             "open_link",
+            "print_page",
             "pick_download_folder",
             "save_attachments",
             "send_mail",

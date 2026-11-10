@@ -3772,3 +3772,18 @@ html[data-look="omarchy"] :is(.avatar, .event-avatar)[style*="#a33b32"] { backgr
 .omarchy-card .omarchy-state.on { color: var(--ink); }
 .omarchy-card .omarchy-state.on::before { background: var(--leaf); }
 .omarchy-card kbd { font: inherit; font-size: 12px; padding: 1px 5px; border: 1px solid var(--line-strong); border-radius: min(4px, var(--r-max)); background: var(--soft); }
+
+/* Print (Ctrl+P): only the message printMessage puts in #print-sheet,
+   in black on white whatever the theme. */
+#print-sheet { display: none; }
+@media print {
+  html, body { background: #fff !important; color: #000 !important; height: auto !important; overflow: visible !important; }
+  body > :not(#print-sheet) { display: none !important; }
+  #print-sheet { display: block; color: #000; font: 11pt/1.45 system-ui, sans-serif; }
+  #print-sheet h1 { font-size: 16pt; font-weight: 600; margin: 0 0 8pt; }
+  #print-sheet .print-head { border-collapse: collapse; margin: 0 0 10pt; }
+  #print-sheet .print-head th { text-align: left; font-weight: 600; padding: 0 12pt 2pt 0; vertical-align: top; white-space: nowrap; }
+  #print-sheet .print-head td { padding: 0 0 2pt; }
+  #print-sheet .letter { margin: 0; padding: 10pt 0 0; border: 0; border-top: 1px solid #999; border-radius: 0; box-shadow: none; max-height: none; overflow: visible; background: #fff; }
+  #print-sheet img { max-width: 100% !important; height: auto !important; }
+}
