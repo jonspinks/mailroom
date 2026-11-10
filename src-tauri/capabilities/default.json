@@ -34,6 +34,7 @@
     "allow-message-files",
     "allow-open-attachment",
     "allow-open-link",
+    "allow-print-page",
     "allow-pick-download-folder",
     "allow-save-attachments",
     "allow-send-mail",

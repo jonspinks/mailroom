@@ -837,6 +837,14 @@ async fn open_link(url: String) -> Result<(), String> {
     in_background(move || graph::open_link(&url)).await
 }
 
+/// Print (2026-11-09): the page puts one message in #print-sheet, which
+/// only print styles show, and the webview's own dialog prints it or
+/// saves it as a PDF.
+#[tauri::command]
+async fn print_page(webview: tauri::Webview) -> Result<(), String> {
+    webview.print().map_err(|err| format!("Could not print: {err}"))
+}
+
 #[derive(Deserialize)]
 struct NamedFile {
     #[serde(default)]
@@ -2012,6 +2020,7 @@ pub fn run() {
             message_files,
             open_attachment,
             open_link,
+            print_page,
             pick_download_folder,
             save_attachments,
             send_mail,

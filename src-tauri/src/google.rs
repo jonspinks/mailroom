@@ -1545,9 +1545,9 @@ pub fn inline_images(email: &str, message_id: &str) -> Result<Vec<crate::inline:
     collect_images(&value["payload"], &mut parts, 0);
     let mut out = Vec::new();
     let mut total = 0usize;
-    for part in parts.into_iter().take(20) {
+    for part in parts.into_iter().take(crate::inline::MAX_IMAGES) {
         let Ok(bytes) = part_bytes(&client, &token, message_id, part) else { continue };
-        if bytes.is_empty() || bytes.len() > 3 * 1024 * 1024 || total + bytes.len() > 12 * 1024 * 1024 {
+        if !crate::inline::fits(bytes.len() as i64, total as i64) {
             continue;
         }
         let Some(kind) = crate::inline::allowed_type(part["mimeType"].as_str().unwrap_or("")) else { continue };

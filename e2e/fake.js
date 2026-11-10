@@ -88,6 +88,7 @@
       return { messages: all.slice(start, start + 25), nextLink: start + 25 < all.length ? "skip=" + (start + 25) : "" };
     },
     set_focus: () => null,
+    print_page: () => null,
     free_busy: (a) => (a.people || []).map(e => {
       const day = "0".repeat(96).split("");
       const busy = (from, to) => { for (let i = from; i < to; i++) day[i] = "2"; };
