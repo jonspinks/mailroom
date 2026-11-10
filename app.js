@@ -6095,6 +6095,7 @@ async function addCategories(list, name) {
 const SHORTCUTS = [
   ["Ctrl+N", "New message, or new event in Calendar"],
   ["Ctrl+R", "Reply"], ["Ctrl+Shift+R", "Reply all"], ["Ctrl+Shift+F", "Forward"],
+  ["Ctrl+P", "Print the message"],
   ["Ctrl+Enter", "Send, while writing"],
   ["Delete", "Delete"], ["E", "Archive"], ["V", "Move to a folder"],
   ["Ctrl+Q", "Mark as read"], ["Ctrl+U", "Mark as unread"], ["Insert", "Flag or unflag"],
@@ -6195,6 +6196,7 @@ document.addEventListener("keydown", (ev) => {
   const latest = conv.latest;
   if (ctrl && lower === "r") { ev.preventDefault(); startReply(latest, ev.shiftKey); return; }
   if (ctrl && ev.shiftKey && lower === "f") { ev.preventDefault(); startForward(latest); return; }
+  if (ctrl && lower === "p") { ev.preventDefault(); printMessage(conv.messages.find(m => m.id === selected) || latest); return; }
   if (ctrl && lower === "q") { ev.preventDefault(); setUnread(conv.messages, false, true); return; }
   if (ctrl && lower === "u") { ev.preventDefault(); setUnread([latest], true, true); return; }
   if (ctrl) return;
@@ -6472,6 +6474,36 @@ function messageBlock(m, open, many) {
     ${remoteBar(m)}
     <div class="letter${m.bodyHtml ? " mail-fit" : ""}${lightView.has(m.id) ? " light-view" : ""}">${m.bodyHtml ? `<div class="letter-fit">${letterHtml(m)}</div>` : letterHtml(m)}</div>
   </article>`;
+}
+
+// ---- Print (2026-11-09, Outlook web watch) ----
+// One message, as Outlook prints it: subject, sender, recipients and date,
+// then the body on white. #print-sheet is hidden on screen and print styles
+// show only it. The body is taken from the reading pane when it is open
+// there, so pictures already fetched for cid: references come along.
+function printMessage(m) {
+  if (!m) return;
+  let sheet = document.getElementById("print-sheet");
+  if (!sheet) {
+    sheet = document.createElement("div");
+    sheet.id = "print-sheet";
+    document.body.appendChild(sheet);
+  }
+  const card = reading.querySelector(`.thread-card[data-pick="${CSS.escape(m.id)}"]`);
+  const shown = card && (card.querySelector(".letter-fit") || card.querySelector(".letter"));
+  const when = messageInstant(m);
+  const rows = [["From", senderMail(m) && senderMail(m) !== m.from ? `${m.from} <${senderMail(m)}>` : m.from],
+    ["Sent", when ? when.toLocaleString([], { dateStyle: "full", timeStyle: "short" }) : messageStamp(m)]];
+  audience(m).split("; ").forEach(part => {
+    const at = part.indexOf(": ");
+    if (at > 0) rows.push([part.slice(0, at), part.slice(at + 2)]);
+  });
+  sheet.innerHTML = `<h1>${esc(m.subject || "(no subject)")}</h1>
+    <table class="print-head">${rows.filter(r => r[1]).map(([k, v]) => `<tr><th>${esc(k)}</th><td>${esc(v)}</td></tr>`).join("")}</table>
+    <div class="letter mail-fit light-view"><div class="letter-fit">${shown ? shown.innerHTML : letterHtml(m)}</div></div>`;
+  const call = tauriInvoke("print_page");
+  if (call) Promise.resolve(call).catch(err => toast(String(err && err.message || err)));
+  else window.print();
 }
 
 function selfAddress(id) {
@@ -8296,6 +8328,7 @@ function renderReading() {
   const snoozeIcon = `<svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10.8" r="6" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M8.2 8.6h3.6l-3.6 4.2h3.6M4.4 3.6 2.8 5.2M15.6 3.6l1.6 1.6" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
   const moveIcon = `<svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true"><path d="M2.8 5.3c0-.6.4-1 1-1h3.6l1.5 1.6h7.3c.6 0 1 .4 1 1v8c0 .6-.4 1-1 1H3.8c-.6 0-1-.4-1-1V5.3z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><path d="M7.5 11h5M10.8 8.8 13 11l-2.2 2.2" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
   const inboxIcon = `<svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true"><path d="M3 11.2h14l-1.8 4.6H4.8L3 11.2z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><path d="M10 3.2v7M7.4 7.6L10 10.2l2.6-2.6" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+  const printIcon = `<svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true"><path d="M6 7.2V3.2h8v4M6 13.6H4a1 1 0 0 1-1-1V8.2a1 1 0 0 1 1-1h12a1 1 0 0 1 1 1v4.4a1 1 0 0 1-1 1h-2" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><path d="M6 11.2h8v5.6H6z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg>`;
   const clipIcon = `<svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true"><path d="M13.6 6.2 7.9 11.9a1.6 1.6 0 0 0 2.3 2.3l5.9-5.9a3 3 0 0 0-4.3-4.3l-6 6a4.4 4.4 0 0 0 6.2 6.2l5.2-5.2" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
   // While you write a reply the paperclip would read as yours; it lists
   // the thread's files, so it waits until you are reading again.
@@ -8316,7 +8349,8 @@ function renderReading() {
         ${where !== "drafts" && where !== "outbox" && !isGoogleAccount(conv.latest.account) ? icon("categorize", "Categorize", tagIcon) : ""}
         ${where === "inbox" || where === "archive" ? icon("snooze", "Snooze", snoozeIcon) : ""}
         ${where !== "trash" ? icon("delete", "Delete", deleteIcon) : ""}
-        ${icon("flag", "Flag", flagIcon)}`;
+        ${icon("flag", "Flag", flagIcon)}
+        ${icon("print", "Print (Ctrl+P)", printIcon)}`;
   const subjectLine = conv.topic;
   const threadCount = shown.length;
   reading.innerHTML = `
@@ -8376,6 +8410,8 @@ function renderReading() {
   if (replyInvite) replyInvite.onclick = () => startReplyWithInvite(replyTarget);
   const forward = document.getElementById("forward");
   if (forward) forward.onclick = () => startForward(replyTarget);
+  const print = document.getElementById("print");
+  if (print) print.onclick = () => printMessage(replyTarget);
   reading.querySelectorAll("[data-party]").forEach(btn => {
     btn.onclick = (ev) => {
       ev.stopPropagation();

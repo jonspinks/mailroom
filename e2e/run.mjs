@@ -310,6 +310,30 @@ test("search leads with Top results: the flagged boiler quote beats newer mentio
   expect(!short.includes("Top results"), "a short result list stays in date order", short);
 });
 
+test("Print puts one message on white paper, from the toolbar or Ctrl+P", { fake: true }, async ({ p, calls, clear }) => {
+  await p.click('.row[data-id="m1"]');
+  await wait(800);
+  expect(!!(await p.$("#reading #print")), "the reading toolbar has Print");
+  await clear();
+  await p.click("#reading #print");
+  await wait(200);
+  same((await calls("print_page")).length, 1, "the toolbar button asks the app to print");
+  const sheet = await p.$eval("#print-sheet", s => s.textContent.replace(/\s+/g, " "));
+  expect(sheet.includes("Kiln schedule") && sheet.includes("From") && sheet.includes("Ada Lovelace") && sheet.includes("Kiln schedule body"), "the sheet has the subject, sender and body", sheet);
+  same(await p.$eval("#print-sheet", s => getComputedStyle(s).display), "none", "the sheet is hidden on screen");
+  await p.emulateMediaType("print");
+  const printed = await p.evaluate(() => ({ sheet: getComputedStyle(document.getElementById("print-sheet")).display, shell: getComputedStyle(document.querySelector(".shell")).display, top: getComputedStyle(document.querySelector("header.top")).display }));
+  same(printed, { sheet: "block", shell: "none", top: "none" }, "on paper only the sheet shows");
+  await p.emulateMediaType("screen");
+  await clear();
+  await p.click('.row[data-id="m2"]');
+  await wait(600);
+  await p.keyboard.down("Control"); await p.keyboard.press("p"); await p.keyboard.up("Control");
+  await wait(200);
+  same((await calls("print_page")).length, 1, "Ctrl+P prints too");
+  expect((await p.$eval("#print-sheet", s => s.textContent)).includes("Pipeline review"), "Ctrl+P prints the open message");
+});
+
 test("a forward with a note keeps what it forwards open; a reply still folds", { fake: true, setup: () => {
   const body = '<div>FYI</div><div id="appendonsend"></div><hr><div id="divRplyFwdMsg"><b>From:</b> Eternity<br><b>Sent:</b> Mon<br><b>Subject:</b> You are invited</div><div>THE INVITE</div>';
   const at = new Date().toISOString().replace(/\.\d+Z$/, "Z");
