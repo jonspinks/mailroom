@@ -70,7 +70,7 @@ compares them with this list, and opens an issue for anything new.
 | Rules | **M** create from a message, turn off, delete |
 | Automatic replies | **M** |
 | Favourites | ✅ any folder, category or search folder |
-| Search | ✅ mail, people and calendar in one box; dates in plain words |
+| Search | ✅ mail, people and calendar in one box; dates in plain words; top results first |
 | Search folders | **M** |
 | Create, rename, delete folders | ➖ |
 | Sweep | ➖ |
