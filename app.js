@@ -8267,6 +8267,7 @@ function messagePaintStamp(m, open) {
     files,
     stampText(m.bodyHtml),
     allowRemoteFor(m) ? "1" : "0",
+    senderState(m),
     lightView.has(m.id) ? "1" : "0",
     images && images.list ? String(images.list.length) : "0",
     unsubscribeFor.get(m.id) ? "1" : "0",
@@ -11531,15 +11532,73 @@ function setRemotePictureMode(mode) {
   render();
 }
 
+// ---- Is the sender who the From line says? A forged From can name a safe
+//      sender, or you. So that trust needs the provider's own sender checks
+//      (DMARC, or DKIM for the From domain, or mail inside the organisation;
+//      see senderauth.rs). Asked only for an open message with blocked content.
+const senderVerified = new Map();
+const senderChecks = new Set();
+const SENDER_VERIFIED_KEY = "mailroom-sender-verified";
+const SENDER_VERIFIED_MAX = 2000;
+
+(function loadSenderVerified() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(SENDER_VERIFIED_KEY) || "[]");
+    if (Array.isArray(saved)) saved.slice(-SENDER_VERIFIED_MAX).forEach(([id, ok]) => {
+      if (typeof id === "string" && typeof ok === "boolean") senderVerified.set(id, ok);
+    });
+  } catch (e) {}
+})();
+
+function rememberSenderVerified() {
+  try {
+    const list = [...senderVerified.entries()].slice(-SENDER_VERIFIED_MAX);
+    localStorage.setItem(SENDER_VERIFIED_KEY, JSON.stringify(list));
+  } catch (e) {}
+}
+
+// Trusted by From alone: a safe sender, or one of your own addresses.
+function trustedByFrom(message) {
+  const email = String(message.email || "").toLowerCase();
+  return ownAddresses().has(email) || senderIsSafe(email);
+}
+
+// Start the check for an open message, once. The reading pane redraws when
+// the answer comes.
+function checkSender(message) {
+  if (!message || !message.id || senderVerified.has(message.id) || senderChecks.has(message.id)) return;
+  if (!inDesktop() || !message.live) return;
+  const acct = accounts[message.account];
+  if (!acct || !acct.email || !message.email) return;
+  senderChecks.add(message.id);
+  const id = message.id;
+  Promise.resolve(tauriInvoke("sender_verified", { email: acct.email, messageId: id, message_id: id, from: message.email }))
+    .then(ok => {
+      senderVerified.delete(id);
+      senderVerified.set(id, ok === true);
+      rememberSenderVerified();
+    })
+    .catch(() => {})
+    .finally(() => {
+      senderChecks.delete(id);
+      if (view === "mail" && readingShowsMessage(message)) renderReading();
+    });
+}
+
+function senderState(message) {
+  if (!message || !senderVerified.has(message.id)) return "?";
+  return senderVerified.get(message.id) ? "1" : "0";
+}
+
 function allowRemoteFor(message) {
   if (!message) return false;
   if (shownRemote.has(message.id)) return true;
   // Mail you sent: its pictures are your own signature and attachments.
-  if (messageBox(message) === "sent" || ownAddresses().has(String(message.email || "").toLowerCase())) return true;
+  if (messageBox(message) === "sent") return true;
   const mode = remotePictureMode();
   if (mode === "always") return true;
   if (mode === "never") return false;
-  return senderIsSafe(message.email);
+  return trustedByFrom(message) && senderVerified.get(message.id) === true;
 }
 
 function isRemoteUrl(value) {
@@ -11868,6 +11927,8 @@ function letterCacheKey(message) {
 function letterHtml(message) {
   if (message && message.needsBody) return `<p>${esc(message.preview || message.body || "")}</p>`;
   if (!message || !message.bodyHtml) return `<p>${esc((message && message.body) || "")}</p>`;
+  if (!allowRemoteFor(message) && remotePictureMode() !== "never" && trustedByFrom(message)
+      && remoteMailHtml(message.bodyHtml, false).blocked) checkSender(message);
   const key = letterCacheKey(message);
   const hit = letterHtmlCache.get(key);
   if (hit != null) {
@@ -12376,11 +12437,16 @@ function remoteBar(message) {
   if (!message || !message.bodyHtml || allowRemoteFor(message)) return "";
   if (!remoteMailHtml(message.bodyHtml, false).blocked) return "";
   const domain = organisationalDomain(message.email);
-  const trust = domain
+  const trusted = trustedByFrom(message);
+  const failed = trusted && senderVerified.get(message.id) === false;
+  const trust = domain && !trusted
     ? `<button type="button" data-trust-sender="${esc(message.id)}">Add ${esc(domain)} to Safe senders</button>`
     : "";
+  const why = failed
+    ? "Some content was blocked: this message didn't pass its sender checks, so it may not be from " + esc(message.email) + "."
+    : trusted ? "Checking the sender before showing blocked content…" : "Some content in this message was blocked.";
   return `<div class="remote-bar" role="status">
-    <p>Some content in this message was blocked.</p>
+    <p>${why}</p>
     <button type="button" data-show-remote="${esc(message.id)}" title="This message only">Show blocked content</button>
     ${trust}
   </div>`;
@@ -13786,7 +13852,7 @@ function renderSafeSenders(body) {
       <label><input type="radio" name="remote-pictures" value="always"${pictures === "always" ? " checked" : ""}> Always</label>
       <p class="field-hint">This computer only. A message can still show its pictures once.</p>
     </fieldset>
-    <p class="field-hint">Remote content downloads automatically for these domains. Your accounts' domains are always on the list.</p>
+    <p class="field-hint">Remote content downloads automatically for these domains, once your mail provider has confirmed the message really came from there. Your accounts' domains are always on the list.</p>
     ${sharedNote}
     <form id="safe-sender-form" class="stack-row">
       <input id="safe-sender-input" name="sender" aria-label="Safe sender domain" placeholder="anthropic.com" autocomplete="off" spellcheck="false">
@@ -16875,7 +16941,7 @@ const folderBusy = new Set();
 let syncNote = "";
 const folderRun = new Map();
 const bodyLoads = new Set();
-const APP_VERSION = "1.3.2";
+const APP_VERSION = "1.3.3";
 let appVersion = APP_VERSION;
 
 prepareDesktopAccounts();

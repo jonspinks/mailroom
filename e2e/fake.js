@@ -98,6 +98,11 @@
     }),
     attachment_preview: () => window.__preview || { contentType: "image/png", data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==" },
     inline_images: (a) => (window.__images || {})[a.messageId] || [],
+    // The provider's sender checks: passed unless a test says otherwise.
+    sender_verified: (a) => {
+      const v = (window.__unverified || []).includes(a.messageId) ? false : true;
+      return v
+    },
     remote_image: (a) => (window.__remote || {})[a.url] || Promise.reject("The picture could not be fetched."),
     pdf_texts: (a) => (window.__pdfs || []).filter(t => (a.messageIds || []).includes(t.messageId)),
     ask_mail: () => ({ text: window.__answer || "Total $2,802.40" }),
