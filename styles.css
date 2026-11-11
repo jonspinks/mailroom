@@ -3554,8 +3554,8 @@
   @media (max-width: 980px) {
     .shell { grid-template-columns: 48px 200px minmax(0, 1fr); }
     .reading, .pane-split { display: none; }
-    body[data-open="1"] .list { display: none; }
-    body[data-open="1"] .reading { display: flex; }
+    body[data-view="mail"][data-open="1"] .list { display: none; }
+    body[data-view="mail"][data-open="1"] .reading { display: flex; }
     body[data-view="calendar"] .shell,
     body[data-view="settings"] .shell { grid-template-columns: 48px 220px minmax(0, 1fr); }
     body[data-folders="closed"] .shell { grid-template-columns: 48px 48px minmax(0, 1fr); }
@@ -3563,6 +3563,28 @@
     body[data-folders="closed"][data-view="people"] .shell { grid-template-columns: 48px minmax(0, 1fr); }
     body[data-folders="closed"][data-view="settings"] .shell { grid-template-columns: 48px 48px minmax(0, 1fr); }
     body[data-folders="closed"][data-view="calendar"] .shell { grid-template-columns: 48px minmax(0, 1fr); }
+    /* Hovering Mail while reading: the folders and the list come out over
+       the message, as in Outlook's collapsed navigation. */
+    .shell { position: relative; }
+    body[data-view="mail"][data-open="1"][data-peek="1"] .shell > .folders,
+    body[data-view="mail"][data-open="1"][data-peek="1"] .shell > .list {
+      display: flex;
+      flex-direction: column;
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      z-index: 20;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+    }
+    body[data-view="mail"][data-open="1"][data-peek="1"] .shell > .folders { left: 48px; width: var(--folders-width, 220px); padding: 8px; }
+    body[data-view="mail"][data-open="1"][data-peek="1"] .shell > .list {
+      display: block;
+      left: calc(48px + var(--folders-width, 220px));
+      width: min(var(--list-width, 360px), calc(100% - 48px - var(--folders-width, 220px)));
+      overflow: auto;
+    }
+    body[data-view="mail"][data-open="1"][data-peek="1"] #folder-nav { display: block; }
+    body[data-view="mail"][data-open="1"][data-peek="1"] .folders-split { display: none; }
   }
 
 .reminder-row .event-show { margin-right: 12px; }
