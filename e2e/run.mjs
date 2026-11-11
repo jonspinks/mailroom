@@ -439,6 +439,79 @@ test("reply all: To and Cc as Outlook, quote in Outlook form", { fake: false }, 
   expect(r.quote, "quote uses From:/Sent:/Subject:");
 });
 
+test("inline reply: clicking the names opens To and Cc for editing", { fake: false }, async ({ p }) => {
+  await p.evaluate(() => {
+    const c = conversations().find(c => c.messages.length > 1);
+    selected = c.latest.id; render();
+    document.querySelector("#reply-all").click();
+  });
+  await wait(200);
+  const shown = (sel) => { const el = document.querySelector(sel); return !!el && el.getClientRects().length > 0; };
+  const before = await p.evaluate((f) => eval(f)("#compose-to"), shown.toString());
+  expect(!before, "To starts as names");
+  await p.click(".compose-who [data-edit-recipients]");
+  await wait(100);
+  const r = await p.evaluate((f) => {
+    const vis = eval(f);
+    return { to: vis("#compose-to"), cc: vis("#compose-cc"), focused: document.activeElement && document.activeElement.id, names: vis(".compose-who .who-line-row") };
+  }, shown.toString());
+  expect(r.to, "To field shows");
+  expect(r.cc, "Cc field shows, since reply all has Cc");
+  same(r.focused, "compose-to", "To has the caret");
+  expect(!r.names, "names give way to the fields");
+  await p.focus("#compose-to");
+  await p.keyboard.down("Control"); await p.keyboard.press("KeyA"); await p.keyboard.up("Control");
+  await p.keyboard.type("someone@else.example");
+  const to = await p.evaluate(() => parseAddresses(document.getElementById("compose-to").value));
+  same(to, ["someone@else.example"], "recipient can be changed inline");
+});
+
+test("a narrow window folds the folders away and brings them back", { fake: false }, async ({ p }) => {
+  const state = () => p.evaluate(() => document.body.dataset.folders);
+  const vp = p.viewport();
+  try {
+    await p.setViewport({ width: 1400, height: 800 }); await wait(150);
+    same(await state(), "open", "wide: folders open");
+    await p.setViewport({ width: 900, height: 800 }); await wait(150);
+    same(await state(), "closed", "narrow: folders fold away");
+    await p.click("#show-mail-folders"); await wait(50);
+    same(await state(), "open", "the burger still opens them while narrow");
+    await p.setViewport({ width: 1400, height: 800 }); await wait(150);
+    same(await state(), "open", "wide again: open");
+    await p.click("#hide-folders"); await wait(50);
+    same(await state(), "closed", "burger closes them");
+    await p.setViewport({ width: 900, height: 800 }); await wait(150);
+    await p.setViewport({ width: 1400, height: 800 }); await wait(150);
+    same(await state(), "closed", "your own choice comes back, not open");
+    await p.click("#show-mail-folders"); await wait(50);
+  } finally {
+    if (vp) await p.setViewport(vp);
+  }
+});
+
+test("right-click on a word selects it, so Learn Spelling is available", { fake: false }, async ({ p }) => {
+  await p.click("#compose"); await wait(300);
+  const r = await p.evaluate(() => {
+    const body = document.getElementById("compose-body");
+    body.innerHTML = "<p>Hello Omarchyy world</p>";
+    const text = body.querySelector("p").firstChild;
+    const at = (offset) => { const r = document.createRange(); r.setStart(text, offset); r.setEnd(text, offset + 1); return r.getBoundingClientRect(); };
+    const box = at(9);
+    const sel = window.getSelection();
+    sel.removeAllRanges(); const caret = document.createRange(); caret.setStart(text, 0); sel.addRange(caret);
+    body.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, button: 2, clientX: box.left + box.width / 2, clientY: box.top + box.height / 2 }));
+    const picked = String(window.getSelection());
+    const subject = document.getElementById("compose-subject");
+    subject.value = "Quarterly reprot draft"; subject.setSelectionRange(0, 0);
+    const sb = subject.getBoundingClientRect();
+    const fake = new MouseEvent("contextmenu", { bubbles: true, cancelable: true, button: 2, clientX: sb.left + 4, clientY: sb.top + sb.height / 2 });
+    subject.dispatchEvent(fake);
+    return { picked, subject: subject.value.slice(subject.selectionStart, subject.selectionEnd) };
+  });
+  same(r.picked, "Omarchyy", "the word under the pointer is selected");
+  expect(r.subject.length > 0 && !/\s/.test(r.subject), "a word in a plain field is selected too", r.subject);
+});
+
 test("undo send: the reply and the message it answers stay on screen in Drafts", { fake: false }, async ({ p }) => {
   await p.evaluate(() => { sendDelay = 30; });
   await p.evaluate(() => {

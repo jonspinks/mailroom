@@ -1199,15 +1199,50 @@ pub(crate) fn open_downloaded(name: &str, bytes: &[u8]) -> Result<(), String> {
     }
     let dir = private_open_dir()?;
     let path = write_download(&dir, &saved_name, bytes)?;
-    let mut child = std::process::Command::new("xdg-open")
-        .arg(&path)
+    open_with_default_app(&path)
+}
+
+/// The programs that open a file with the desktop's default app, in order.
+/// xdg-open (xdg-utils 1.2) skips a default app whose launcher quotes its
+/// program path, as AppImage launchers often do, and opens the system default
+/// instead. gio reads the launcher properly, so it goes first.
+const OPENERS: [&[&str]; 2] = [&["gio", "open"], &["xdg-open"]];
+
+fn quiet(program: &str, args: &[&str], path: &std::path::Path) -> std::io::Result<std::process::Child> {
+    std::process::Command::new(program)
+        .args(args)
+        .arg(path)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn()
-        .map_err(|_| "That file could not be opened.".to_string())?;
+}
+
+/// Hand a file to the first opener that runs. One that starts but fails, for
+/// example gio finding no app, passes the file to the next.
+fn open_with_default_app(path: &std::path::Path) -> Result<(), String> {
+    let mut started = None;
+    for (index, opener) in OPENERS.iter().enumerate() {
+        if let Ok(child) = quiet(opener[0], &opener[1..], path) {
+            started = Some((index, child));
+            break;
+        }
+    }
+    let Some((index, mut child)) = started else {
+        return Err("That file could not be opened.".into());
+    };
+    let path = path.to_path_buf();
     std::thread::spawn(move || {
-        let _ = child.wait();
+        let ok = child.wait().map(|status| status.success()).unwrap_or(false);
+        if ok {
+            return;
+        }
+        for opener in &OPENERS[index + 1..] {
+            if let Ok(mut next) = quiet(opener[0], &opener[1..], &path) {
+                let _ = next.wait();
+                return;
+            }
+        }
     });
     Ok(())
 }
@@ -3863,5 +3898,13 @@ mod tests {
         assert_eq!(reach, "Could not reach Microsoft Graph.");
         assert!(!reach.contains("deltatoken"));
         assert!(!delta_gone("Graph refused the request (404)."));
+    }
+
+    #[test]
+    fn files_open_through_gio_before_xdg_open() {
+        // xdg-open picks the wrong app when the default app's launcher quotes
+        // its program path, so gio must be tried first.
+        assert_eq!(OPENERS[0], &["gio", "open"][..]);
+        assert_eq!(OPENERS[OPENERS.len() - 1], &["xdg-open"][..]);
     }
 }
