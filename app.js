@@ -6268,6 +6268,7 @@ document.addEventListener("keydown", (ev) => {
   if (ctrl && lower === "z") { ev.preventDefault(); undoLastMove(); return; }
   if (ctrl && lower === "a") { ev.preventDefault(); pickAll(); return; }
   if (key === "Escape" && picked.size) { picked.clear(); render(); return; }
+  if (key === "Escape" && onePaneReading()) { ev.preventDefault(); backToList(); return; }
   if (key === "ArrowDown" || (!ctrl && lower === "j")) { ev.preventDefault(); stepConversation(1); return; }
   if (key === "ArrowUp" || (!ctrl && lower === "k")) { ev.preventDefault(); stepConversation(-1); return; }
   if (several) {
@@ -15880,6 +15881,7 @@ function toastPending(message) {
 function setView(next) {
   view = next;
   document.body.dataset.view = view;
+  delete document.body.dataset.peek;
   document.getElementById("rail-mail").setAttribute("aria-pressed", view === "mail");
   document.getElementById("rail-cal").setAttribute("aria-pressed", view === "calendar");
   document.getElementById("rail-people").setAttribute("aria-pressed", view === "people");
@@ -16299,7 +16301,51 @@ document.addEventListener("click", (e) => {
     if (found) { found.hidden = true; found.innerHTML = ""; }
   }
 });
-document.getElementById("rail-mail").onclick = () => setView("mail");
+// ---- One pane (a window under 981px): opening a message hides the list.
+//      Hovering the Mail button, or the folders button, brings the folders
+//      and the list out over the message for a moment; picking a message
+//      puts them away. Clicking Mail, or Escape, goes back to the list.
+const ONE_PANE = window.matchMedia("(max-width: 980px)");
+let peekTimer = null;
+function onePaneReading() {
+  return ONE_PANE.matches && view === "mail" && document.body.dataset.open === "1";
+}
+function peekMail(on) {
+  clearTimeout(peekTimer);
+  peekTimer = null;
+  if (on && onePaneReading()) document.body.dataset.peek = "1";
+  else delete document.body.dataset.peek;
+}
+function peekAway() {
+  clearTimeout(peekTimer);
+  peekTimer = setTimeout(() => peekMail(false), 400);
+}
+function backToList() {
+  peekMail(false);
+  document.body.dataset.open = "0";
+  render();
+}
+ONE_PANE.addEventListener("change", () => peekMail(false));
+["rail-mail", "hide-folders", "show-mail-folders"].forEach(id => {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.addEventListener("mouseenter", () => peekMail(true));
+  el.addEventListener("mouseleave", peekAway);
+});
+["folders", "list"].forEach(name => {
+  const el = name === "folders" ? document.getElementById("folders") : document.querySelector(".shell > .list");
+  if (!el) return;
+  el.addEventListener("mouseenter", () => { if (document.body.dataset.peek) { clearTimeout(peekTimer); peekTimer = null; } });
+  el.addEventListener("mouseleave", () => { if (document.body.dataset.peek) peekAway(); });
+});
+// A message picked from the popped-out list opens, and the list goes away.
+document.querySelector(".shell > .list").addEventListener("click", (ev) => {
+  if (document.body.dataset.peek && ev.target.closest && ev.target.closest(".row")) setTimeout(() => peekMail(false), 0);
+});
+document.getElementById("rail-mail").onclick = () => {
+  if (onePaneReading()) backToList();
+  else setView("mail");
+};
 document.getElementById("rail-cal").onclick = () => setView("calendar");
 document.getElementById("rail-people").onclick = () => setView("people");
 document.getElementById("rail-settings").onclick = () => showSettings("accounts");
@@ -16941,7 +16987,7 @@ const folderBusy = new Set();
 let syncNote = "";
 const folderRun = new Map();
 const bodyLoads = new Set();
-const APP_VERSION = "1.3.3";
+const APP_VERSION = "1.3.4";
 let appVersion = APP_VERSION;
 
 prepareDesktopAccounts();
