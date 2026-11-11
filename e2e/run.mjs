@@ -557,6 +557,106 @@ test("narrow and reading a message: hover Mail for the list, click Mail or Escap
   }
 });
 
+test("a small window folds a crowded all-day row to two a day, with more and less", { fake: true, tz: true }, async ({ p }) => {
+  const vp = p.viewport();
+  const row = () => p.evaluate(() => {
+    const cells = [...document.querySelectorAll(".allday-cell")];
+    const busy = cells.find(c => c.dataset.day === String(window.__busyDay));
+    return {
+      chips: busy ? busy.querySelectorAll("[data-event]").length : -1,
+      more: busy && busy.querySelector(".allday-more") ? busy.querySelector(".allday-more").textContent : "",
+      toggle: !!document.querySelector(".allday-toggle"),
+      height: Math.round(document.querySelector(".allday").getBoundingClientRect().height)
+    };
+  });
+  try {
+    await p.setViewport({ width: 900, height: 800 }); await wait(200);
+    await p.evaluate(() => {
+      localStorage.removeItem("mailroom-allday-open"); allDayOpen = false;
+      calFocus = new Date(); setView("calendar"); calView = "week"; render();
+      const first = Math.min(...[...document.querySelectorAll(".allday-cell")].map(c => +c.dataset.day));
+      window.__busyDay = first + 2;
+      for (let i = 0; i < 6; i++) allday.push({ id: "busy-" + i, account: "timberworks", calendar: "cal-timberworks-site", day: first + 2, title: "All day " + i, showAs: "free" });
+      render();
+    }); await wait(400);
+    same(await row().then(r => [r.chips, r.more, r.toggle]), [2, "+4 more", true], "small window: two a day, and +4 more");
+    await p.click(".allday-more"); await wait(200);
+    same(await row().then(r => [r.chips, r.more]), [6, ""], "+4 more shows them all");
+    await p.click(".allday-toggle"); await wait(200);
+    same(await row().then(r => r.chips), 2, "the toggle shows fewer again");
+    same(await p.evaluate(() => localStorage.getItem("mailroom-allday-open")), "0", "and is remembered");
+    const before = await p.evaluate(() => document.querySelectorAll(".event-form, .event-editor, .dialog").length);
+    same(before, 0, "clicking more or less never opened a new event");
+
+    await p.setViewport({ width: 1400, height: 2400 }); await wait(500);
+    same(await row().then(r => [r.chips, r.toggle]), [6, false], "with room for them, every all-day event shows");
+  } finally {
+    await p.evaluate(() => { allday.splice(0, allday.length, ...allday.filter(e => !String(e.id).startsWith("busy-"))); localStorage.removeItem("mailroom-allday-open"); allDayOpen = false; });
+    if (vp) await p.setViewport(vp);
+  }
+});
+
+test("Settings fold their menu in a small window, like Mail and Calendar", { fake: false }, async ({ p }) => {
+  const vp = p.viewport();
+  const state = () => p.evaluate(() => ({
+    folders: document.body.dataset.folders,
+    nav: (() => { const n = document.getElementById("folder-nav"); return !!n && getComputedStyle(n).display !== "none" && n.getBoundingClientRect().width > 0; })(),
+    burger: (() => { const b = document.getElementById("show-settings-folders"); return !!b && getComputedStyle(b).display !== "none"; })()
+  }));
+  try {
+    await p.setViewport({ width: 900, height: 800 }); await wait(150);
+    await p.click("#rail-settings"); await wait(300);
+    same(await state(), { folders: "closed", nav: false, burger: true }, "small: the settings menu folds away, with a menu button in the header");
+    const width = await p.evaluate(() => Math.round(document.querySelector(".settings").getBoundingClientRect().width));
+    expect(width > 800, "the settings page gets the room", width);
+    await p.click("#show-settings-folders"); await wait(150);
+    same(await state().then(s => [s.folders, s.nav]), ["open", true], "the menu button brings the menu back");
+    await p.setViewport({ width: 1400, height: 800 }); await wait(150);
+    same(await state().then(s => [s.folders, s.burger]), ["open", false], "wide: the menu is open and the button gone");
+    await p.click("#rail-mail"); await wait(200);
+  } finally {
+    if (vp) await p.setViewport(vp);
+  }
+});
+
+test("right-click on a picture or link in a message: Mailroom's own menu, and Save works", { fake: true, setup: () => {
+  const png = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
+  window.__inbox.push({ id: "pic", thread: "conv-pic", subject: "Laser marking demo", fromName: "Rep", fromEmail: "rep@vendor.example", received: new Date().toISOString().replace(/\.\d+Z$/, "Z"), preview: "Demo", bodyHtml: `<p>See the sample:</p><img id="sample" alt="marking sample" src="${png}" width="40" height="40"><p><a id="lnk" href="https://vendor.example/demo">Book a demo</a></p>`, unread: true, flagged: false, hasAttachments: false, files: [], to: [], cc: [], bcc: [], categories: [] });
+} }, async ({ p, calls }) => {
+  await p.click('.row[data-id="pic"]'); await wait(900);
+  const menu = () => p.evaluate(() => { const m = document.getElementById("row-menu"); return m && !m.hidden && getComputedStyle(m).display !== "none" ? [...m.querySelectorAll("button")].map(b => b.textContent) : []; });
+  const prevented = await p.evaluate(() => {
+    const img = document.querySelector("#reading img[alt='marking sample']");
+    const r = img.getBoundingClientRect();
+    const ev = new MouseEvent("contextmenu", { bubbles: true, cancelable: true, button: 2, clientX: r.left + 5, clientY: r.top + 5 });
+    img.dispatchEvent(ev);
+    return ev.defaultPrevented;
+  });
+  same(prevented, true, "the web view's own menu is replaced");
+  same(await menu(), ["Save picture…", "Copy picture"], "a picture: Save and Copy");
+  await p.evaluate(() => [...document.querySelectorAll("#row-menu button")].find(b => b.textContent === "Save picture…").click()); await wait(300);
+  const saved = await calls("save_picture");
+  same(saved.length, 1, "Save picked a folder and saved");
+  same([saved[0].directory, saved[0].name], ["/home/jon/Downloads", "marking sample"], "into the picked folder, named from the picture");
+  expect(saved[0].data.startsWith("iVBORw0KGgo"), "the picture's own bytes went to the app", saved[0].data.slice(0, 12));
+  same(await p.evaluate(() => (document.querySelector(".toast") || {}).textContent || ""), "Saved marking sample.png.", "and says where");
+
+  await p.evaluate(() => { const img = document.querySelector("#reading img[alt='marking sample']"); const r = img.getBoundingClientRect(); img.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, button: 2, clientX: r.left + 5, clientY: r.top + 5 })); });
+  await p.evaluate(() => [...document.querySelectorAll("#row-menu button")].find(b => b.textContent === "Copy picture").click()); await wait(200);
+  same((await calls("copy_picture")).length, 1, "Copy picture hands the bytes to the app");
+
+  await p.evaluate(() => { const a = document.querySelector("#reading a[href='https://vendor.example/demo']"); const r = a.getBoundingClientRect(); a.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, button: 2, clientX: r.left + 2, clientY: r.top + 2 })); });
+  same(await menu(), ["Open link", "Copy link address"], "a link: Open and Copy address");
+  await p.evaluate(() => [...document.querySelectorAll("#row-menu button")].find(b => b.textContent === "Open link").click()); await wait(200);
+  same((await calls("open_link")).map(a => a.url), ["https://vendor.example/demo"], "Open link goes through the app's link check");
+
+  await p.evaluate(() => { window.__pickFolder = null; });
+  await p.evaluate(() => { const img = document.querySelector("#reading img[alt='marking sample']"); const r = img.getBoundingClientRect(); img.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, button: 2, clientX: r.left + 5, clientY: r.top + 5 })); });
+  await p.evaluate(() => [...document.querySelectorAll("#row-menu button")].find(b => b.textContent === "Save picture…").click()); await wait(300);
+  same((await calls("save_picture")).length, 1, "cancelling the folder picker saves nothing");
+  await p.evaluate(() => { delete window.__pickFolder; });
+});
+
 test("right-click on a word selects it, so Learn Spelling is available", { fake: false }, async ({ p }) => {
   await p.click("#compose"); await wait(300);
   const r = await p.evaluate(() => {

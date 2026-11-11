@@ -553,9 +553,10 @@
   body[data-folders="closed"] .shell { grid-template-columns: 48px 48px var(--list-width) 8px minmax(0, 1fr); }
   body[data-folders="closed"][data-view="mail"] .shell,
   body[data-folders="closed"][data-view="people"] .shell { grid-template-columns: 48px var(--list-width) 8px minmax(0, 1fr); }
-  body[data-folders="closed"][data-view="settings"] .shell { grid-template-columns: 48px 48px minmax(0, 1fr); }
+  body[data-folders="closed"][data-view="settings"] .shell { grid-template-columns: 48px minmax(0, 1fr); }
   body[data-folders="closed"][data-view="calendar"] .shell { grid-template-columns: 48px minmax(0, 1fr); }
   body[data-folders="closed"][data-view="calendar"] .folders,
+  body[data-folders="closed"][data-view="settings"] .folders,
   body[data-folders="closed"][data-view="mail"] .folders,
   body[data-folders="closed"][data-view="people"] .folders { display: none; }
   body[data-folders="closed"] #folder-nav { display: none; }
@@ -1656,6 +1657,7 @@
     margin-right: 4px;
   }
   body[data-folders="closed"][data-view="calendar"] .cal-show-folders,
+  body[data-folders="closed"][data-view="settings"] #show-settings-folders,
   body[data-folders="closed"][data-view="mail"] .list-show-folders,
   body[data-folders="closed"][data-view="people"] .list-show-folders { display: grid; }
   .cal-show-folders:hover, .list-show-folders:hover { background: var(--hover); color: var(--ink); }
@@ -1680,6 +1682,10 @@
     min-width: calc(56px + var(--cal-days) * 120px);
   }
   .allday { border-bottom: 1px solid var(--line); min-height: 36px; }
+  .allday-gutter { display: flex; align-items: flex-start; justify-content: center; padding-top: 6px; }
+  .allday-toggle { width: 28px; height: 28px; font-size: 14px; line-height: 1; }
+  .chip.allday-more { background: transparent; color: var(--muted); border: 1px dashed var(--line-strong); }
+  .chip.allday-more:hover { color: var(--ink); background: var(--hover); }
   .gutter, .dayhead, .slot, .allday-cell {
     border-right: 1px solid var(--line);
     border-bottom: 1px solid var(--day-line);
@@ -3561,7 +3567,7 @@
     body[data-folders="closed"] .shell { grid-template-columns: 48px 48px minmax(0, 1fr); }
     body[data-folders="closed"][data-view="mail"] .shell,
     body[data-folders="closed"][data-view="people"] .shell { grid-template-columns: 48px minmax(0, 1fr); }
-    body[data-folders="closed"][data-view="settings"] .shell { grid-template-columns: 48px 48px minmax(0, 1fr); }
+    body[data-folders="closed"][data-view="settings"] .shell { grid-template-columns: 48px minmax(0, 1fr); }
     body[data-folders="closed"][data-view="calendar"] .shell { grid-template-columns: 48px minmax(0, 1fr); }
     /* Hovering Mail while reading: the folders and the list come out over
        the message, as in Outlook's collapsed navigation. */

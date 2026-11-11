@@ -53,6 +53,8 @@ fn main() {
             "pdf_texts",
             "inline_images",
             "remote_image",
+            "save_picture",
+            "copy_picture",
             "sender_verified",
             "attachment_preview",
             "free_busy",

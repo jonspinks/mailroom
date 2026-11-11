@@ -98,6 +98,10 @@
     }),
     attachment_preview: () => window.__preview || { contentType: "image/png", data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==" },
     inline_images: (a) => (window.__images || {})[a.messageId] || [],
+    pick_download_folder: () => window.__pickFolder === undefined ? "/home/jon/Downloads" : window.__pickFolder,
+    save_picture: (a) => "/home/jon/Downloads/" + a.name.replace(/\.[^.]*$/, "") + ".png",
+    copy_picture: () => null,
+    open_link: () => null,
     // The provider's sender checks: passed unless a test says otherwise.
     sender_verified: (a) => {
       const v = (window.__unverified || []).includes(a.messageId) ? false : true;

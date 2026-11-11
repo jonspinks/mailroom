@@ -909,6 +909,83 @@ async fn pick_download_folder(app: tauri::AppHandle, window: tauri::WebviewWindo
     .await
 }
 
+/// A picture from a message, as the page holds it (base64), if it really
+/// is one: only raster pictures, known by their first bytes, and not huge.
+fn picture_bytes(data: &str) -> Result<(Vec<u8>, &'static str), String> {
+    use base64::Engine;
+    if data.len() > 48 * 1024 * 1024 {
+        return Err("That picture is too large.".into());
+    }
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(data.trim())
+        .map_err(|_| "That picture could not be read.".to_string())?;
+    let kind = if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        "image/png"
+    } else if bytes.starts_with(b"\xff\xd8\xff") {
+        "image/jpeg"
+    } else if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+        "image/gif"
+    } else if bytes.len() >= 12 && &bytes[..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
+        "image/webp"
+    } else if bytes.starts_with(b"BM") {
+        "image/bmp"
+    } else {
+        return Err("That isn't a picture Mailroom can save.".into());
+    };
+    Ok((bytes, kind))
+}
+
+/// Save a picture from a message into the folder just picked
+/// (pick_download_folder); never over an existing file.
+#[tauri::command]
+async fn save_picture(directory: String, name: String, data: String) -> Result<String, String> {
+    in_background(move || {
+        let directory = take_picked_folder(&directory)?;
+        let (bytes, kind) = picture_bytes(&data)?;
+        let ext = match kind {
+            "image/png" => "png",
+            "image/jpeg" => "jpg",
+            "image/gif" => "gif",
+            "image/webp" => "webp",
+            _ => "bmp",
+        };
+        let base = graph::safe_file_name(name.trim());
+        let stem = base.rsplit_once('.').map(|(s, _)| s).unwrap_or(&base);
+        let stem = if stem.trim().is_empty() { "picture" } else { stem };
+        let path = graph::write_download(&directory, &format!("{stem}.{ext}"), &bytes)?;
+        Ok(path.to_string_lossy().into_owned())
+    })
+    .await
+}
+
+/// Copy a picture from a message to the clipboard, through wl-copy.
+#[tauri::command]
+async fn copy_picture(data: String) -> Result<(), String> {
+    in_background(move || {
+        use std::io::Write;
+        let (bytes, kind) = picture_bytes(&data)?;
+        let mut child = std::process::Command::new("wl-copy")
+            .args(["--type", kind])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .map_err(|_| "The picture could not be copied (wl-copy is missing).".to_string())?;
+        child
+            .stdin
+            .take()
+            .ok_or_else(|| "The picture could not be copied.".to_string())?
+            .write_all(&bytes)
+            .map_err(|_| "The picture could not be copied.".to_string())?;
+        // wl-copy stays behind to serve the clipboard; don't wait for it.
+        std::thread::spawn(move || {
+            let _ = child.wait();
+        });
+        Ok(())
+    })
+    .await
+}
+
 #[tauri::command]
 async fn save_attachments(
     message_id: Option<String>,
@@ -2031,6 +2108,8 @@ pub fn run() {
             pdf_texts,
             inline_images,
             remote_image,
+            save_picture,
+            copy_picture,
             sender_verified,
             attachment_preview,
             free_busy,
@@ -2355,5 +2434,30 @@ mod tests {
         });
         let response = joined.expect("background http panicked");
         assert!(response.is_err());
+    }
+}
+
+#[cfg(test)]
+mod picture_tests {
+    use super::picture_bytes;
+    use base64::Engine;
+
+    fn b64(bytes: &[u8]) -> String {
+        base64::engine::general_purpose::STANDARD.encode(bytes)
+    }
+
+    #[test]
+    fn only_real_pictures_are_saved_or_copied() {
+        let png = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR";
+        assert_eq!(picture_bytes(&b64(png)).unwrap().1, "image/png");
+        assert_eq!(picture_bytes(&b64(b"\xff\xd8\xff\xe0JFIF")).unwrap().1, "image/jpeg");
+        assert_eq!(picture_bytes(&b64(b"GIF89a....")).unwrap().1, "image/gif");
+        assert_eq!(picture_bytes(&b64(b"RIFF\0\0\0\0WEBPVP8 ")).unwrap().1, "image/webp");
+        // Markup, scripts and programs are not pictures, whatever the page says.
+        for bad in [&b"<svg onload=alert(1)>"[..], b"#!/bin/sh\nrm -rf ~", b"\x7fELF\x02\x01", b"<html>"] {
+            assert!(picture_bytes(&b64(bad)).is_err());
+        }
+        assert!(picture_bytes("not base64!").is_err());
+        assert!(picture_bytes(&"A".repeat(49 * 1024 * 1024)).is_err(), "too large");
     }
 }

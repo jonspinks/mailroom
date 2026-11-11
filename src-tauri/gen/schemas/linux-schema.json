@@ -273,6 +273,12 @@
           "markdownDescription": "Enables the conversation_mail command without any pre-configured scope."
         },
         {
+          "description": "Enables the copy_picture command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-copy-picture",
+          "markdownDescription": "Enables the copy_picture command without any pre-configured scope."
+        },
+        {
           "description": "Enables the create_contact command without any pre-configured scope.",
           "type": "string",
           "const": "allow-create-contact",
@@ -561,6 +567,12 @@
           "markdownDescription": "Enables the save_google_client command without any pre-configured scope."
         },
         {
+          "description": "Enables the save_picture command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-save-picture",
+          "markdownDescription": "Enables the save_picture command without any pre-configured scope."
+        },
+        {
           "description": "Enables the save_rule command without any pre-configured scope.",
           "type": "string",
           "const": "allow-save-rule",
@@ -823,6 +835,12 @@
           "type": "string",
           "const": "deny-conversation-mail",
           "markdownDescription": "Denies the conversation_mail command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the copy_picture command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-copy-picture",
+          "markdownDescription": "Denies the copy_picture command without any pre-configured scope."
         },
         {
           "description": "Denies the create_contact command without any pre-configured scope.",
@@ -1111,6 +1129,12 @@
           "type": "string",
           "const": "deny-save-google-client",
           "markdownDescription": "Denies the save_google_client command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the save_picture command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-save-picture",
+          "markdownDescription": "Denies the save_picture command without any pre-configured scope."
         },
         {
           "description": "Denies the save_rule command without any pre-configured scope.",
