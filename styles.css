@@ -2977,8 +2977,14 @@
     line-height: 20px;
   }
   .inline-reply .who-cc [hidden] { display: none; }
-  .inline-reply .compose-address > .field:not(#cc-field):not(#bcc-field),
+  .inline-reply .compose-address > .field:not(#cc-field):not(#bcc-field):not(#to-field),
+  .inline-reply:not(.editing-recipients) .compose-address > #to-field,
   .inline-reply .compose-address > .cc-links { display: none; }
+  .inline-reply [data-edit-recipients] { cursor: text; border-radius: min(6px, var(--r-max)); }
+  .inline-reply [data-edit-recipients]:hover .recip-chip:not(.empty) { background: var(--line); }
+  .inline-reply [data-edit-recipients]:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+  .inline-reply .who-line-row[hidden] { display: none; }
+  .inline-reply.editing-recipients .compose-address > #to-field,
   .inline-reply #cc-field,
   .inline-reply #bcc-field {
     display: grid;
@@ -2990,6 +2996,8 @@
     font-weight: 650;
     color: var(--muted);
   }
+  .inline-reply #to-field .suggest { grid-column: 2; }
+  .inline-reply.editing-recipients #to-field input,
   .inline-reply #cc-field input,
   .inline-reply #bcc-field input {
     border: 0;
@@ -3001,6 +3009,7 @@
     font-weight: 400;
     color: var(--ink);
   }
+  .inline-reply #to-field input:focus,
   .inline-reply #cc-field input:focus,
   .inline-reply #bcc-field input:focus { outline: none; border-bottom-color: var(--blue); }
   .inline-reply #cc-field .suggest,

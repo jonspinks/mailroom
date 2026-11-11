@@ -14127,9 +14127,9 @@ function composeWhoHtml(to, cc, bcc, actions) {
   const line = (label, value) => {
     const people = addressList(value);
     if (!people.length) return "";
-    return `<div class="who-line-row"><b>${label}</b><span class="recip-chips">${people.map(recipientChip).join("")}</span></div>`;
+    return `<div class="who-line-row" data-edit-recipients role="button" tabindex="0" title="Change recipients"><b>${label}</b><span class="recip-chips">${people.map(recipientChip).join("")}</span></div>`;
   };
-  const toLine = line("To", to) || `<div class="who-line-row"><b>To</b><span class="recip-chips"><span class="recip-chip empty">someone</span></span></div>`;
+  const toLine = line("To", to) || `<div class="who-line-row" data-edit-recipients role="button" tabindex="0" title="Change recipients"><b>To</b><span class="recip-chips"><span class="recip-chip empty">someone</span></span></div>`;
   const head = actions ? `<div class="who-row">${toLine}${actions}</div>` : toLine;
   return `<div class="compose-who">${head}${line("Cc", cc)}${line("Bcc", bcc)}</div>`;
 }
@@ -14242,7 +14242,7 @@ function composeMarkup({ mode, title, msgId, fromId, to, cc, bcc, attachments, s
         <select name="from" id="compose-from">${fromOptions(fromId)}</select>
         <input id="compose-alias" class="alias-entry" hidden autocomplete="off" spellcheck="false" placeholder="name@example.com" aria-label="Send from this address">
       </label>
-      <div class="field">
+      <div class="field" id="to-field">
         <label class="compose-label" for="compose-to">To</label>
         <input name="to" id="compose-to" value="${esc(recipientFieldValue(to || ""))}" autocomplete="off">
         <div class="suggest" id="to-suggest" hidden></div>
@@ -14962,6 +14962,26 @@ function bindCompose(root, ctx) {
   }
   reveal("#show-cc", "#cc-field");
   reveal("#show-bcc", "#bcc-field");
+  // An inline reply shows who it goes to as names. Clicking them swaps the
+  // names for the To, Cc and Bcc fields, so recipients change without
+  // popping the reply out.
+  function editRecipients(ev) {
+    if (ev.type === "keydown" && ev.key !== "Enter" && ev.key !== " ") return;
+    ev.preventDefault();
+    form.classList.add("editing-recipients");
+    form.querySelectorAll(".compose-who .who-line-row").forEach(row => { row.hidden = true; });
+    [["#compose-cc", "#cc-field", "#show-cc"], ["#compose-bcc", "#bcc-field", "#show-bcc"]].forEach(([input, field, btn]) => {
+      if (!form.querySelector(input).value.trim()) return;
+      form.querySelector(field).hidden = false;
+      const button = form.querySelector(btn);
+      if (button) button.hidden = true;
+    });
+    toInput.focus();
+  }
+  form.querySelectorAll("[data-edit-recipients]").forEach(row => {
+    row.addEventListener("click", editRecipients);
+    row.addEventListener("keydown", editRecipients);
+  });
   const fileList = form.querySelector("#compose-files");
   const picker = form.querySelector("#compose-file-picker");
   const addFile = form.querySelector("#add-file");
@@ -15761,6 +15781,7 @@ function setView(next) {
   // One box for everything (2026-10-25): it no longer changes with the view.
   const split = document.getElementById("pane-split");
   if (split) split.setAttribute("aria-label", view === "people" ? "Resize the contact list" : "Resize the message list");
+  if (foldersNarrow !== null) fitFolders();
   render();
 }
 
@@ -16180,7 +16201,34 @@ document.getElementById("hide-folders").onclick = () => setFoldersOpen(document.
 document.getElementById("check-mail").onclick = () => checkMailNow();
 document.getElementById("show-cal-folders").onclick = () => setFoldersOpen(true);
 document.getElementById("show-mail-folders").onclick = () => setFoldersOpen(true);
+// The burger sets what you want. A window too narrow for the folders, the
+// list and a readable message folds the folders away for as long as it stays
+// that narrow, and brings back your choice when it widens. A click while
+// narrow holds until the window next crosses that width.
+var foldersWanted = true;
+var foldersManual = null;
+var foldersNarrow = null;
+const READING_COMFORT = 480;
 function setFoldersOpen(open) {
+  if (foldersNarrow) foldersManual = open;
+  else foldersWanted = open;
+  if (foldersNarrow === null) showFolders(open);
+  else fitFolders();
+}
+function foldersFit() {
+  const set = parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--folders-width"));
+  const folders = set > 0 ? set : FOLDERS_WIDTH.start;
+  return window.innerWidth >= 48 + folders + 8 + LIST_WIDTH_MIN + READING_COMFORT;
+}
+function fitFolders() {
+  const narrow = document.body.dataset.view !== "settings" && !foldersFit();
+  if (narrow !== foldersNarrow) { foldersNarrow = narrow; foldersManual = null; }
+  const open = foldersManual !== null ? foldersManual : (narrow ? false : foldersWanted);
+  const changed = (document.body.dataset.folders === "open") !== open;
+  showFolders(open);
+  if (changed) applyListWidth(preferredListWidth, false);
+}
+function showFolders(open) {
   document.body.dataset.folders = open ? "open" : "closed";
   const btn = document.getElementById("hide-folders");
   const label = open ? "Hide folders" : "Show folders";
@@ -16188,7 +16236,7 @@ function setFoldersOpen(open) {
   btn.setAttribute("aria-label", label);
   btn.setAttribute("aria-expanded", open ? "true" : "false");
 }
-setFoldersOpen(true);
+showFolders(true);
 
 const LIST_WIDTH_DEFAULT = 360;
 const LIST_WIDTH_MIN = 280;
@@ -16330,6 +16378,8 @@ function bindPaneSplit() {
   applyListWidth(preferredListWidth, false);
 }
 bindPaneSplit();
+window.addEventListener("resize", fitFolders);
+fitFolders();
 function removeStoredEvent(id) {
   let found = null;
   [events, allday].forEach(list => {
@@ -16785,7 +16835,7 @@ const folderBusy = new Set();
 let syncNote = "";
 const folderRun = new Map();
 const bodyLoads = new Set();
-const APP_VERSION = "1.3.0";
+const APP_VERSION = "1.3.1";
 let appVersion = APP_VERSION;
 
 prepareDesktopAccounts();
