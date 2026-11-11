@@ -219,6 +219,26 @@ test("audit: a display name cannot carry an address into a reply or autocomplete
   }).then(list => list[0]), "priya@timberworks.example", "a directory colleague ranks above a look-alike who only wrote in");
 });
 
+test("a forged safe sender or own address does not load pictures", { fake: true, setup: () => {
+  const at = new Date().toISOString().replace(/\.\d+Z$/, "Z");
+  const msg = (id, email, name) => ({ id, thread: "conv-" + id, subject: "Pictures from " + name, fromName: name, fromEmail: email, received: at, preview: "Pictures", bodyHtml: `<p>Hello</p><img src="https://pics.example/${id}.png" alt="">`, unread: true, flagged: false, hasAttachments: false, files: [], to: [], cc: [], bcc: [], categories: [] });
+  window.__inbox.push(msg("real", "priya@example.com", "Priya"), msg("forged", "priya@example.com", "Priya"), msg("me", "jon@example.com", "Jon"));
+  window.__unverified = ["forged", "me"];
+} }, async ({ p, calls }) => {
+  const asked = [];
+  p.on("request", r => { if (r.url().includes("pics.example")) asked.push(r.url().split("/").pop()); });
+  const open = async id => { await p.click(`.row[data-id="${id}"]`); await wait(900); return p.evaluate(() => (document.querySelector("#reading .remote-bar p") || {}).textContent || ""); };
+  same(await open("real"), "", "a colleague whose mail passed its checks: pictures show");
+  const forged = await open("forged");
+  expect(/didn't pass its sender checks/.test(forged), "a forged colleague: blocked, and the bar says why", forged);
+  same(await p.evaluate(() => !!document.querySelector("#reading [data-trust-sender]")), false, "no offer to trust a sender already trusted");
+  expect(/didn't pass its sender checks/.test(await open("me")), "mail forged as from you: blocked");
+  same(asked, ["real.png"], "only the verified message's picture was fetched");
+  same((await calls("sender_verified")).map(a => a.messageId).sort(), ["forged", "me", "real"], "each message checked once");
+  await open("real"); await open("forged");
+  same((await calls("sender_verified")).length, 3, "answers are remembered");
+});
+
 test("audit: safe senders never widen to a public suffix", { fake: true }, async ({ p }) => {
   same(await p.evaluate(() => [organisationalDomain("x@school.edu.sg"), organisationalDomain("x@edu.sg"), organisationalDomain("a@mail.timberworks.co.uk"), organisationalDomain("a@maplehill.com")]),
     ["school.edu.sg", "", "timberworks.co.uk", "maplehill.com"], "registrable domains");

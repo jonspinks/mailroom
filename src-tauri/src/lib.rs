@@ -15,6 +15,7 @@ mod notify;
 mod omarchy;
 mod pdftext;
 mod remoteimg;
+mod senderauth;
 mod software;
 mod spell;
 mod store;
@@ -1766,6 +1767,12 @@ async fn inline_images(email: String, message_id: String) -> Result<Vec<inline::
 }
 
 // A mail picture the webview refused, fetched by the app (remoteimg.rs).
+/// Whether a message's provider vouched for its sender (see senderauth).
+#[tauri::command]
+async fn sender_verified(email: String, message_id: String, from: String) -> Result<bool, String> {
+    in_background(move || senderauth::verified(email.trim(), &message_id, &from)).await
+}
+
 #[tauri::command]
 async fn remote_image(url: String) -> Result<String, String> {
     in_background(move || remoteimg::fetch(&url)).await
@@ -2008,6 +2015,7 @@ pub fn run() {
             pdf_texts,
             inline_images,
             remote_image,
+            sender_verified,
             attachment_preview,
             free_busy,
             set_focus,

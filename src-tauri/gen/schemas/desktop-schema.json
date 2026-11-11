@@ -597,6 +597,12 @@
           "markdownDescription": "Enables the send_mail command without any pre-configured scope."
         },
         {
+          "description": "Enables the sender_verified command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-sender-verified",
+          "markdownDescription": "Enables the sender_verified command without any pre-configured scope."
+        },
+        {
           "description": "Enables the set_auto_reply command without any pre-configured scope.",
           "type": "string",
           "const": "allow-set-auto-reply",
@@ -1141,6 +1147,12 @@
           "type": "string",
           "const": "deny-send-mail",
           "markdownDescription": "Denies the send_mail command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the sender_verified command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-sender-verified",
+          "markdownDescription": "Denies the sender_verified command without any pre-configured scope."
         },
         {
           "description": "Denies the set_auto_reply command without any pre-configured scope.",

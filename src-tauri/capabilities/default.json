@@ -24,6 +24,7 @@
     "allow-pdf-texts",
     "allow-inline-images",
     "allow-remote-image",
+    "allow-sender-verified",
     "allow-attachment-preview",
     "allow-free-busy",
     "allow-set-focus",
