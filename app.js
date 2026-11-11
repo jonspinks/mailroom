@@ -6183,6 +6183,46 @@ function showShortcuts() {
   popRoot.querySelector("#shortcuts-close").onclick = closePop;
 }
 
+// Right-click on a word you are typing selects it first. WebKitGTK leaves
+// only a caret there (it selects on right-click on macOS alone), and greys
+// out Learn Spelling and Ignore Spelling unless a word is selected. The menu
+// is built after this event, so it sees the selection.
+const WORD_CHAR = /[\p{L}\p{M}'\u2019-]/u;
+function wordBounds(text, at) {
+  let start = at, end = at;
+  while (start > 0 && WORD_CHAR.test(text[start - 1])) start--;
+  while (end < text.length && WORD_CHAR.test(text[end])) end++;
+  while (start < end && /['\u2019-]/.test(text[start])) start++;
+  while (end > start && /['\u2019-]/.test(text[end - 1])) end--;
+  return end > start ? [start, end] : null;
+}
+function selectWordForMenu(ev) {
+  const target = ev.target;
+  if (!target || ev.button !== 2) return;
+  if (target.matches && target.matches("input[type=text], input:not([type]), input[type=search], textarea")) {
+    if (target.spellcheck === false || target.selectionStart !== target.selectionEnd) return;
+    const range = document.caretRangeFromPoint && document.caretRangeFromPoint(ev.clientX, ev.clientY);
+    const at = range ? range.startOffset : target.selectionStart;
+    const found = wordBounds(target.value, Math.min(at, target.value.length));
+    if (found) target.setSelectionRange(found[0], found[1]);
+    return;
+  }
+  const host = target.closest && target.closest("[contenteditable=true], [contenteditable='']");
+  if (!host || host.spellcheck === false) return;
+  const sel = window.getSelection();
+  if (sel && !sel.isCollapsed && sel.rangeCount && sel.getRangeAt(0).intersectsNode(target)) return;
+  const range = document.caretRangeFromPoint && document.caretRangeFromPoint(ev.clientX, ev.clientY);
+  if (!range || range.startContainer.nodeType !== Node.TEXT_NODE || !host.contains(range.startContainer)) return;
+  const found = wordBounds(range.startContainer.data, range.startOffset);
+  if (!found) return;
+  const word = document.createRange();
+  word.setStart(range.startContainer, found[0]);
+  word.setEnd(range.startContainer, found[1]);
+  sel.removeAllRanges();
+  sel.addRange(word);
+}
+document.addEventListener("contextmenu", selectWordForMenu, true);
+
 document.addEventListener("keydown", (ev) => {
   // The PDF viewer owns the keyboard while it is open. Escape and Ctrl+A
   // are handled as it opens; everything else, including copy, stays with

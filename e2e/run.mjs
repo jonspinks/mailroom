@@ -489,6 +489,29 @@ test("a narrow window folds the folders away and brings them back", { fake: fals
   }
 });
 
+test("right-click on a word selects it, so Learn Spelling is available", { fake: false }, async ({ p }) => {
+  await p.click("#compose"); await wait(300);
+  const r = await p.evaluate(() => {
+    const body = document.getElementById("compose-body");
+    body.innerHTML = "<p>Hello Omarchyy world</p>";
+    const text = body.querySelector("p").firstChild;
+    const at = (offset) => { const r = document.createRange(); r.setStart(text, offset); r.setEnd(text, offset + 1); return r.getBoundingClientRect(); };
+    const box = at(9);
+    const sel = window.getSelection();
+    sel.removeAllRanges(); const caret = document.createRange(); caret.setStart(text, 0); sel.addRange(caret);
+    body.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, button: 2, clientX: box.left + box.width / 2, clientY: box.top + box.height / 2 }));
+    const picked = String(window.getSelection());
+    const subject = document.getElementById("compose-subject");
+    subject.value = "Quarterly reprot draft"; subject.setSelectionRange(0, 0);
+    const sb = subject.getBoundingClientRect();
+    const fake = new MouseEvent("contextmenu", { bubbles: true, cancelable: true, button: 2, clientX: sb.left + 4, clientY: sb.top + sb.height / 2 });
+    subject.dispatchEvent(fake);
+    return { picked, subject: subject.value.slice(subject.selectionStart, subject.selectionEnd) };
+  });
+  same(r.picked, "Omarchyy", "the word under the pointer is selected");
+  expect(r.subject.length > 0 && !/\s/.test(r.subject), "a word in a plain field is selected too", r.subject);
+});
+
 test("undo send: the reply and the message it answers stay on screen in Drafts", { fake: false }, async ({ p }) => {
   await p.evaluate(() => { sendDelay = 30; });
   await p.evaluate(() => {

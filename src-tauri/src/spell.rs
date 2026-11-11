@@ -191,15 +191,53 @@ pub fn words(text: &str, ignore: &[String]) -> Vec<String> {
     out
 }
 
+/// Words added with Learn Spelling. WebKit hands them to enchant, which keeps
+/// one word per line in ~/.config/enchant/<language>.dic.
+fn personal_words(languages: &[String]) -> std::collections::HashSet<String> {
+    let base = std::env::var_os("XDG_CONFIG_HOME")
+        .map(std::path::PathBuf::from)
+        .filter(|dir| dir.is_absolute())
+        .or_else(|| std::env::var_os("HOME").map(|home| Path::new(&home).join(".config")));
+    let Some(base) = base else { return Default::default() };
+    let mut out = std::collections::HashSet::new();
+    for code in languages.iter().filter(|code| language_code(code)) {
+        if let Ok(text) = std::fs::read_to_string(base.join("enchant").join(format!("{code}.dic"))) {
+            out.extend(learned_words(&text));
+        }
+    }
+    out
+}
+
+pub fn learned_words(text: &str) -> Vec<String> {
+    text.lines()
+        .map(|line| line.trim_start_matches('\u{feff}').trim())
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .map(str::to_string)
+        .collect()
+}
+
+/// A learned word also passes with a capital first letter, as at the start
+/// of a sentence.
+pub fn learned(word: &str, personal: &std::collections::HashSet<String>) -> bool {
+    if personal.contains(word) {
+        return true;
+    }
+    let mut chars = word.chars();
+    let Some(first) = chars.next() else { return false };
+    let lowered: String = first.to_lowercase().chain(chars).collect();
+    lowered != word && personal.contains(&lowered)
+}
+
 pub fn check(text: &str, ignore: &[String]) -> Vec<Misspelt> {
     let (enabled, languages) = current();
     let dictionaries: Vec<_> = languages.iter().filter_map(|code| dictionary(code)).collect();
     if !enabled || dictionaries.is_empty() {
         return Vec::new();
     }
+    let personal = personal_words(&languages);
     let mut out = Vec::new();
     for word in words(text, ignore) {
-        if dictionaries.iter().any(|dict| dict.check(&word)) {
+        if learned(&word, &personal) || dictionaries.iter().any(|dict| dict.check(&word)) {
             continue;
         }
         let mut suggestions = Vec::new();
@@ -229,6 +267,15 @@ mod tests {
         dict.suggest("recieve", &mut out);
         assert!(out.iter().any(|w| w == "receive"), "{out:?}");
         eprintln!("checked in {:?}", started.elapsed());
+    }
+
+    #[test]
+    fn learned_words_pass_the_send_check() {
+        let personal: std::collections::HashSet<String> = learned_words("\u{feff}Omarchy\n# note\n\nmailroom\n").into_iter().collect();
+        assert!(learned("Omarchy", &personal));
+        assert!(learned("mailroom", &personal) && learned("Mailroom", &personal));
+        assert!(!learned("omarchy", &personal), "a learned capital stays a capital");
+        assert!(!learned("note", &personal) && !learned("# note", &personal));
     }
 
     #[test]
