@@ -6223,6 +6223,122 @@ function selectWordForMenu(ev) {
 }
 document.addEventListener("contextmenu", selectWordForMenu, true);
 
+// ---- Pictures and links in a message: Mailroom's own menu. The web view's
+//      offered new windows and a Save that went nowhere (2026-11-11).
+let mediaTarget = null;
+document.addEventListener("contextmenu", (ev) => {
+  const target = ev.target;
+  if (!target || !target.closest || ev.defaultPrevented) return;
+  if (!target.closest("#reading, #history-pop, .viewer-body")) return;
+  if (target.closest("[contenteditable=true], [contenteditable=''], input, textarea, #compose-form")) return;
+  const img = target.closest("img");
+  const link = target.closest("a[href]");
+  const src = img ? (img.currentSrc || img.getAttribute("src") || "") : "";
+  const href = link ? link.getAttribute("href") || "" : "";
+  if (!src && !href) return;
+  ev.preventDefault();
+  mediaTarget = { img: src ? img : null, src, href, alt: img ? (img.getAttribute("alt") || "") : "" };
+  showMediaMenu(ev.clientX, ev.clientY);
+});
+
+function showMediaMenu(x, y) {
+  hideThemeMenu();
+  const menu = document.getElementById("row-menu");
+  const t = mediaTarget || {};
+  const items = [];
+  if (t.src) {
+    items.push(`<button type="button" role="menuitem" data-act="save-picture">Save picture…</button>`);
+    items.push(`<button type="button" role="menuitem" data-act="copy-picture">Copy picture</button>`);
+  }
+  if (t.href) {
+    if (items.length) items.push(`<div class="menu-rule"></div>`);
+    items.push(`<button type="button" role="menuitem" data-act="open-link">Open link</button>`);
+    items.push(`<button type="button" role="menuitem" data-act="copy-link">Copy link address</button>`);
+  }
+  menu.innerHTML = items.join("");
+  menu.dataset.id = "";
+  menu.dataset.kind = "";
+  menu.dataset.child = "";
+  menu.dataset.menu = "media";
+  menu.setAttribute("aria-label", t.src ? "Picture" : "Link");
+  placeMenu(menu, x, y);
+}
+
+function dataUrlParts(url) {
+  const m = /^data:([^;,]*)(;base64)?,(.*)$/is.exec(String(url || ""));
+  if (!m) return null;
+  if (m[2]) return { type: m[1] || "", base64: m[3].replace(/\s+/g, "") };
+  let raw = "";
+  try { raw = decodeURIComponent(m[3]); } catch (e) { return null; }
+  let bin = "";
+  for (let i = 0; i < raw.length; i++) bin += String.fromCharCode(raw.charCodeAt(i) & 255);
+  return { type: m[1] || "", base64: btoa(bin) };
+}
+
+// The picture's bytes as base64: inline ones are data: URLs already; a
+// remote one comes through the app's bounded fetch; anything else is
+// drawn to a canvas (fetch of a blob: is outside the page's CSP).
+async function pictureData(img, src) {
+  if (/^data:/i.test(src)) return dataUrlParts(src);
+  if (/^https?:/i.test(src)) {
+    const url = fetchedPictures.has(src) ? await fetchedPictures.get(src) : await Promise.resolve(tauriInvoke("remote_image", { url: src })).catch(() => "");
+    return url ? dataUrlParts(url) : null;
+  }
+  if (img && img.complete && img.naturalWidth) {
+    const canvas = document.createElement("canvas");
+    canvas.width = img.naturalWidth;
+    canvas.height = img.naturalHeight;
+    canvas.getContext("2d").drawImage(img, 0, 0);
+    try { return dataUrlParts(canvas.toDataURL("image/png")); } catch (e) { return null; }
+  }
+  return null;
+}
+
+function pictureName(t) {
+  const fromAlt = String(t.alt || "").trim();
+  if (fromAlt && fromAlt.length <= 80) return fromAlt;
+  if (/^https?:/i.test(t.src)) {
+    try {
+      const last = decodeURIComponent(new URL(t.src).pathname.split("/").pop() || "");
+      if (last) return last;
+    } catch (e) {}
+  }
+  const msg = messages.find(m => m.id === selected);
+  return msg && msg.subject ? msg.subject.slice(0, 60) : "picture";
+}
+
+async function runMediaAction(act) {
+  const t = mediaTarget || {};
+  mediaTarget = null;
+  if (act === "open-link") {
+    const pending = tauriInvoke("open_link", { url: t.href });
+    if (pending && pending.catch) pending.catch(err => toast(String(err && err.message || err || "That link could not be opened.")));
+    return;
+  }
+  if (act === "copy-link") {
+    try { await navigator.clipboard.writeText(t.href); toast("Link copied."); } catch (e) { toast("The link could not be copied."); }
+    return;
+  }
+  if (!inDesktop()) { toast("Pictures are saved from the desktop app."); return; }
+  const data = await pictureData(t.img, t.src);
+  if (!data) { toast("That picture could not be read. Show blocked content first if it is from the web."); return; }
+  if (act === "copy-picture") {
+    try { await tauriInvoke("copy_picture", { data: data.base64 }); toast("Picture copied."); }
+    catch (err) { toast(String(err && err.message || err || "The picture could not be copied.")); }
+    return;
+  }
+  let directory = "";
+  try { directory = await tauriInvoke("pick_download_folder"); }
+  catch (err) { toast(String(err && err.message || err || "The folder picker could not be opened.")); return; }
+  if (!directory) return;
+  try {
+    const path = await tauriInvoke("save_picture", { directory, name: pictureName(t), data: data.base64 });
+    toast("Saved " + String(path).split("/").pop() + ".");
+  } catch (err) {
+    toast(String(err && err.message || err || "That picture could not be saved."));
+  }
+}
+
 document.addEventListener("keydown", (ev) => {
   // The PDF viewer owns the keyboard while it is open. Escape and Ctrl+A
   // are handled as it opens; everything else, including copy, stays with
@@ -9957,6 +10073,10 @@ document.getElementById("row-menu").onclick = (ev) => {
     if (btn.dataset.cat) toggleCategory(btn.dataset.cat);
     return;
   }
+  if (menuKind === "media") {
+    if (btn.dataset.act) runMediaAction(btn.dataset.act);
+    return;
+  }
   if (menuKind === "files") {
     const msg = messages.find(m => m.id === (btn.dataset.fileMsg || btn.dataset.filesAll));
     if (!msg) return;
@@ -10363,7 +10483,7 @@ function bindCalendarClicks(root) {
   bindCalendarDrag(root);
   root.querySelectorAll("[data-slot]").forEach(cell => {
     cell.addEventListener("click", (ev) => {
-      if (ev.target.closest("[data-event]") || calDragged) return;
+      if (ev.target.closest("[data-event], [data-allday-toggle]") || calDragged) return;
       const day = Number(cell.dataset.day);
       if (cell.dataset.slot === "all") {
         openEventForm({ day, allDay: true });
@@ -10429,13 +10549,32 @@ function renderCalendar() {
     const today = isToday(date);
     return `<div class="dayhead${today ? " today" : ""}"><span class="dow">${dowShort[date.getDay()]}</span><span class="num">${date.getDate()}</span></div>`;
   }).join("");
-  const allCells = dates.map(date => {
+  // All-day events can take half a small window. When the busiest day's
+  // stack would take more than a fifth of the calendar, each day shows two
+  // and "+N more"; the toggle in the gutter shows them all, or fewer again.
+  const wholeByDay = dates.map(date => eventsOn(dayFromDate(date)).whole);
+  const most = Math.max(0, ...wholeByDay.map(list => list.length));
+  const calHeight = (document.querySelector(".calendar") || {}).clientHeight || window.innerHeight;
+  const crowded = most > ALLDAY_SHOWN && most * ALLDAY_CHIP_PX > calHeight * 0.2;
+  const folded = crowded && !allDayOpen;
+  const allCells = dates.map((date, i) => {
     const day = dayFromDate(date);
-    const chips = eventsOn(day).whole.map(e =>
+    const whole = wholeByDay[i];
+    const shown = folded ? whole.slice(0, ALLDAY_SHOWN) : whole;
+    const chips = shown.map(e =>
       `<button class="chip ${eventFace(e)}" type="button" data-event="${e.id}" data-kind="all">${esc(showAsTag(e) + e.title)}</button>`
     ).join("");
-    return `<div class="allday-cell" data-slot="all" data-day="${day}">${chips}</div>`;
+    const hidden = whole.length - shown.length;
+    const more = hidden > 0
+      ? `<button class="chip allday-more" type="button" data-allday-toggle title="Show every all-day event">+${hidden} more</button>`
+      : "";
+    return `<div class="allday-cell" data-slot="all" data-day="${day}">${chips}${more}</div>`;
   }).join("");
+  const allGutter = crowded
+    ? `<div class="gutter allday-gutter" style="height:auto"><button class="icon-btn allday-toggle" type="button" data-allday-toggle
+        title="${folded ? "Show every all-day event" : "Show fewer all-day events"}" aria-label="${folded ? "Show every all-day event" : "Show fewer all-day events"}"
+        aria-expanded="${folded ? "false" : "true"}">${folded ? "▾" : "▴"}</button></div>`
+    : `<div class="gutter" style="height:auto"></div>`;
   const times = Array.from({ length: 24 }, (_, i) => `<div class="gutter">${i}:00</div>`).join("");
   const dayCols = dates.map(date => {
     const day = dayFromDate(date);
@@ -10467,13 +10606,25 @@ function renderCalendar() {
   cal.innerHTML = `
     <div class="cal-sticky">
       <div class="week"><div class="dayhead"></div>${heads}</div>
-      <div class="allday"><div class="gutter" style="height:auto"></div>${allCells}</div>
+      <div class="allday">${allGutter}${allCells}</div>
     </div>
     <div class="week timegrid"><div class="times">${times}</div>${dayCols}</div>
   `;
   bindCalendarClicks(cal);
+  cal.querySelectorAll("[data-allday-toggle]").forEach(btn => {
+    btn.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      allDayOpen = !allDayOpen;
+      try { localStorage.setItem("mailroom-allday-open", allDayOpen ? "1" : "0"); } catch (e) {}
+      renderCalendar();
+    });
+  });
   applyHourScale();
 }
+
+var ALLDAY_SHOWN = 2;
+var ALLDAY_CHIP_PX = 39;
+var allDayOpen = (() => { try { return localStorage.getItem("mailroom-allday-open") === "1"; } catch (e) { return false; } })();
 
 let calTopHour = null;
 let calendarPinHour = null;
@@ -16352,6 +16503,7 @@ document.getElementById("rail-settings").onclick = () => showSettings("accounts"
 document.getElementById("hide-folders").onclick = () => setFoldersOpen(document.body.dataset.folders === "closed");
 document.getElementById("check-mail").onclick = () => checkMailNow();
 document.getElementById("show-cal-folders").onclick = () => setFoldersOpen(true);
+document.getElementById("show-settings-folders").onclick = () => setFoldersOpen(true);
 document.getElementById("show-mail-folders").onclick = () => setFoldersOpen(true);
 // The burger sets what you want. A window too narrow for the folders, the
 // list and a readable message folds the folders away for as long as it stays
@@ -16373,7 +16525,7 @@ function foldersFit() {
   return window.innerWidth >= 48 + folders + 8 + LIST_WIDTH_MIN + READING_COMFORT;
 }
 function fitFolders() {
-  const narrow = document.body.dataset.view !== "settings" && !foldersFit();
+  const narrow = !foldersFit();
   if (narrow !== foldersNarrow) { foldersNarrow = narrow; foldersManual = null; }
   const open = foldersManual !== null ? foldersManual : (narrow ? false : foldersWanted);
   const changed = (document.body.dataset.folders === "open") !== open;
@@ -16964,6 +17116,13 @@ window.addEventListener("resize", () => {
   if (kept != null) calTopHour = kept;
   applyHourScale();
 });
+// Whether the all-day row folds depends on the window's height: redraw
+// once a resize settles.
+let allDayResize = null;
+window.addEventListener("resize", () => {
+  clearTimeout(allDayResize);
+  allDayResize = setTimeout(() => { if (view === "calendar" && calView !== "month") renderCalendar(); }, 200);
+});
 document.getElementById("cal-today").onclick = () => { calFocus = new Date(todayDate()); render(); refreshLiveCalendar(); };
 document.getElementById("cal-prev").onclick = () => shiftCalendar(-1);
 document.getElementById("cal-next").onclick = () => shiftCalendar(1);
@@ -16987,7 +17146,7 @@ const folderBusy = new Set();
 let syncNote = "";
 const folderRun = new Map();
 const bodyLoads = new Set();
-const APP_VERSION = "1.3.5";
+const APP_VERSION = "1.3.6";
 let appVersion = APP_VERSION;
 
 prepareDesktopAccounts();
