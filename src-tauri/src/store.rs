@@ -72,11 +72,14 @@ fn ensure_schema(conn: &Connection) -> Result<(), String> {
     add_people(conn, "folder_messages")?;
     add_extra(conn, "messages")?;
     add_extra(conn, "folder_messages")?;
+    add_body_text(conn)?;
     // Newest-page reads are email + folder + received. The list asks for that
     // slice on every open, so keep it an index seek as the mailbox grows.
     conn.execute_batch(
         "create index if not exists folder_messages_by_received
-         on folder_messages (email, folder_id, received desc, id desc);",
+         on folder_messages (email, folder_id, received desc, id desc);
+         create index if not exists folder_messages_by_thread
+         on folder_messages (email, thread);",
     )
     .map_err(|err| err.to_string())?;
     Ok(())
@@ -100,6 +103,68 @@ fn add_people(conn: &Connection, table: &str) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// The body as plain text, so search matches words in the mail and not in
+/// its markup. Filled once for mail cached before the column existed.
+fn add_body_text(conn: &Connection) -> Result<(), String> {
+    let count: i64 = conn
+        .query_row("select count(*) from pragma_table_info('folder_messages') where name = 'body_text'", [], |row| row.get(0))
+        .map_err(|err| err.to_string())?;
+    if count > 0 {
+        return Ok(());
+    }
+    // Take the write lock first and look again: another connection opening
+    // at the same moment may have just added it.
+    let tx = rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)
+        .map_err(|err| err.to_string())?;
+    let count: i64 = tx
+        .query_row("select count(*) from pragma_table_info('folder_messages') where name = 'body_text'", [], |row| row.get(0))
+        .map_err(|err| err.to_string())?;
+    if count > 0 {
+        return Ok(());
+    }
+    tx.execute("alter table folder_messages add column body_text text not null default ''", [])
+        .map_err(|err| err.to_string())?;
+    let bodies = {
+        let mut stmt = tx
+            .prepare("select email, id, body_html from folder_messages where body_html != ''")
+            .map_err(|err| err.to_string())?;
+        let rows = stmt
+            .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?)))
+            .map_err(|err| err.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(|err| err.to_string())?
+    };
+    {
+        let mut update = tx
+            .prepare("update folder_messages set body_text = ?3 where email = ?1 and id = ?2")
+            .map_err(|err| err.to_string())?;
+        for (email, id, html) in &bodies {
+            update.execute(params![email, id, search_text(html)]).map_err(|err| err.to_string())?;
+        }
+    }
+    tx.commit().map_err(|err| err.to_string())
+}
+
+/// Longest body text kept for search, in bytes.
+const SEARCH_TEXT_MAX: usize = 100_000;
+
+fn search_text(html: &str) -> String {
+    if html.is_empty() {
+        return String::new();
+    }
+    let text = crate::graph::html_to_text(html);
+    let mut out = String::with_capacity(text.len().min(SEARCH_TEXT_MAX));
+    for word in text.split_whitespace() {
+        if out.len() + word.len() + 1 > SEARCH_TEXT_MAX {
+            break;
+        }
+        if !out.is_empty() {
+            out.push(' ');
+        }
+        out.push_str(word);
+    }
+    out
 }
 
 /// Smaller message facts (importance, meeting invite) as one JSON column,
@@ -722,8 +787,8 @@ fn replace_folder_messages_on(
     for item in items {
         tx.execute(
             "insert or replace into folder_messages
-             (email, folder_id, id, thread, subject, from_name, from_email, received, preview, body_html, unread, flagged, attached, files, to_json, cc_json, bcc_json, cats, extra)
-             values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
+             (email, folder_id, id, thread, subject, from_name, from_email, received, preview, body_html, unread, flagged, attached, files, to_json, cc_json, bcc_json, cats, extra, body_text)
+             values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)",
             params![
                 email,
                 folder_id,
@@ -743,7 +808,8 @@ fn replace_folder_messages_on(
                 people_text(&item.cc),
                 people_text(&item.bcc),
                 cats_text(&item.categories),
-                extra_text(item)
+                extra_text(item),
+                search_text(&item.body_html)
             ],
         )
         .map_err(|err| err.to_string())?;
@@ -966,8 +1032,8 @@ fn refresh_counts_tx(tx: &rusqlite::Transaction, email: &str, folder_id: &str) -
 fn upsert_message_tx(tx: &rusqlite::Transaction, email: &str, folder_id: &str, item: &LiveMessage) -> Result<(), String> {
     tx.execute(
         "insert into folder_messages
-         (email, folder_id, id, thread, subject, from_name, from_email, received, preview, body_html, unread, flagged, attached, files, to_json, cc_json, bcc_json, cats, extra)
-         values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)
+         (email, folder_id, id, thread, subject, from_name, from_email, received, preview, body_html, unread, flagged, attached, files, to_json, cc_json, bcc_json, cats, extra, body_text)
+         values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)
          on conflict(email, id) do update set
            folder_id = excluded.folder_id,
            thread = case when excluded.thread = '' then folder_messages.thread else excluded.thread end,
@@ -977,6 +1043,7 @@ fn upsert_message_tx(tx: &rusqlite::Transaction, email: &str, folder_id: &str, i
            received = case when excluded.received = '' then folder_messages.received else excluded.received end,
            preview = case when excluded.preview = '' then folder_messages.preview else excluded.preview end,
            body_html = case when excluded.body_html = '' then folder_messages.body_html else excluded.body_html end,
+           body_text = case when excluded.body_html = '' then folder_messages.body_text else excluded.body_text end,
            unread = excluded.unread,
            flagged = excluded.flagged,
            attached = case when excluded.files != '[]' then 1 when excluded.attached = 1 then 1 else 0 end,
@@ -1005,7 +1072,8 @@ fn upsert_message_tx(tx: &rusqlite::Transaction, email: &str, folder_id: &str, i
             people_text(&item.cc),
             people_text(&item.bcc),
             cats_text(&item.categories),
-            extra_text(item)
+            extra_text(item),
+            search_text(&item.body_html)
         ],
     )
     .map_err(|err| err.to_string())?;
@@ -1069,8 +1137,8 @@ pub fn save_message_body(email: &str, message_id: &str, html: &str) -> Result<()
     }
     let conn = open()?;
     conn.execute(
-        "update folder_messages set body_html = ?3 where email = ?1 and id = ?2",
-        params![email, message_id, html],
+        "update folder_messages set body_html = ?3, body_text = ?4 where email = ?1 and id = ?2",
+        params![email, message_id, html, search_text(html)],
     )
     .map_err(|err| err.to_string())?;
     Ok(())
@@ -1504,8 +1572,24 @@ fn search_cached_on(
     let from_day = calendar_day(from_day);
     let to_day = calendar_day(to_day);
     let account = account_name.trim().to_lowercase();
+    // Each word or phrase must be in one message: its headers or its body.
+    // The page then lists the whole conversation, as Outlook does, so a reply
+    // that only quotes the words still shows beside the one that has them.
+    let has_text = words.iter().chain(phrases.iter()).any(|p| !p.is_empty());
+    let mut hits = String::from(
+        "with hits as materialized (
+           select fm.id, fm.thread from folder_messages fm
+           where fm.email = :email",
+    );
+    for i in 0..8 {
+        hits.push_str(&format!(" and (:w{i} = '' or {SEARCH_HAY} like :w{i} escape '\\' or fm.body_text like :w{i} escape '\\')"));
+    }
+    for i in 0..4 {
+        hits.push_str(&format!(" and (:p{i} = '' or {SEARCH_HAY} like :p{i} escape '\\' or fm.body_text like :p{i} escape '\\')"));
+    }
+    hits.push_str(")\n");
     let mut sql = format!(
-        "select fm.id, fm.thread, fm.subject, fm.from_name, fm.from_email, fm.received, fm.preview, '', fm.unread, fm.flagged, fm.attached, fm.files, fm.to_json, fm.cc_json, fm.bcc_json, fm.cats, fm.extra, f.box_key
+        "{hits}select fm.id, fm.thread, fm.subject, fm.from_name, fm.from_email, fm.received, fm.preview, '', fm.unread, fm.flagged, fm.attached, fm.files, fm.to_json, fm.cc_json, fm.bcc_json, fm.cats, fm.extra, f.box_key
          from folder_messages fm
          join folders f on f.email = fm.email and f.id = fm.folder_id
          where fm.email = :email
@@ -1516,14 +1600,11 @@ fn search_cached_on(
            and (:unread = 0 or fm.unread != 0)
            and (:read = 0 or fm.unread = 0)
            and (:flagged = 0 or fm.flagged != 0)
-           and (:invite = 0 or instr(fm.extra, '\"invite\":true') > 0)"
+           and (:invite = 0 or instr(fm.extra, '\"invite\":true') > 0)
+           and (:text = 0
+                or fm.id in (select id from hits)
+                or (fm.thread != '' and fm.thread in (select thread from hits where thread != '')))"
     );
-    for i in 0..8 {
-        sql.push_str(&format!(" and (:w{i} = '' or {SEARCH_HAY} like :w{i} escape '\\')"));
-    }
-    for i in 0..4 {
-        sql.push_str(&format!(" and (:p{i} = '' or {SEARCH_HAY} like :p{i} escape '\\')"));
-    }
     sql.push_str(
         " and (
             :files = ''
@@ -1558,6 +1639,7 @@ fn search_cached_on(
                 ":account": account,
                 ":files": files,
                 ":fetch": fetch,
+                ":text": has_text as i64,
                 ":w0": &words[0], ":w1": &words[1], ":w2": &words[2], ":w3": &words[3],
                 ":w4": &words[4], ":w5": &words[5], ":w6": &words[6], ":w7": &words[7],
                 ":p0": &phrases[0], ":p1": &phrases[1], ":p2": &phrases[2], ":p3": &phrases[3],
@@ -2145,13 +2227,15 @@ mod tests {
         let kiln_all = args(&["kiln"], &[], "", "", 100, "", "");
         assert_eq!(ids(&kiln_all), vec!["s".to_string(), "k".to_string()]);
 
+        // The whole conversation comes back, not only the message that matched.
         let with_file = args(&["site"], &[], "inbox", "yes", 100, "", "");
-        assert_eq!(ids(&with_file), vec!["p".to_string()]);
+        assert_eq!(ids(&with_file), vec!["p".to_string(), "f".to_string()]);
 
         let phrase = args(&[], &["kiln schedule"], "inbox", "", 100, "", "");
         assert_eq!(ids(&phrase), vec!["k".to_string()]);
 
-        assert!(ids(&args(&["secret"], &[], "", "", 100, "", "")).is_empty());
+        // Words in the body match too.
+        assert_eq!(ids(&args(&["secret"], &[], "", "", 100, "", "")), vec!["k".to_string()]);
 
         let first = args(&[], &[], "", "", 1, "", "");
         assert_eq!(ids(&first), vec!["s".to_string()]);
@@ -2160,4 +2244,117 @@ mod tests {
         assert_eq!(ids(&next), vec!["k".to_string(), "p".to_string(), "f".to_string()]);
         assert!(!next.more);
     }
+
+    fn search_ids(conn: &Connection, words: &[&str]) -> Vec<String> {
+        search_cached_on(
+            conn,
+            "jon@example.com",
+            "",
+            &words.iter().map(|word| (*word).to_string()).collect::<Vec<_>>(),
+            &[],
+            "Jon",
+            "",
+            "",
+            0,
+            "",
+            false,
+            false,
+            false,
+            false,
+            100,
+            "",
+            "",
+        )
+        .unwrap()
+        .messages
+        .into_iter()
+        .map(|item| item.id)
+        .collect()
+    }
+
+    #[test]
+    fn search_finds_words_split_between_preview_and_body_and_lists_the_thread() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        ensure_schema(&conn).unwrap();
+        replace_folders_on(&mut conn, "jon@example.com", &[folder("in", "root", "inbox"), folder("out", "root", "sent")]).unwrap();
+        let mut bill = message("bill");
+        bill.thread = "bill".into();
+        bill.subject = "A bill from the lawyers".into();
+        bill.preview = "Total due".into();
+        bill.received = "2026-10-13T14:00:00Z".into();
+        let mut ask = message("ask");
+        ask.thread = "bill".into();
+        ask.subject = "Re: A bill from the lawyers".into();
+        ask.preview = "Afternoon Cathie, can I pay this another way?".into();
+        ask.received = "2026-10-13T19:54:00Z".into();
+        let mut answer = message("answer");
+        answer.thread = "bill".into();
+        answer.subject = "Re: A bill from the lawyers".into();
+        answer.from_name = "Catherine Dennis".into();
+        answer.preview = "Good afternoon, The email address is".into();
+        answer.body_html = "<div style=\"font-family: Calibri\"><p>Good afternoon,</p><p>The email address for <b>Interac</b> is pay@example.com</p><p>Cathie</p></div>".into();
+        answer.received = "2026-10-13T19:58:00Z".into();
+        let mut other = message("other");
+        other.subject = "Unrelated".into();
+        other.body_html = "<span style=\"color: red\">Lunch?</span>".into();
+        replace_folder_messages_on(&mut conn, "jon@example.com", "in", &[bill, answer, other]).unwrap();
+        replace_folder_messages_on(&mut conn, "jon@example.com", "out", &[ask]).unwrap();
+
+        // "cathie" is in the preview and signature, "interac" only in the body.
+        assert_eq!(search_ids(&conn, &["interac", "cathie"]), vec!["answer", "ask", "bill"]);
+        // Markup is not text: style attributes and tag names don't match.
+        assert!(search_ids(&conn, &["calibri"]).is_empty());
+        assert!(search_ids(&conn, &["color"]).is_empty());
+        assert!(search_ids(&conn, &["span"]).is_empty());
+        assert_eq!(search_ids(&conn, &["lunch"]), vec!["other"]);
+        // Both words must be in one message, not spread over the thread.
+        assert!(search_ids(&conn, &["interac", "lunch"]).is_empty());
+    }
+
+    #[test]
+    fn a_body_loaded_later_becomes_searchable() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        ensure_schema(&conn).unwrap();
+        replace_folders_on(&mut conn, "jon@example.com", &[folder("in", "root", "inbox")]).unwrap();
+        let mut bare = message("bare");
+        bare.body_html = String::new();
+        replace_folder_messages_on(&mut conn, "jon@example.com", "in", &[bare.clone()]).unwrap();
+        assert!(search_ids(&conn, &["etransfer"]).is_empty());
+        conn.execute(
+            "update folder_messages set body_html = ?3, body_text = ?4 where email = ?1 and id = ?2",
+            params!["jon@example.com", "bare", "<p>Send an etransfer</p>", search_text("<p>Send an etransfer</p>")],
+        )
+        .unwrap();
+        assert_eq!(search_ids(&conn, &["etransfer"]), vec!["bare"]);
+        // A later header-only sync keeps the body text.
+        let tx = conn.transaction().unwrap();
+        upsert_message_tx(&tx, "jon@example.com", "in", &bare).unwrap();
+        tx.commit().unwrap();
+        assert_eq!(search_ids(&conn, &["etransfer"]), vec!["bare"]);
+    }
+
+    #[test]
+    fn mail_cached_before_body_search_is_filled_in_once() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        ensure_schema(&conn).unwrap();
+        replace_folders_on(&mut conn, "jon@example.com", &[folder("in", "root", "inbox")]).unwrap();
+        let mut old = message("old");
+        old.body_html = "<p>Interac details</p>".into();
+        replace_folder_messages_on(&mut conn, "jon@example.com", "in", &[old]).unwrap();
+        // As a database from 1.3.1 had it: no body_text column.
+        conn.execute_batch("alter table folder_messages drop column body_text").unwrap();
+        ensure_schema(&conn).unwrap();
+        assert_eq!(search_ids(&conn, &["interac"]), vec!["old"]);
+        ensure_schema(&conn).unwrap();
+        assert_eq!(search_ids(&conn, &["interac"]), vec!["old"]);
+    }
+
+    #[test]
+    fn search_text_drops_markup_and_caps_its_size() {
+        assert_eq!(search_text("<style>p{color:red}</style><p>Hi&nbsp;there</p>\n\n<p>Jon</p>"), "Hi there Jon");
+        let huge = format!("<p>{}</p>", "word ".repeat(60_000));
+        assert!(search_text(&huge).len() <= SEARCH_TEXT_MAX);
+        assert_eq!(search_text(""), "");
+    }
 }
+
