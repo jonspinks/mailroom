@@ -541,12 +541,18 @@ fn wait_for_code(listener: &TcpListener) -> Result<(TcpStream, String, String), 
     let (mut stream, _) = listener
         .accept()
         .map_err(|_| "Sign-in timed out before the browser came back.".to_string())?;
-    stream
-        .set_read_timeout(Some(std::time::Duration::from_secs(180)))
-        .map_err(|err| err.to_string())?;
+    // The browser sends its one request at once. A whole-request deadline,
+    // not just a per-read timeout, so nothing that connects here can hold
+    // sign-in open by sending a byte at a time.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
     let mut buf = Vec::new();
     let mut tmp = [0u8; 4096];
     while buf.len() < 65536 {
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        if left.is_zero() {
+            break;
+        }
+        stream.set_read_timeout(Some(left)).map_err(|err| err.to_string())?;
         let n = match stream.read(&mut tmp) {
             Ok(0) => break,
             Ok(n) => n,
