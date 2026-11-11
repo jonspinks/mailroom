@@ -854,15 +854,19 @@ struct NamedFile {
     name: String,
 }
 
+/// The folder picker belongs to the Mailroom window that asked for it. With
+/// no parent, GTK's own chooser came up as an ordinary window that Hyprland
+/// tiled beside Mailroom, squeezed (2026-11-11). A child of Mailroom's
+/// window floats, centred over it, as Omarchy's own dialogs do.
 #[cfg(target_os = "linux")]
-fn show_folder_picker() -> Result<Option<String>, String> {
+fn show_folder_picker(parent: Option<&gtk::ApplicationWindow>) -> Result<Option<String>, String> {
     use gtk::prelude::*;
     if !gtk::is_initialized() {
         gtk::init().map_err(|_| "The folder picker could not be opened.".to_string())?;
     }
     let dialog = gtk::FileChooserNative::new(
         Some("Save attachments"),
-        None::<&gtk::Window>,
+        parent,
         gtk::FileChooserAction::SelectFolder,
         Some("Select"),
         Some("Cancel"),
@@ -879,16 +883,21 @@ fn show_folder_picker() -> Result<Option<String>, String> {
 }
 
 #[cfg(not(target_os = "linux"))]
-fn show_folder_picker() -> Result<Option<String>, String> {
+fn show_folder_picker(_parent: Option<&()>) -> Result<Option<String>, String> {
     Err("The folder picker could not be opened.".into())
 }
 
 #[tauri::command]
-async fn pick_download_folder(app: tauri::AppHandle) -> Result<Option<String>, String> {
+async fn pick_download_folder(app: tauri::AppHandle, window: tauri::WebviewWindow) -> Result<Option<String>, String> {
     in_background(move || {
         let (tx, rx) = std::sync::mpsc::sync_channel(1);
         app.run_on_main_thread(move || {
-            let _ = tx.send(show_folder_picker());
+            #[cfg(target_os = "linux")]
+            let parent = window.gtk_window().ok();
+            #[cfg(target_os = "linux")]
+            let _ = tx.send(show_folder_picker(parent.as_ref()));
+            #[cfg(not(target_os = "linux"))]
+            let _ = (window, tx.send(show_folder_picker(None)));
         })
         .map_err(|_| "The folder picker could not be opened.".to_string())?;
         let chosen = rx
@@ -1597,12 +1606,19 @@ async fn pop_compose(app: tauri::AppHandle, query: String) -> Result<(), String>
     }
     let url = tauri::WebviewUrl::App(format!("index.html?{query}").into());
     let on_omarchy = omarchy::detected();
-    let window = tauri::WebviewWindowBuilder::new(&app, "compose", url)
+    let mut builder = tauri::WebviewWindowBuilder::new(&app, "compose", url)
         .title(if on_omarchy { "New message" } else { "Mailroom" })
         .decorations(!on_omarchy)
-        .inner_size(760.0, 740.0)
-        .build()
-        .map_err(|err| err.to_string())?;
+        .inner_size(760.0, 740.0);
+    // A child of Mailroom's window floats over it, centred, instead of being
+    // tiled beside it. From the "New email" shortcut with Mailroom hidden in
+    // the tray, it is a window of its own.
+    if let Some(main) = app.get_webview_window("main") {
+        if main.is_visible().unwrap_or(false) {
+            builder = builder.parent(&main).map_err(|err| err.to_string())?;
+        }
+    }
+    let window = builder.build().map_err(|err| err.to_string())?;
     spell::apply(&window);
     Ok(())
 }
