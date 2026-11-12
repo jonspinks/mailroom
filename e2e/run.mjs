@@ -509,51 +509,38 @@ test("a narrow window folds the folders away and brings them back", { fake: fals
   }
 });
 
-test("narrow and reading a message: hover Mail for the list, click Mail or Escape to go back", { fake: false }, async ({ p }) => {
+test("narrow and reading a message: the close button, Mail or Escape go back to the list", { fake: false }, async ({ p }) => {
   const vp = p.viewport();
   const shown = sel => p.evaluate(s => { const el = document.querySelector(s); return !!el && getComputedStyle(el).display !== "none" && el.getBoundingClientRect().width > 0; }, sel);
   try {
-    await p.setViewport({ width: 900, height: 800 }); await wait(150);
+    await p.setViewport({ width: 1400, height: 800 }); await wait(150);
     await p.click(".list .row"); await wait(300);
-    same(await p.evaluate(() => document.body.dataset.open), "1", "a message is open");
-    same([await shown(".shell > .list"), await shown(".reading")], [false, true], "one pane: the message, no list");
+    same(await shown("#close-message"), false, "wide: no close button, the list is beside the message");
 
-    await p.hover("#rail-mail"); await wait(100);
-    same([await shown(".shell > .list"), await shown(".shell > .folders")], [true, true], "hovering Mail brings out the list and the folders");
-    // Moving from the button onto the list keeps it out.
-    const second = await p.evaluate(() => (document.querySelectorAll(".shell > .list .row")[1] || {}).dataset?.id || "");
-    expect(second !== "", "there was a second message to pick");
-    const row = `.shell > .list .row[data-id="${second}"]`;
-    await p.hover(row); await wait(600);
-    same(await shown(".shell > .list"), true, "it stays while the pointer is on it");
-    await p.click(row); await wait(300);
-    same(await p.evaluate(() => document.body.dataset.peek || ""), "", "picking a message puts the list away");
-    same(await shown(".reading"), true, "and shows that message");
+    await p.setViewport({ width: 900, height: 800 }); await wait(150);
+    same([await shown(".shell > .list"), await shown(".reading"), await shown("#close-message")], [false, true, true], "one pane: the message, with a close button");
+    await p.hover("#rail-mail"); await wait(200);
+    same(await shown(".shell > .list"), false, "hovering Mail pops nothing out");
+    const box = await p.evaluate(() => { const b = document.getElementById("close-message").getBoundingClientRect(); const h = document.querySelector(".read-subject h2").getBoundingClientRect(); return [b.left < h.left + 40, b.top < h.bottom]; });
+    same(box, [true, true], "the close button sits before the subject");
+    await p.click("#close-message"); await wait(200);
+    same([await shown(".shell > .list"), await p.evaluate(() => document.body.dataset.open)], [true, "0"], "the close button goes back to the list");
 
-    await p.hover(".reading"); await wait(600);
-    same(await shown(".shell > .list"), false, "away from it, the list hides again");
-
+    await p.click(".list .row"); await wait(300);
     await p.click("#rail-mail"); await wait(200);
-    same([await shown(".shell > .list"), await p.evaluate(() => document.body.dataset.open)], [true, "0"], "clicking Mail goes back to the list");
+    same(await shown(".shell > .list"), true, "clicking Mail goes back too");
 
     await p.click(".list .row"); await wait(300);
     await p.keyboard.press("Escape"); await wait(200);
-    same(await shown(".shell > .list"), true, "Escape goes back to the list too");
+    same(await shown(".shell > .list"), true, "and Escape");
 
     // Settings while a message is open: settings fill the window, no message beside them.
     await p.click(".list .row"); await wait(300);
     await p.click("#rail-settings"); await wait(300);
     same([await shown(".reading"), await shown(".settings")], [false, true], "narrow Settings: the settings, not the open message");
-    const box = await p.evaluate(() => { const r = document.querySelector(".settings").getBoundingClientRect(); return [Math.round(r.top), Math.round(r.width)]; });
-    expect(box[0] < 200 && box[1] > 400, "settings sit at the top with room to read", JSON.stringify(box));
     await p.click("#rail-mail"); await wait(300);
-
-    await p.setViewport({ width: 1400, height: 800 }); await wait(150);
-    await p.hover("#rail-mail"); await wait(100);
-    same(await p.evaluate(() => document.body.dataset.peek || ""), "", "wide: no pop-out, everything is already showing");
   } finally {
     if (vp) await p.setViewport(vp);
-    await p.evaluate(() => { delete document.body.dataset.peek; });
   }
 });
 

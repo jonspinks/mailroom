@@ -8561,6 +8561,7 @@ function renderReading() {
       <div class="toolbar">${tools}</div>
     </div>
     <div class="read-subject">
+      <button class="icon-btn close-message" type="button" id="close-message" title="Close (Esc)" aria-label="Close message"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M3.5 3.5l9 9M12.5 3.5l-9 9" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button>
       <h2>${esc(subjectLine)}${!folderDraft && threadCount > 1 ? `<span class="thread-meta">${threadCount} messages</span>` : ""}</h2>
     </div>
     <div class="read-body${showReply ? " reply-pane" : ""}">
@@ -8571,6 +8572,8 @@ function renderReading() {
     </div>
     ${replyMsg ? replyTabsHtml(conv, replyMsg) : ""}
   `;
+  const closeBtn = document.getElementById("close-message");
+  if (closeBtn) closeBtn.onclick = () => backToList();
   if (!folderDraft) loadThreadSent(conv);
   if ((folderDraft || showReply || showDraftCard) && reading.querySelector("#compose-form")) bindCompose(reading, { mode: "inline", kind: composeKind, draft: replyDraft });
   if (replyMsg) bindReplyTabs();
@@ -16032,7 +16035,6 @@ function toastPending(message) {
 function setView(next) {
   view = next;
   document.body.dataset.view = view;
-  delete document.body.dataset.peek;
   document.getElementById("rail-mail").setAttribute("aria-pressed", view === "mail");
   document.getElementById("rail-cal").setAttribute("aria-pressed", view === "calendar");
   document.getElementById("rail-people").setAttribute("aria-pressed", view === "people");
@@ -16453,46 +16455,16 @@ document.addEventListener("click", (e) => {
   }
 });
 // ---- One pane (a window under 981px): opening a message hides the list.
-//      Hovering the Mail button, or the folders button, brings the folders
-//      and the list out over the message for a moment; picking a message
-//      puts them away. Clicking Mail, or Escape, goes back to the list.
+//      The ✕ before the subject closes it, as in Outlook on the web;
+//      clicking Mail, or Escape, does the same.
 const ONE_PANE = window.matchMedia("(max-width: 980px)");
-let peekTimer = null;
 function onePaneReading() {
   return ONE_PANE.matches && view === "mail" && document.body.dataset.open === "1";
 }
-function peekMail(on) {
-  clearTimeout(peekTimer);
-  peekTimer = null;
-  if (on && onePaneReading()) document.body.dataset.peek = "1";
-  else delete document.body.dataset.peek;
-}
-function peekAway() {
-  clearTimeout(peekTimer);
-  peekTimer = setTimeout(() => peekMail(false), 400);
-}
 function backToList() {
-  peekMail(false);
   document.body.dataset.open = "0";
   render();
 }
-ONE_PANE.addEventListener("change", () => peekMail(false));
-["rail-mail", "hide-folders", "show-mail-folders"].forEach(id => {
-  const el = document.getElementById(id);
-  if (!el) return;
-  el.addEventListener("mouseenter", () => peekMail(true));
-  el.addEventListener("mouseleave", peekAway);
-});
-["folders", "list"].forEach(name => {
-  const el = name === "folders" ? document.getElementById("folders") : document.querySelector(".shell > .list");
-  if (!el) return;
-  el.addEventListener("mouseenter", () => { if (document.body.dataset.peek) { clearTimeout(peekTimer); peekTimer = null; } });
-  el.addEventListener("mouseleave", () => { if (document.body.dataset.peek) peekAway(); });
-});
-// A message picked from the popped-out list opens, and the list goes away.
-document.querySelector(".shell > .list").addEventListener("click", (ev) => {
-  if (document.body.dataset.peek && ev.target.closest && ev.target.closest(".row")) setTimeout(() => peekMail(false), 0);
-});
 document.getElementById("rail-mail").onclick = () => {
   if (onePaneReading()) backToList();
   else setView("mail");
@@ -17146,7 +17118,7 @@ const folderBusy = new Set();
 let syncNote = "";
 const folderRun = new Map();
 const bodyLoads = new Set();
-const APP_VERSION = "1.3.6";
+const APP_VERSION = "1.3.7";
 let appVersion = APP_VERSION;
 
 prepareDesktopAccounts();

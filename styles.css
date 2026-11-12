@@ -1442,6 +1442,8 @@
     line-height: 23px;
     overflow-wrap: anywhere;
   }
+  .close-message { display: none; float: left; place-items: center; width: 32px; height: 32px; margin: -4px 10px 0 0; border: 1px solid var(--line-strong); border-radius: min(4px, var(--r-max)); background: transparent; color: var(--muted); }
+  .close-message:hover { background: var(--hover); color: var(--ink); }
   .read-subject .thread-meta { display: inline; margin: 0 0 0 10px; font-size: 12px; font-weight: 400; color: var(--muted); white-space: nowrap; }
   .thread-actions[hidden] { display: none; }
   .quote-toggle {
@@ -3569,28 +3571,8 @@
     body[data-folders="closed"][data-view="people"] .shell { grid-template-columns: 48px minmax(0, 1fr); }
     body[data-folders="closed"][data-view="settings"] .shell { grid-template-columns: 48px minmax(0, 1fr); }
     body[data-folders="closed"][data-view="calendar"] .shell { grid-template-columns: 48px minmax(0, 1fr); }
-    /* Hovering Mail while reading: the folders and the list come out over
-       the message, as in Outlook's collapsed navigation. */
-    .shell { position: relative; }
-    body[data-view="mail"][data-open="1"][data-peek="1"] .shell > .folders,
-    body[data-view="mail"][data-open="1"][data-peek="1"] .shell > .list {
-      display: flex;
-      flex-direction: column;
-      position: absolute;
-      top: 0;
-      bottom: 0;
-      z-index: 20;
-      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
-    }
-    body[data-view="mail"][data-open="1"][data-peek="1"] .shell > .folders { left: 48px; width: var(--folders-width, 220px); padding: 8px; }
-    body[data-view="mail"][data-open="1"][data-peek="1"] .shell > .list {
-      display: block;
-      left: calc(48px + var(--folders-width, 220px));
-      width: min(var(--list-width, 360px), calc(100% - 48px - var(--folders-width, 220px)));
-      overflow: auto;
-    }
-    body[data-view="mail"][data-open="1"][data-peek="1"] #folder-nav { display: block; }
-    body[data-view="mail"][data-open="1"][data-peek="1"] .folders-split { display: none; }
+    /* Reading in one pane: the ✕ before the subject goes back to the list. */
+    body[data-view="mail"][data-open="1"] .close-message { display: inline-grid; }
   }
 
 .reminder-row .event-show { margin-right: 12px; }
