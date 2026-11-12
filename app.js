@@ -9543,13 +9543,13 @@ async function pushMailAction(targets, kind, revert, prior, destination) {
 }
 
 function mailItemGone(text) {
-  return /ErrorItemNotFound|\(404\b/.test(String(text || ""));
+  return /ErrorItemNotFound|\(404\b|no longer on the server/.test(String(text || ""));
 }
 
 // Throttled or busy even after the backend's own retries: worth a toast,
 // not the sign-in banner.
 function mailServerBusy(text) {
-  return /\((429|503)\b|ApplicationThrottled|MailboxConcurrency/.test(String(text || ""));
+  return /\((429|503)\b|ApplicationThrottled|MailboxConcurrency|is busy and asked Mailroom|is having trouble right now/.test(String(text || ""));
 }
 
 function dropGoneMessage(message) {
@@ -17118,7 +17118,7 @@ const folderBusy = new Set();
 let syncNote = "";
 const folderRun = new Map();
 const bodyLoads = new Set();
-const APP_VERSION = "1.3.7";
+const APP_VERSION = "1.3.8";
 let appVersion = APP_VERSION;
 
 prepareDesktopAccounts();
