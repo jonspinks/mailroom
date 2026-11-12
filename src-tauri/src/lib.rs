@@ -3,6 +3,7 @@ mod attach;
 mod auth;
 mod calendar;
 mod compose;
+mod errors;
 mod folders;
 mod gcal;
 mod google;
@@ -100,8 +101,10 @@ struct FolderDelta {
 async fn in_background<T: Send + 'static>(
     work: impl FnOnce() -> Result<T, String> + Send + 'static,
 ) -> Result<T, String> {
+    // A refusal from Microsoft or Google reaches the page as a sentence,
+    // not its raw JSON (see errors.rs).
     match tauri::async_runtime::spawn_blocking(work).await {
-        Ok(result) => result,
+        Ok(result) => result.map_err(|err| errors::friendly(&err)),
         Err(_) => Err("That step stopped before it finished.".into()),
     }
 }
