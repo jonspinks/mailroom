@@ -8384,6 +8384,9 @@ function messagePaintStamp(m, open) {
     files,
     stampText(m.bodyHtml),
     allowRemoteFor(m) ? "1" : "0",
+    // Adding the sender's domain to Safe senders changes only this, and the
+    // redraw is what starts the sender check that lets the pictures in.
+    trustedByFrom(m) ? "1" : "0",
     senderState(m),
     lightView.has(m.id) ? "1" : "0",
     images && images.list ? String(images.list.length) : "0",
@@ -17118,7 +17121,7 @@ const folderBusy = new Set();
 let syncNote = "";
 const folderRun = new Map();
 const bodyLoads = new Set();
-const APP_VERSION = "1.3.8";
+const APP_VERSION = "1.3.9";
 let appVersion = APP_VERSION;
 
 prepareDesktopAccounts();

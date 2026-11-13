@@ -219,6 +219,19 @@ test("audit: a display name cannot carry an address into a reply or autocomplete
   }).then(list => list[0]), "priya@timberworks.example", "a directory colleague ranks above a look-alike who only wrote in");
 });
 
+test("adding a sender's domain to Safe senders shows its pictures", { fake: true, setup: () => {
+  const at = new Date().toISOString().replace(/\.\d+Z$/, "Z");
+  window.__inbox.push({ id: "vendor", thread: "conv-vendor", subject: "Quote", fromName: "Arsalan", fromEmail: "arsalan@vendor.example", received: at, preview: "Quote", bodyHtml: '<p>Quote</p><img src="https://pics.example/logo.png" alt="">', unread: true, flagged: false, hasAttachments: false, files: [], to: [], cc: [], bcc: [], categories: [] });
+} }, async ({ p, calls }) => {
+  await p.click('.row[data-id="vendor"]'); await wait(900);
+  expect(await p.evaluate(() => !!document.querySelector("#reading [data-trust-sender]")), "the bar offers to trust the domain");
+  await p.click("#reading [data-trust-sender]"); await wait(900);
+  same(await p.evaluate(() => safeSenders.includes("@vendor.example")), true, "the domain is on the list");
+  same((await calls("sender_verified")).map(a => a.messageId), ["vendor"], "the sender is checked");
+  same(await p.evaluate(() => !!document.querySelector("#reading .remote-bar")), false, "the bar goes away");
+  same(await p.evaluate(() => [...document.querySelectorAll("#reading img")].some(i => /pics\.example/.test(i.getAttribute("src") || ""))), true, "the picture is in the letter");
+});
+
 test("a forged safe sender or own address does not load pictures", { fake: true, setup: () => {
   const at = new Date().toISOString().replace(/\.\d+Z$/, "Z");
   const msg = (id, email, name) => ({ id, thread: "conv-" + id, subject: "Pictures from " + name, fromName: name, fromEmail: email, received: at, preview: "Pictures", bodyHtml: `<p>Hello</p><img src="https://pics.example/${id}.png" alt="">`, unread: true, flagged: false, hasAttachments: false, files: [], to: [], cc: [], bcc: [], categories: [] });
