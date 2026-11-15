@@ -16,7 +16,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-base64 = "0.22"
+base64 = "0.23"
 keyring = { version = "3", features = ["sync-secret-service", "crypto-rust"] }
 ksni = { version = "0.3", features = ["blocking"] }
 notify-rust = "4"
