@@ -14153,8 +14153,16 @@ function inlinePictureBytes(body) {
 
 // Redraw an inline picture at a size. Returns false if it would not fit.
 async function sizeInlinePicture(img, size, body) {
-  const id = img.dataset.pictureId;
-  const original = pictureOriginals.get(id) || { url: img.getAttribute("src"), type: (img.getAttribute("src").match(/^data:([^;,]+)/) || [])[1] || "image/png" };
+  // A picture this code didn't put in (a reopened draft) keeps what it shows
+  // now as its original, so a later, bigger size starts from that and not
+  // from the last smaller copy.
+  if (!img.dataset.pictureId || !pictureOriginals.has(img.dataset.pictureId)) {
+    const id = img.dataset.pictureId || "pic" + Math.random().toString(36).slice(2, 10);
+    const src = img.getAttribute("src") || "";
+    pictureOriginals.set(id, { url: src, type: (src.match(/^data:([^;,]+)/) || [])[1] || "image/png" });
+    img.dataset.pictureId = id;
+  }
+  const original = pictureOriginals.get(img.dataset.pictureId);
   const spec = PICTURE_SIZES[size] || PICTURE_SIZES.medium;
   const scaled = await scaledPicture(original, spec.inline * 2);
   const others = inlinePictureBytes(body) - (body.contains(img) ? dataUrlBytes(img.getAttribute("src")) : 0);
@@ -15267,7 +15275,7 @@ function bindCompose(root, ctx) {
   };
   ["keyup", "mouseup", "input"].forEach(name => body.addEventListener(name, keepCaret));
   const changed = () => body.dispatchEvent(new Event("input", { bubbles: true }));
-  async function insertPictures(files) {
+  async function insertPictures(files, size = "medium") {
     const write = body.querySelector(".body-write") || body;
     for (const file of files) {
       let url;
@@ -15279,7 +15287,7 @@ function bindCompose(root, ctx) {
       img.dataset.pictureId = id;
       img.src = url;
       let fits = false;
-      try { fits = await sizeInlinePicture(img, isResizablePicture(file.type) ? "medium" : "original", body); } catch (err) { fits = false; }
+      try { fits = await sizeInlinePicture(img, isResizablePicture(file.type) ? size : "original", body); } catch (err) { fits = false; }
       if (!fits) {
         toast("That picture is too large to put in the message. Attach it instead, or pick a smaller size.");
         continue;
@@ -15301,6 +15309,17 @@ function bindCompose(root, ctx) {
     }
     changed();
   }
+  // A pasted picture goes in at Large, through the same path as one picked
+  // from a file. Left to the editor it went in as a bare <img>: no original
+  // kept, so after Small no bigger size could come back.
+  body.addEventListener("paste", (e) => {
+    const items = [...((e.clipboardData && e.clipboardData.items) || [])];
+    const files = items.filter(item => item.kind === "file" && /^image\//i.test(item.type)).map(item => item.getAsFile()).filter(Boolean);
+    if (!files.length) return;
+    e.preventDefault();
+    keepCaret();
+    insertPictures(files.map((file, i) => file.name ? file : new File([file], "pasted-" + (i + 1) + "." + ((file.type.split("/")[1] || "png").replace("jpeg", "jpg")), { type: file.type })), "large");
+  });
   // The size bar for a picture in the message.
   const picBar = document.createElement("div");
   picBar.className = "pic-size-float";
@@ -17124,7 +17143,7 @@ const folderBusy = new Set();
 let syncNote = "";
 const folderRun = new Map();
 const bodyLoads = new Set();
-const APP_VERSION = "1.3.11";
+const APP_VERSION = "1.3.12";
 let appVersion = APP_VERSION;
 
 prepareDesktopAccounts();

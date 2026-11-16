@@ -927,6 +927,44 @@ test("pictures go in the message or attach, at Small, Medium, Large or Original"
   expect(!html.includes("data-picture-id") && !html.includes("pic-size"), "no editing bits are sent");
 });
 
+test("a pasted picture goes in at Large, and every size can be picked after it", { fake: true }, async ({ p }) => {
+  await p.click("#compose"); await wait(300);
+  await p.click("#compose-body"); await p.keyboard.type("Look ");
+  const png = fs.readFileSync(path.join(FILES, "wide.png")).toString("base64");
+  await p.evaluate(b64 => {
+    const bytes = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
+    const data = new DataTransfer();
+    data.items.add(new File([bytes], "", { type: "image/png" }));
+    document.querySelector("#compose-body").dispatchEvent(new ClipboardEvent("paste", { clipboardData: data, bubbles: true, cancelable: true }));
+  }, png);
+  await wait(800);
+  const pic = () => p.evaluate(() => { const imgs = document.querySelectorAll("#compose-body img"); const img = imgs[0]; return img && { count: imgs.length, width: img.getAttribute("width"), natural: img.naturalWidth, size: img.dataset.size }; });
+  same(await pic(), { count: 1, width: "800", natural: 1600, size: "large" }, "pasted at Large");
+  await p.click("#compose-body img"); await wait(200);
+  same(await p.$eval('.pic-size-float [aria-pressed="true"]', b => b.dataset.picSize), "large", "the bar shows Large");
+  const want = { small: ["240", 480], medium: ["480", 960], large: ["800", 1600], original: [null, 2400] };
+  for (const size of ["small", "medium", "large", "original", "small", "large"]) {
+    await p.click(`.pic-size-float [data-pic-size="${size}"]`); await wait(600);
+    same(await pic(), { count: 1, width: want[size][0], natural: want[size][1], size }, size);
+  }
+});
+
+test("a picture already in the message can go back up after Small", { fake: true }, async ({ p }) => {
+  await p.click("#compose"); await wait(300);
+  const png = fs.readFileSync(path.join(FILES, "wide.png")).toString("base64");
+  await p.evaluate(b64 => {
+    const write = document.querySelector("#compose-body .body-write") || document.querySelector("#compose-body");
+    write.insertAdjacentHTML("afterbegin", `<p><img src="data:image/png;base64,${b64}" style="max-width:100%;height:auto"></p>`);
+  }, png);
+  await wait(300);
+  const pic = () => p.evaluate(() => { const img = document.querySelector("#compose-body img"); return { width: img.getAttribute("width"), natural: img.naturalWidth }; });
+  await p.click("#compose-body img"); await wait(200);
+  await p.click('.pic-size-float [data-pic-size="small"]'); await wait(600);
+  same(await pic(), { width: "240", natural: 480 }, "Small");
+  await p.click('.pic-size-float [data-pic-size="large"]'); await wait(600);
+  same(await pic(), { width: "800", natural: 1600 }, "Large again, from the full picture");
+});
+
 test("send later passes a UTC time", { fake: true }, async ({ p, calls, clear }) => {
   await p.evaluate(() => { sendDelay = 0; });
   await p.click("#compose"); await wait(300);
