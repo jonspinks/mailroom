@@ -1991,6 +1991,64 @@ test("lists in mail are spaced and indented as Outlook draws them", { fake: true
   same(typed, "40px", "a list typed in the editor is indented the same");
 });
 
+test("compose bar follows Outlook: full ribbon in a new message, none in an inline reply until Format text", { fake: true }, async ({ p }) => {
+  await p.click("#compose"); await wait(300);
+  const order = await p.$$eval("#compose-form .format-bar > *", els => els.map(e => e.matches("select") ? e.getAttribute("aria-label") : (e.getAttribute("aria-label") || e.getAttribute("title") || e.className)).filter(x => x && x !== "fmt-sep" && !/file-picker/.test(x)));
+  same(order.slice(0, 11), ["Undo", "Redo", "Font", "Font size", "Bold", "Italic", "Underline", "Strikethrough", "colour-split", "colour-split", "Bullets"], "Outlook's order");
+  same(order.slice(11, 15), ["Numbers", "More formatting", "Attach", "Link"], "then More, Attach, Link");
+  const write = "#compose-body .body-write";
+  await p.click("#compose-body"); await p.keyboard.type("Hello world");
+  const selectWord = (word) => p.evaluate((w) => {
+    const write = document.querySelector("#compose-body .body-write");
+    const walker = document.createTreeWalker(write, NodeFilter.SHOW_TEXT);
+    let n; while ((n = walker.nextNode())) { const i = n.data.indexOf(w); if (i >= 0) { const r = document.createRange(); r.setStart(n, i); r.setEnd(n, i + w.length); getSelection().removeAllRanges(); getSelection().addRange(r); break; } }
+    document.querySelector("#compose-body").dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+  }, word);
+  await selectWord("world");
+  await p.select("#compose-form [data-font-face]", "Georgia, serif"); await wait(150);
+  await p.select("#compose-form [data-font-size]", "14"); await wait(150);
+  const styled = await p.$eval(write, w => { const t = [...w.querySelectorAll("*")].filter(e => e.textContent === "world"); return { face: t.some(e => /Georgia/.test(e.style.fontFamily)), size: t.some(e => e.style.fontSize === "14pt"), font: !!w.querySelector("font") }; });
+  same(styled, { face: true, size: true, font: false }, "Georgia 14pt on the selection, as styles");
+  await selectWord("Hello");
+  same(await p.$eval("#compose-form [data-font-size]", s => s.value), "11", "the picker shows the default where nothing is set");
+  await selectWord("world");
+  same(await p.$eval("#compose-form [data-font-size]", s => s.value), "14", "and 14 on the styled word");
+  // A size picked with nothing selected applies to what is typed next.
+  await p.evaluate(() => {
+    const w = document.querySelector("#compose-body .body-write");
+    const texts = []; const tw = document.createTreeWalker(w, NodeFilter.SHOW_TEXT); let n; while ((n = tw.nextNode())) texts.push(n);
+    const last = texts[texts.length - 1]; const r = document.createRange(); r.setStart(last, last.data.length); r.collapse(true);
+    getSelection().removeAllRanges(); getSelection().addRange(r);
+    document.querySelector("#compose-body").dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+  });
+  await p.select("#compose-form [data-font-size]", "20"); await wait(150);
+  await p.keyboard.type(" big");
+  same(await p.$eval(write, w => [...w.querySelectorAll("span")].some(e => e.style.fontSize === "20pt" && e.textContent.includes("big")) && !w.querySelector('font[size="7"]')), true, "typed text at 20pt");
+  await selectWord("Hello");
+  await p.click('#compose-form [data-cmd="strikeThrough"]'); await wait(100);
+  same(await p.$eval(write, w => !!w.querySelector("strike, s") || [...w.querySelectorAll("[style]")].some(e => /line-through/.test(e.style.textDecoration))), true, "Strikethrough");
+  await p.click("#compose-form [data-format-more]"); await wait(150);
+  same(await p.$$eval("#format-more-menu [data-more-cmd]", b => b.map(x => x.textContent.trim())), ["Align left", "Centre", "Align right", "Decrease indent", "Increase indent", "Superscript", "Subscript", "Clear formatting"], "More formatting");
+  await p.click('#format-more-menu [data-more-cmd="justifyCenter"]'); await wait(150);
+  same(await p.$eval(write, w => [...w.querySelectorAll("p, div")].some(e => e.style.textAlign === "center")), true, "Centre as a style");
+  await p.click('#compose-form [data-cmd="undo"]'); await wait(100);
+  same(await p.$eval(write, w => [...w.querySelectorAll("p, div")].some(e => e.style.textAlign === "center")), false, "Undo");
+  const sent = await p.evaluate(() => sentBody(document.getElementById("compose-form")));
+  expect(/font-size:\s*14pt/.test(sent) && /Georgia/.test(sent), "font and size are sent", sent.slice(0, 300));
+  // An inline reply: no bar until Format text, which is remembered.
+  await p.goto(p.url().split(/[?#]/)[0], { waitUntil: "load" }); await wait(1200);
+  await p.evaluate(() => { try { localStorage.removeItem("mailroom-format-bar"); } catch (e) {} });
+  await p.click('.row[data-id="m1"]'); await wait(500);
+  await p.click("#reply"); await wait(400);
+  same(await p.$eval("#compose-form .format-bar", b => b.hidden), true, "inline reply: no formatting bar");
+  expect(await p.$("#compose-form .compose-bar #add-file"), "Attach by Send");
+  await p.click("#compose-form #format-toggle"); await wait(150);
+  same(await p.$eval("#compose-form .format-bar", b => b.hidden), false, "Format text shows it");
+  same(await p.$eval("#compose-form #format-toggle", b => b.getAttribute("aria-pressed")), "true", "the button shows it is on");
+  same(await p.$$eval("#compose-form #add-file, #compose-form #help-write", e => e.length), (await p.$("#compose-form #help-write")) ? 2 : 1, "Attach and the assistant once each");
+  same(await p.evaluate(() => localStorage.getItem("mailroom-format-bar")), "1", "remembered");
+});
+
 test("compose: Bullets, Numbers and Link are icons", { fake: true }, async ({ p }) => {
   await p.click("#compose"); await wait(300);
   for (const [cmd, name] of [["insertUnorderedList", "Bullets"], ["insertOrderedList", "Numbers"], ["link", "Link"]]) {
