@@ -15315,6 +15315,45 @@ function bindCompose(root, ctx) {
     }
     changed();
   }
+  // A web address turns into a link when Space or Enter follows it, typed or
+  // pasted. Done through createLink so Ctrl+Z takes it back, and the caret is
+  // put after the link so the next character isn't part of it.
+  body.addEventListener("keydown", (e) => {
+    if ((e.key !== " " && e.key !== "Enter") || e.ctrlKey || e.metaKey || e.altKey || e.isComposing) return;
+    const sel = window.getSelection();
+    if (!sel || !sel.isCollapsed || !sel.rangeCount) return;
+    const node = sel.anchorNode;
+    if (!node || node.nodeType !== 3 || inSignature(node)) return;
+    const write = body.querySelector(".body-write") || body;
+    if (!write.contains(node) || (node.parentElement && node.parentElement.closest("a"))) return;
+    const before = node.data.slice(0, sel.anchorOffset);
+    const word = (before.match(/(?:^|[\s\u00a0(<\[])((?:https?:\/\/|www\.)[^\s\u00a0<>"']+)$/i) || [])[1];
+    if (!word) return;
+    const shown = trimUrlTail(word.replace(/[.,;:!?]+$/, ""));
+    const href = safeNoteUrl(/^www\./i.test(shown) ? "https://" + shown : shown);
+    if (!href) return;
+    const start = sel.anchorOffset - word.length;
+    const range = document.createRange();
+    range.setStart(node, start);
+    range.setEnd(node, start + shown.length);
+    sel.removeAllRanges();
+    sel.addRange(range);
+    document.execCommand("createLink", false, href);
+    const link = sel.anchorNode && (sel.anchorNode.nodeType === 1 ? sel.anchorNode : sel.anchorNode.parentElement);
+    const a = link && (link.closest("a") || (sel.focusNode && sel.focusNode.parentElement && sel.focusNode.parentElement.closest("a")));
+    const after = document.createRange();
+    if (a && a.nextSibling && a.nextSibling.nodeType === 3) {
+      // Punctuation left after the link: the caret goes back after it.
+      after.setStart(a.nextSibling, Math.min(a.nextSibling.data.length, word.length - shown.length));
+    } else if (a) {
+      after.setStartAfter(a);
+    } else {
+      return;
+    }
+    after.collapse(true);
+    sel.removeAllRanges();
+    sel.addRange(after);
+  });
   // A pasted picture goes in at Large, through the same path as one picked
   // from a file. Left to the editor it went in as a bare <img>: no original
   // kept, so after Small no bigger size could come back.
@@ -17207,7 +17246,7 @@ const folderBusy = new Set();
 let syncNote = "";
 const folderRun = new Map();
 const bodyLoads = new Set();
-const APP_VERSION = "1.3.13";
+const APP_VERSION = "1.3.14";
 let appVersion = APP_VERSION;
 
 prepareDesktopAccounts();
