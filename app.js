@@ -6709,7 +6709,13 @@ function printMessage(m) {
   });
   sheet.innerHTML = `<h1>${esc(m.subject || "(no subject)")}</h1>
     <table class="print-head">${rows.filter(r => r[1]).map(([k, v]) => `<tr><th>${esc(k)}</th><td>${esc(v)}</td></tr>`).join("")}</table>
-    <div class="letter mail-fit light-view"><div class="letter-fit">${shown ? shown.innerHTML : letterHtml(m)}</div></div>`;
+    <div class="letter mail-fit light-view"><div class="letter-fit">${shown ? "" : letterHtml(m)}</div></div>`;
+  // Copy the reading pane's nodes, already sanitised, rather than turning
+  // them back into HTML and parsing that again.
+  if (shown) {
+    const fit = sheet.querySelector(".letter-fit");
+    shown.childNodes.forEach(node => fit.appendChild(node.cloneNode(true)));
+  }
   const call = tauriInvoke("print_page");
   if (call) Promise.resolve(call).catch(err => toast(String(err && err.message || err)));
   else window.print();
