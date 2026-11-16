@@ -479,6 +479,33 @@ test("a deleted signature comes back from the Signature button, inline, in a rep
   await putBack("pop-out");
 });
 
+test("a web address becomes a link when Space or Enter follows it, typed or pasted", { fake: false }, async ({ p }) => {
+  await p.click("#compose"); await wait(300);
+  await p.click("#compose-body");
+  const links = () => p.$$eval("#compose-body .body-write a", as => as.map(a => [a.getAttribute("href"), a.textContent]));
+  const text = () => p.$eval("#compose-body .body-write", w => w.textContent.replace(/\u00a0/g, " "));
+  await p.keyboard.type("See https://example.com/a?b=1 ");
+  same(await links(), [["https://example.com/a?b=1", "https://example.com/a?b=1"]], "typed, then Space");
+  await p.keyboard.type("next");
+  expect((await text()).endsWith("https://example.com/a?b=1 next"), "typing after it stays outside the link", await text());
+  same((await links()).length, 1, "the next word is not linked");
+  await p.keyboard.type(" and https://example.org/x. ");
+  same((await links())[1], ["https://example.org/x", "https://example.org/x"], "a full stop after it is left out");
+  expect((await text()).endsWith("https://example.org/x. "), "and stays in the text", await text());
+  await p.evaluate(() => document.execCommand("insertText", false, "https://pasted.example/doc"));
+  await p.keyboard.press("Enter");
+  same((await links())[2], ["https://pasted.example/doc", "https://pasted.example/doc"], "pasted, then Enter");
+  await p.keyboard.type("www.example.net ");
+  same((await links())[3], ["https://www.example.net/", "www.example.net"], "www. gets https://");
+  await p.keyboard.type("javascript:alert(1) ftp://x.example ");
+  same((await links()).length, 4, "nothing else is linked");
+  await p.keyboard.type("https://undo.example ");
+  same((await links()).length, 5, "linked");
+  await p.keyboard.down("Control"); await p.keyboard.press("z"); await p.keyboard.up("Control"); await wait(100);
+  await p.keyboard.down("Control"); await p.keyboard.press("z"); await p.keyboard.up("Control"); await wait(100);
+  same((await links()).length, 4, "Ctrl+Z takes the link back off");
+});
+
 test("reply all: To and Cc as Outlook, quote in Outlook form", { fake: false }, async ({ p }) => {
   const r = await p.evaluate(async () => {
     const c = conversations().find(c => c.messages.length > 1);
