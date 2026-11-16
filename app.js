@@ -14429,20 +14429,54 @@ function colourMenuHtml(kind) {
   return `<div class="colour-grid">${list.map(([name, hex]) => `<button type="button" role="menuitem" class="colour-swatch" data-pick-colour="${hex}" title="${esc(name)}" aria-label="${esc(name)}" style="background:${hex}"></button>`).join("")}</div><button type="button" role="menuitem" class="colour-none" data-pick-colour="">${none}</button>`;
 }
 
-function formatBarHtml() {
+// Fonts and sizes offered in compose, as Outlook's. The first is what a
+// message uses when nothing is chosen (OUT_FONT).
+const FONT_FACES = [
+  ["Aptos", "Aptos, Calibri, 'Segoe UI', Arial, sans-serif"],
+  ["Calibri", "Calibri, Carlito, sans-serif"],
+  ["Arial", "Arial, Helvetica, sans-serif"],
+  ["Georgia", "Georgia, serif"],
+  ["Times New Roman", "'Times New Roman', Times, serif"],
+  ["Verdana", "Verdana, sans-serif"],
+  ["Courier New", "'Courier New', Courier, monospace"]
+];
+const FONT_SIZES = [8, 9, 10, 10.5, 11, 12, 14, 16, 18, 20, 24, 28, 36, 48, 72];
+const DEFAULT_FONT_SIZE = 11;
+// What More formatting (…) holds, in Outlook's order.
+const MORE_FORMATS = [
+  ["justifyLeft", "Align left"], ["justifyCenter", "Centre"], ["justifyRight", "Align right"],
+  ["outdent", "Decrease indent"], ["indent", "Increase indent"],
+  ["superscript", "Superscript"], ["subscript", "Subscript"],
+  ["removeFormat", "Clear formatting"]
+];
+
+// The formatting bar, laid out as Outlook's Message ribbon: undo, font and
+// size, text styles, colours, lists, more, then Attach and Link.
+function formatBarHtml({ attach = true, assistant = true, hidden = false } = {}) {
   const skip = ` tabindex="-1"`;
-  return `<div class="format-bar" aria-label="Formatting">
-          <button class="attach-btn" type="button" id="add-file"${skip} title="Attach" aria-label="Attach"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M6.2 8.4l3.1-3.1a1.9 1.9 0 012.7 2.7L7.8 12.2a3 3 0 01-4.2-4.2L8 3.6" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg></button>
-          <input class="file-picker" id="compose-file-picker" type="file" multiple tabindex="-1" aria-hidden="true">
-          <button type="button" data-cmd="bold"${skip} title="Bold"><b>B</b></button>
-          <button type="button" data-cmd="italic"${skip} title="Italic"><i>I</i></button>
-          <button type="button" data-cmd="underline"${skip} title="Underline"><u>U</u></button>
+  const sep = `<span class="fmt-sep" aria-hidden="true"></span>`;
+  const icon = (cmd, label, path) => `<button type="button" class="format-icon" data-cmd="${cmd}"${skip} title="${label}" aria-label="${label}"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">${path}</svg></button>`;
+  return `<div class="format-bar" aria-label="Formatting"${hidden ? " hidden" : ""}>
+          ${icon("undo", "Undo", '<path d="M5.5 4.5L2.8 7.2l2.7 2.7M3 7.2h6.4a3.6 3.6 0 010 7.2H7" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>')}
+          ${icon("redo", "Redo", '<path d="M10.5 4.5l2.7 2.7-2.7 2.7M13 7.2H6.6a3.6 3.6 0 000 7.2H9" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>')}
+          ${sep}
+          <select class="font-face" data-font-face${skip} title="Font" aria-label="Font">${FONT_FACES.map(([name, stack]) => `<option value="${esc(stack)}">${esc(name)}</option>`).join("")}</select>
+          <select class="font-size" data-font-size${skip} title="Font size" aria-label="Font size">${FONT_SIZES.map(n => `<option value="${n}"${n === DEFAULT_FONT_SIZE ? " selected" : ""}>${n}</option>`).join("")}</select>
+          ${sep}
+          <button type="button" data-cmd="bold"${skip} title="Bold" aria-label="Bold"><b>B</b></button>
+          <button type="button" data-cmd="italic"${skip} title="Italic" aria-label="Italic"><i>I</i></button>
+          <button type="button" data-cmd="underline"${skip} title="Underline" aria-label="Underline"><u>U</u></button>
+          <button type="button" data-cmd="strikeThrough"${skip} title="Strikethrough" aria-label="Strikethrough"><s>S</s></button>
           <span class="colour-split"><button type="button" class="colour-apply" data-colour="fore"${skip} title="Font colour" aria-label="Font colour" style="--swatch:${esc(lastColour("fore"))}"><span class="colour-a">A</span><span class="colour-bar"></span></button><button type="button" class="colour-more" data-colour-menu="fore"${skip} title="Font colours" aria-label="Font colours" aria-haspopup="menu">▾</button></span>
           <span class="colour-split"><button type="button" class="colour-apply" data-colour="hilite"${skip} title="Highlight" aria-label="Highlight" style="--swatch:${esc(lastColour("hilite"))}"><svg width="14" height="12" viewBox="0 0 16 14" aria-hidden="true"><path d="M3.5 9.5l6.8-6.8 2.5 2.5-6.8 6.8H3.5V9.5z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg><span class="colour-bar"></span></button><button type="button" class="colour-more" data-colour-menu="hilite"${skip} title="Highlight colours" aria-label="Highlight colours" aria-haspopup="menu">▾</button></span>
           <button type="button" class="format-icon" data-cmd="insertUnorderedList"${skip} title="Bullets" aria-label="Bullets"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><circle cx="3" cy="4" r="1.2" fill="currentColor"/><circle cx="3" cy="8" r="1.2" fill="currentColor"/><circle cx="3" cy="12" r="1.2" fill="currentColor"/><path d="M6.5 4h7M6.5 8h7M6.5 12h7" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg></button>
           <button type="button" class="format-icon" data-cmd="insertOrderedList"${skip} title="Numbers" aria-label="Numbers"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.2 2.9l1.1-.6v3.4M2.1 7.6c.3-.5 1.9-.6 1.9.4 0 .7-1.9 1.6-1.9 2.2h2M2.2 11.9c.4-.4 1.8-.4 1.8.4 0 .5-.5.7-1 .7.6 0 1.1.2 1.1.8 0 .9-1.5.9-2 .4" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round"/><path d="M6.5 4h7M6.5 8.6h7M6.5 13h7" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg></button>
+          <button type="button" class="format-icon format-more" data-format-more${skip} title="More formatting" aria-label="More formatting" aria-haspopup="menu">…</button>
+          ${sep}
+          ${attach ? `<button class="attach-btn" type="button" id="add-file"${skip} title="Attach" aria-label="Attach"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M6.2 8.4l3.1-3.1a1.9 1.9 0 012.7 2.7L7.8 12.2a3 3 0 01-4.2-4.2L8 3.6" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg></button>
+          <input class="file-picker" id="compose-file-picker" type="file" multiple tabindex="-1" aria-hidden="true">` : ""}
           <button type="button" class="format-icon" data-cmd="link"${skip} title="Link" aria-label="Link"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M6.9 9.1a2.5 2.5 0 003.5 0l2.3-2.3a2.5 2.5 0 00-3.5-3.5l-.9.9M9.1 6.9a2.5 2.5 0 00-3.5 0L3.3 9.2a2.5 2.5 0 003.5 3.5l.9-.9" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
-          ${assistantButtonHtml()}
+          ${assistant ? assistantButtonHtml() : ""}
         </div>`;
 }
 
@@ -14452,6 +14486,9 @@ function composeMarkup({ mode, title, msgId, fromId, to, cc, bcc, attachments, s
   const bccOn = !hideAddress && !!String(bcc || "").trim();
   const discardButton = `<button class="icon-btn" type="button" id="cancel" title="Discard" aria-label="Discard"><svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true"><path d="M4.5 6.5h11M8 6.4V4.8h4v1.6M7.2 6.5l.5 8.8h4.6l.5-8.8" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg></button>`;
   const formatBar = formatBarHtml();
+  // An inline reply has no formatting bar, as in Outlook; Format text shows it.
+  const formatOn = (() => { try { return localStorage.getItem("mailroom-format-bar") === "1"; } catch (e) { return false; } })();
+  const formatToggle = `<button class="icon-btn format-toggle" type="button" id="format-toggle" title="Format text" aria-label="Format text" aria-pressed="${formatOn}"><svg width="18" height="18" viewBox="0 0 20 20" aria-hidden="true"><path d="M3.5 15L7.6 4.5h.8L12.5 15M5 11.3h6" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/><path d="M12.8 14.6l3.6-3.6 1.3 1.3-3.6 3.6h-1.3z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></svg></button>`;
   const sendLater = inDesktop() ? `<button class="icon-btn send-later" type="button" id="send-later" title="Send later" aria-label="Send later"><svg width="18" height="18" viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10.5" r="6.3" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M10 7.2v3.5l2.4 1.5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg></button>` : "";
   // Importance and a read receipt, as Outlook's message options.
   const templatesButton = `<button class="icon-btn templates-btn" type="button" id="compose-templates" title="Templates" aria-label="Templates" aria-haspopup="menu"><svg width="18" height="18" viewBox="0 0 20 20" aria-hidden="true"><rect x="4" y="2.8" width="12" height="14.4" rx="1.4" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M7 7h6M7 10h6M7 13h3.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg></button>`;
@@ -14459,6 +14496,7 @@ function composeMarkup({ mode, title, msgId, fromId, to, cc, bcc, attachments, s
   const signatureButton = `<button class="icon-btn signature-btn" type="button" id="compose-signature" title="Signature" aria-label="Signature" aria-haspopup="menu"><svg width="18" height="18" viewBox="0 0 20 20" aria-hidden="true"><path d="M3 14.5c1.6-3.2 3.4-6.6 4.6-6.6 1.5 0-1.2 6.6.6 6.6 1.3 0 2.2-3.2 3.4-3.2.9 0 .5 2.2 1.5 2.2.6 0 1-.6 1.5-1.2" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/><path d="M3 17h14" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg></button>`;
   if (mode === "pop") {
     return `<form class="pop-form" id="compose-form" data-msg="${esc(msgId || "")}" data-kind="${esc(kind || "new")}">
+      ${formatBar}
       <div class="compose-bar">
         <button class="primary" type="submit">Send</button>${sendLater}${sendOptions}${templatesButton}${signatureButton}
         <span class="compose-spacer"></span>
@@ -14469,7 +14507,6 @@ function composeMarkup({ mode, title, msgId, fromId, to, cc, bcc, attachments, s
         <select name="from" id="compose-from">${fromOptions(fromId)}</select>
         <input id="compose-alias" class="alias-entry" hidden autocomplete="off" spellcheck="false" placeholder="name@example.com" aria-label="Send from this address">
       </label>
-      ${formatBar}
       <div class="pop-row pop-to">
         <label class="pop-label" for="compose-to">To</label>
         <input name="to" id="compose-to" value="${esc(recipientFieldValue(to || ""))}" autocomplete="off">
@@ -14549,9 +14586,9 @@ function composeMarkup({ mode, title, msgId, fromId, to, cc, bcc, attachments, s
   const addressBlock = hideAddress ? `<div class="compose-address">${address}</div>` : address;
   const ccButtons = `<span class="who-cc"><button type="button" class="linkish" id="show-cc" tabindex="-1"${ccOn ? " hidden" : ""}>Cc</button><button type="button" class="linkish" id="show-bcc" tabindex="-1"${bccOn ? " hidden" : ""}>Bcc</button></span>`;
   const who = hideAddress ? composeWhoHtml(to, cc, bcc, ccButtons) : "";
-  const inlineReply = mode === "inline" && !!bare;
-  // The short reply has no formatting bar, so Attach sits by Send.
-  const replyAttach = inlineReply ? assistantButtonHtml("icon-btn reply-assist") + `<button class="icon-btn attach-btn" type="button" id="add-file" title="Attach" aria-label="Attach"><svg width="18" height="18" viewBox="0 0 16 16" aria-hidden="true"><path d="M6.2 8.4l3.1-3.1a1.9 1.9 0 012.7 2.7L7.8 12.2a3 3 0 01-4.2-4.2L8 3.6" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg></button><input class="file-picker" id="compose-file-picker" type="file" multiple tabindex="-1" aria-hidden="true">` : "";
+  const inlineReply = mode === "inline";
+  // An inline reply's bar starts hidden, as in Outlook, so Attach sits by Send.
+  const replyAttach = inlineReply ? formatToggle + assistantButtonHtml("icon-btn reply-assist") + `<button class="icon-btn attach-btn" type="button" id="add-file" title="Attach" aria-label="Attach"><svg width="18" height="18" viewBox="0 0 16 16" aria-hidden="true"><path d="M6.2 8.4l3.1-3.1a1.9 1.9 0 012.7 2.7L7.8 12.2a3 3 0 01-4.2-4.2L8 3.6" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg></button><input class="file-picker" id="compose-file-picker" type="file" multiple tabindex="-1" aria-hidden="true">` : "";
   return `<form class="${cls}" id="compose-form" data-msg="${esc(msgId || "")}" data-kind="${esc(kind || "new")}">
       ${inlineReply ? bar.replace('<span class="compose-spacer"></span>', replyAttach + '<span class="compose-spacer"></span>') : bar}
       ${who}
@@ -14559,7 +14596,7 @@ function composeMarkup({ mode, title, msgId, fromId, to, cc, bcc, attachments, s
       <div class="files" id="compose-files">${fileChips(attachments)}</div>
       ${inviteMarkup(meeting, to)}
       <div class="field compose-message">${mode === "pane" || bare ? "" : "Message"}
-        ${inlineReply ? "" : formatBar}
+        ${inlineReply ? formatBarHtml({ attach: false, assistant: false, hidden: !formatOn }) : formatBar}
         <div class="compose-canvas">
           <div id="compose-body" class="html-body" contenteditable="true" role="textbox" aria-multiline="true">${htmlFor(bodyHtml || "<p><br></p>")}</div>
           ${kind === "reply" && includeHistory !== false ? historyMarkup(msgId, openHistory) : ""}
@@ -15580,37 +15617,168 @@ function bindCompose(root, ctx) {
   bindColourButtons(form, body, () => { if (ctx.draft) ctx.draft.bodyHtml = body.innerHTML; });
   markDarkInks(body);
   body.addEventListener("paste", pasteIntoCompose);
+  // The caret or selection in the message, kept for the font pickers: a
+  // <select> takes focus while its list is open.
+  let formatRange = null;
+  const keepFormatRange = () => {
+    const sel = window.getSelection();
+    const write = body.querySelector(".body-write") || body;
+    if (sel && sel.rangeCount && write.contains(sel.anchorNode)) formatRange = sel.getRangeAt(0).cloneRange();
+  };
+  // Put the caret back in the message: where it was, or at the end.
+  const caretInMessage = (range) => {
+    const write = body.querySelector(".body-write") || body;
+    body.focus();
+    const sel = window.getSelection();
+    if (range && write.contains(range.startContainer)) {
+      sel.removeAllRanges();
+      sel.addRange(range);
+    } else if (!sel || !sel.rangeCount || !sel.anchorNode || !write.contains(sel.anchorNode)) {
+      const end = document.createRange();
+      end.selectNodeContents(write);
+      end.collapse(false);
+      sel.removeAllRanges();
+      sel.addRange(end);
+    }
+    return write;
+  };
+  const afterFormat = (write) => {
+    [...body.childNodes].forEach(node => {
+      if (node === write) return;
+      if (node.nodeType === 1 && node.dataset && node.dataset.sig) return;
+      write.appendChild(node);
+    });
+    tidyLists(write);
+    if (ctx.draft) ctx.draft.bodyHtml = body.innerHTML;
+    keepFormatRange();
+    showFormatState();
+  };
+  function runFormat(cmd) {
+    const write = caretInMessage(null);
+    if (cmd === "link") {
+      const url = window.prompt("Link address", "https://");
+      if (url) document.execCommand("createLink", false, url);
+    } else if (cmd === "insertUnorderedList" || cmd === "insertOrderedList") {
+      applyList(write, cmd === "insertOrderedList");
+    } else {
+      // Alignment and indents as styles, so other mail apps keep them.
+      document.execCommand("styleWithCSS", false, /^(justify|indent|outdent)/.test(cmd));
+      document.execCommand(cmd, false, null);
+    }
+    afterFormat(write);
+  }
   form.querySelectorAll(".format-bar [data-cmd]").forEach(btn => {
     btn.addEventListener("mousedown", (e) => e.preventDefault());
-    btn.onclick = () => {
-      const write = body.querySelector(".body-write") || body;
-      body.focus();
-      const sel = window.getSelection();
-      if (!sel || !sel.rangeCount || !sel.anchorNode || !write.contains(sel.anchorNode)) {
-        const range = document.createRange();
-        range.selectNodeContents(write);
-        range.collapse(false);
-        const next = window.getSelection();
-        next.removeAllRanges();
-        next.addRange(range);
-      }
-      if (btn.dataset.cmd === "link") {
-        const url = window.prompt("Link address", "https://");
-        if (url) document.execCommand("createLink", false, url);
-      } else if (btn.dataset.cmd === "insertUnorderedList" || btn.dataset.cmd === "insertOrderedList") {
-        applyList(write, btn.dataset.cmd === "insertOrderedList");
-      } else {
-        document.execCommand(btn.dataset.cmd, false, null);
-      }
-      [...body.childNodes].forEach(node => {
-        if (node === write) return;
-        if (node.nodeType === 1 && node.dataset && node.dataset.sig) return;
-        write.appendChild(node);
-      });
-      tidyLists(write);
-      if (ctx.draft) ctx.draft.bodyHtml = body.innerHTML;
-    };
+    btn.onclick = () => runFormat(btn.dataset.cmd);
   });
+  // Font and size, as Outlook's. A size goes in as points, the unit Outlook
+  // writes. execCommand only knows sizes 1-7, so 7 marks the text and is
+  // swapped for the real size here, and again as typing fills a size picked
+  // with nothing selected.
+  let pendingSize = 0;
+  const swapSizeMarks = (write) => {
+    if (!pendingSize) return;
+    const marks = write.querySelectorAll('font[size="7"]');
+    if (!marks.length) return;
+    // Moving the text drops the caret out of it; put it back where it was.
+    const sel = window.getSelection();
+    const at = sel && sel.rangeCount ? sel.getRangeAt(0) : null;
+    const keep = at && { sc: at.startContainer, so: at.startOffset, ec: at.endContainer, eo: at.endOffset };
+    marks.forEach(font => {
+      const span = document.createElement("span");
+      span.style.fontSize = pendingSize + "pt";
+      font.replaceWith(span);
+      while (font.firstChild) span.appendChild(font.firstChild);
+    });
+    if (keep && write.contains(keep.sc) && write.contains(keep.ec)) {
+      const range = document.createRange();
+      range.setStart(keep.sc, keep.so);
+      range.setEnd(keep.ec, keep.eo);
+      sel.removeAllRanges();
+      sel.addRange(range);
+    }
+  };
+  body.addEventListener("input", () => swapSizeMarks(body.querySelector(".body-write") || body));
+  const faceSelect = form.querySelector(".format-bar [data-font-face]");
+  const sizeSelect = form.querySelector(".format-bar [data-font-size]");
+  // The selects show the font where the caret is: the nearest chosen one, or
+  // what the message goes out in.
+  function showFormatState() {
+    if (!faceSelect && !sizeSelect) return;
+    const sel = window.getSelection();
+    const write = body.querySelector(".body-write") || body;
+    if (!sel || !sel.anchorNode || !write.contains(sel.anchorNode)) return;
+    let face = "", size = 0;
+    for (let el = sel.anchorNode.nodeType === 1 ? sel.anchorNode : sel.anchorNode.parentElement; el && el !== write; el = el.parentElement) {
+      if (!face && (el.style.fontFamily || el.getAttribute("face"))) face = el.style.fontFamily || el.getAttribute("face");
+      if (!size && el.style.fontSize && /pt$/.test(el.style.fontSize)) size = parseFloat(el.style.fontSize);
+      if (!size && el.style.fontSize && /px$/.test(el.style.fontSize)) size = Math.round(parseFloat(el.style.fontSize) * 0.75 * 2) / 2;
+    }
+    const first = String(face).split(",")[0].replace(/['"]/g, "").trim().toLowerCase();
+    const match = FONT_FACES.find(([name]) => name.toLowerCase() === first) || (face ? null : FONT_FACES[0]);
+    if (faceSelect) faceSelect.value = match ? match[1] : "";
+    if (sizeSelect) {
+      const want = size || DEFAULT_FONT_SIZE;
+      if (!FONT_SIZES.includes(want) && ![...sizeSelect.options].some(o => Number(o.value) === want)) sizeSelect.insertAdjacentHTML("beforeend", `<option value="${want}">${want}</option>`);
+      sizeSelect.value = String(want);
+    }
+  }
+  ["keyup", "mouseup"].forEach(name => body.addEventListener(name, () => { keepFormatRange(); showFormatState(); }));
+  body.addEventListener("input", keepFormatRange);
+  if (faceSelect) faceSelect.addEventListener("change", () => {
+    const write = caretInMessage(formatRange);
+    document.execCommand("styleWithCSS", false, true);
+    document.execCommand("fontName", false, faceSelect.value);
+    afterFormat(write);
+  });
+  if (sizeSelect) sizeSelect.addEventListener("change", () => {
+    const write = caretInMessage(formatRange);
+    pendingSize = Number(sizeSelect.value) || DEFAULT_FONT_SIZE;
+    document.execCommand("styleWithCSS", false, false);
+    document.execCommand("fontSize", false, "7");
+    swapSizeMarks(write);
+    afterFormat(write);
+  });
+  // More formatting (…): alignment, indents, super/subscript, clear.
+  const moreBtn = form.querySelector(".format-bar [data-format-more]");
+  if (moreBtn) {
+    moreBtn.addEventListener("mousedown", (e) => e.preventDefault());
+    moreBtn.onclick = () => {
+      let menu = document.getElementById("format-more-menu");
+      if (menu) { menu.remove(); return; }
+      menu = document.createElement("div");
+      menu.id = "format-more-menu";
+      menu.className = "send-options-menu format-more-menu";
+      menu.setAttribute("role", "menu");
+      menu.innerHTML = MORE_FORMATS.map(([cmd, label], i) => (i === 3 || i === 5 || i === 7 ? `<div class="menu-rule"></div>` : "") + `<button type="button" role="menuitem" data-more-cmd="${cmd}"><span></span>${label}</button>`).join("");
+      document.body.appendChild(menu);
+      const at = moreBtn.getBoundingClientRect();
+      menu.style.left = Math.max(8, Math.min(at.left, innerWidth - menu.offsetWidth - 8)) + "px";
+      menu.style.top = (at.bottom + 4) + "px";
+      const close = () => { menu.remove(); document.removeEventListener("mousedown", outside, true); };
+      function outside(ev) { if (!menu.contains(ev.target) && !moreBtn.contains(ev.target)) close(); }
+      document.addEventListener("mousedown", outside, true);
+      menu.addEventListener("mousedown", (e) => e.preventDefault());
+      menu.addEventListener("click", (ev) => {
+        const item = ev.target.closest("[data-more-cmd]");
+        if (!item) return;
+        close();
+        runFormat(item.dataset.moreCmd);
+      });
+    };
+  }
+  // Format text shows or hides an inline reply's bar, and is remembered.
+  const formatToggleBtn = form.querySelector("#format-toggle");
+  if (formatToggleBtn) {
+    formatToggleBtn.addEventListener("mousedown", (e) => e.preventDefault());
+    formatToggleBtn.onclick = () => {
+      const bar = form.querySelector(".format-bar");
+      if (!bar) return;
+      bar.hidden = !bar.hidden;
+      formatToggleBtn.setAttribute("aria-pressed", String(!bar.hidden));
+      try { localStorage.setItem("mailroom-format-bar", bar.hidden ? "0" : "1"); } catch (e) {}
+    };
+  }
   function payload() {
     const meeting = readInvite(form);
     if (ctx.draft) ctx.draft.meeting = meeting;
@@ -17246,7 +17414,7 @@ const folderBusy = new Set();
 let syncNote = "";
 const folderRun = new Map();
 const bodyLoads = new Set();
-const APP_VERSION = "1.3.14";
+const APP_VERSION = "1.3.15";
 let appVersion = APP_VERSION;
 
 prepareDesktopAccounts();
