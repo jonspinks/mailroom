@@ -1323,6 +1323,20 @@ test("categories, snooze and automatic replies", { fake: true }, async ({ p, cal
   same((await calls("set_auto_reply")).map(a => a.reply.status), ["alwaysEnabled"], "automatic replies on");
 });
 
+test("the Categories heading collapses and stays collapsed", { fake: true }, async ({ p }) => {
+  const head = '[data-section^="cats:"]';
+  await p.waitForSelector(head, { timeout: 3000 });
+  const shown = () => p.$$eval("#folders [data-cat-name]", bs => bs.map(b => b.dataset.catName));
+  same(await shown(), ["Jobs", "Urgent"], "categories listed");
+  await p.click(head); await wait(200);
+  same(await shown(), [], "categories hidden");
+  same(await p.$eval(head, b => b.getAttribute("aria-expanded")), "false", "heading says collapsed");
+  const saved = await p.evaluate(() => JSON.parse(localStorage.getItem("mailroom-mail-collapse") || "{}").sections || []);
+  expect(saved.some(k => k.startsWith("cats:")), "collapse remembered", saved);
+  await p.click(head); await wait(200);
+  same(await shown(), ["Jobs", "Urgent"], "categories back");
+});
+
 test("rules: create from a message, list, turn off", { fake: true }, async ({ p, calls, clear, rightClick }) => {
   await rightClick('.row[data-id="m1"]');
   await p.click('#row-menu [data-act="rule"]'); await wait(500);

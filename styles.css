@@ -865,6 +865,7 @@
     text-align: left;
   }
   button.acct-label.section:hover { background: var(--hover); color: var(--ink); }
+  button.acct-label.section.quiet { margin-top: 8px; font-size: 12px; font-weight: 600; }
   .section-chevron { flex: none; color: var(--faint); transition: transform .12s ease; }
   button.acct-label.section[aria-expanded="true"] .section-chevron,
   .folder-twist[aria-expanded="true"] .section-chevron { transform: rotate(90deg); }

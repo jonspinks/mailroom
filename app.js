@@ -1794,9 +1794,9 @@ function sectionChevron() {
   return `<svg class="section-chevron" width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path d="M4.2 2.2L8 6 4.2 9.8" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
 }
 
-function sectionHead(key, labelHtml, name) {
+function sectionHead(key, labelHtml, name, extraClass = "") {
   const open = sectionOpen(key);
-  return `<button class="acct-label section" type="button" data-section="${esc(key)}" aria-expanded="${open}" aria-label="${esc((open ? "Collapse " : "Expand ") + name)}">${sectionChevron()}${labelHtml}</button>`;
+  return `<button class="acct-label section${extraClass ? " " + extraClass : ""}" type="button" data-section="${esc(key)}" aria-expanded="${open}" aria-label="${esc((open ? "Collapse " : "Expand ") + name)}">${sectionChevron()}${labelHtml}</button>`;
 }
 
 function liveFolder(id, key) {
@@ -1865,7 +1865,10 @@ function categoryButton(id, cat) {
 function categoryFoldersHtml(id) {
   const cats = (accounts[id] && accounts[id].categories) || [];
   if (!cats.length || isGoogleAccount(id)) return "";
-  return `<div class="acct-label quiet">Categories</div>` + cats.map(cat => categoryButton(id, cat)).join("");
+  // Collapsible on its own, per account; the key is remembered with the others.
+  const key = "cats:" + id;
+  const name = ((accounts[id] && accounts[id].name) || "") + " categories";
+  return sectionHead(key, "Categories", name, "quiet") + (sectionOpen(key) ? cats.map(cat => categoryButton(id, cat)).join("") : "");
 }
 
 function searchFolderButton(id, item) {
@@ -1918,7 +1921,7 @@ function rememberMailCollapse() {
   if (!inDesktop()) return;
   const sections = [...collapsedSections].filter(key => {
     if (key === "fav" || key === "all") return true;
-    const acct = accounts[key];
+    const acct = accounts[String(key).replace(/^cats:/, "")];
     return !!(acct && !isSampleEmail(acct.email));
   });
   const folders = [...collapsedFolders].filter(key => {
@@ -17121,7 +17124,7 @@ const folderBusy = new Set();
 let syncNote = "";
 const folderRun = new Map();
 const bodyLoads = new Set();
-const APP_VERSION = "1.3.10";
+const APP_VERSION = "1.3.11";
 let appVersion = APP_VERSION;
 
 prepareDesktopAccounts();
