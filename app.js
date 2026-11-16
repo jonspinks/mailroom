@@ -555,9 +555,8 @@ let settingsPage = "accounts";
 let settingsSigId = "";
 let settingsAccountId = "";
 
-function appliedSignature(accountId, kind) {
-  const setting = signatures.find(item => item.account === accountId && String(item.body || "").trim() && (item.scope === "all" || kind === "new"));
-  return setting ? signatureSource(setting.body) : "";
+function appliedSignatureItem(accountId, kind) {
+  return signatures.find(item => item.account === accountId && String(item.body || "").trim() && (item.scope === "all" || kind === "new")) || null;
 }
 
 function scopeLabel(scope) {
@@ -581,12 +580,18 @@ function paintComposeSignature(form, replace) {
   const body = form.querySelector("#compose-body");
   if (!body) return;
   ensureWriteArea(body);
-  const html = appliedSignature(fromAccountId(form.querySelector("#compose-from").value), form.dataset.kind);
-  let sig = body.querySelector("[data-sig]");
-  if (!html) {
+  const item = appliedSignatureItem(fromAccountId(form.querySelector("#compose-from").value), form.dataset.kind);
+  const sig = body.querySelector("[data-sig]");
+  if (!item) {
     if (sig) sig.remove();
     return;
   }
+  if (!sig || replace) putComposeSignature(body, signatureSource(item.body)).dataset.sigId = item.id;
+}
+
+// Put a signature at the end of the message, in place of any there now.
+function putComposeSignature(body, html) {
+  let sig = body.querySelector("[data-sig]");
   if (!sig) {
     sig = document.createElement("div");
     sig.className = "body-sig";
@@ -595,10 +600,9 @@ function paintComposeSignature(form, replace) {
     // replaced from its saved copy when the message is sent.
     sig.contentEditable = "false";
     body.appendChild(sig);
-    mountSignature(sig, html);
-    return;
   }
-  if (replace) mountSignature(sig, html);
+  mountSignature(sig, html);
+  return sig;
 }
 
 function signatureSource(raw) {
@@ -14361,6 +14365,7 @@ function outgoingHtml(html) {
   });
   root.querySelectorAll(".body-sig").forEach(el => {
     el.removeAttribute("contenteditable");
+    el.removeAttribute("data-sig-id");
     if (!el.getAttribute("style")) el.setAttribute("style", "margin-top: 8px;");
   });
   return '<div style="' + OUT_FONT + '">' + root.innerHTML + "</div>";
@@ -14451,10 +14456,11 @@ function composeMarkup({ mode, title, msgId, fromId, to, cc, bcc, attachments, s
   // Importance and a read receipt, as Outlook's message options.
   const templatesButton = `<button class="icon-btn templates-btn" type="button" id="compose-templates" title="Templates" aria-label="Templates" aria-haspopup="menu"><svg width="18" height="18" viewBox="0 0 20 20" aria-hidden="true"><rect x="4" y="2.8" width="12" height="14.4" rx="1.4" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M7 7h6M7 10h6M7 13h3.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg></button>`;
   const sendOptions = `<button class="icon-btn send-options" type="button" id="send-options" title="Message options" aria-label="Message options" aria-haspopup="menu"><svg width="18" height="18" viewBox="0 0 20 20" aria-hidden="true"><path d="M10 3.5v8.2" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><circle cx="10" cy="15.3" r="1.2" fill="currentColor"/></svg></button>`;
+  const signatureButton = `<button class="icon-btn signature-btn" type="button" id="compose-signature" title="Signature" aria-label="Signature" aria-haspopup="menu"><svg width="18" height="18" viewBox="0 0 20 20" aria-hidden="true"><path d="M3 14.5c1.6-3.2 3.4-6.6 4.6-6.6 1.5 0-1.2 6.6.6 6.6 1.3 0 2.2-3.2 3.4-3.2.9 0 .5 2.2 1.5 2.2.6 0 1-.6 1.5-1.2" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/><path d="M3 17h14" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg></button>`;
   if (mode === "pop") {
     return `<form class="pop-form" id="compose-form" data-msg="${esc(msgId || "")}" data-kind="${esc(kind || "new")}">
       <div class="compose-bar">
-        <button class="primary" type="submit">Send</button>${sendLater}${sendOptions}${templatesButton}
+        <button class="primary" type="submit">Send</button>${sendLater}${sendOptions}${templatesButton}${signatureButton}
         <span class="compose-spacer"></span>
         ${discardButton}
       </div>
@@ -14497,7 +14503,7 @@ function composeMarkup({ mode, title, msgId, fromId, to, cc, bcc, attachments, s
   const cls = mode === "inline" ? "inline-reply" : mode === "pop" ? "pop-form" : mode === "pane" ? "pane-compose" : "dialog compose";
   const popOutButton = `<button class="icon-btn" type="button" id="pop-out" title="Pop out" aria-label="Pop out"><svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true"><path d="M8.2 4.6H4.8v10.6h10.6V11" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><path d="M10.6 9.4L15.6 4.4M12.2 4.4h3.4V7.8" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg></button>`;
   const commandBar = `<div class="compose-bar">
-        <button class="primary" type="submit">Send</button>${sendLater}${sendOptions}${templatesButton}
+        <button class="primary" type="submit">Send</button>${sendLater}${sendOptions}${templatesButton}${signatureButton}
         <span class="compose-spacer"></span>
         ${discardButton}
         ${popOutButton}
@@ -14510,7 +14516,7 @@ function composeMarkup({ mode, title, msgId, fromId, to, cc, bcc, attachments, s
   const footer = mode === "inline" || mode === "pane" ? "" : `
       <div class="dialog-actions">
         <button class="ghost" type="button" id="cancel">Discard</button>
-        <button class="primary" type="submit">Send</button>${sendLater}${sendOptions}${templatesButton}
+        <button class="primary" type="submit">Send</button>${sendLater}${sendOptions}${templatesButton}${signatureButton}
       </div>`;
   const address = `<label class="field">
         <span class="compose-label">From</span>
@@ -15755,6 +15761,64 @@ function bindCompose(root, ctx) {
         settingsPage = "templates";
         editingTemplate = null;
         if (popCompose) { toast("Templates are in Settings in the main window."); return; }
+        setView("settings");
+      }
+    });
+  }
+  // Signature: put one back after deleting it by mistake, pick another of
+  // this account's, or take it out.
+  const signatureBtn = form.querySelector("#compose-signature");
+  if (signatureBtn) {
+    const smenu = document.createElement("div");
+    smenu.className = "send-options-menu signature-menu";
+    smenu.setAttribute("role", "menu");
+    smenu.hidden = true;
+    signatureBtn.insertAdjacentElement("afterend", smenu);
+    const closeS = () => { smenu.hidden = true; document.removeEventListener("mousedown", outsideS, true); };
+    function outsideS(ev) { if (!smenu.contains(ev.target) && !signatureBtn.contains(ev.target)) closeS(); }
+    const accountSignatures = () => {
+      const fromPick = form.querySelector("#compose-from");
+      const id = fromPick ? fromAccountId(fromPick.value) : "";
+      return signatures.filter(item => item.account === id && String(item.body || "").trim());
+    };
+    signatureBtn.onclick = () => {
+      if (!smenu.hidden) return closeS();
+      const list = accountSignatures();
+      const current = body.querySelector("[data-sig]");
+      smenu.innerHTML = (list.length
+        ? list.map(item => `<button type="button" role="menuitemcheckbox" data-use-signature="${esc(item.id)}" aria-checked="${!!(current && current.dataset.sigId === item.id)}"><span aria-hidden="true">✓</span>${esc(item.name || "Signature")}</button>`).join("")
+        : `<p class="menu-note">This account has no signature.</p>`)
+        + (current ? `<div class="menu-rule"></div><button type="button" role="menuitem" data-signature-remove><span></span>Remove signature</button>` : "")
+        + `<div class="menu-rule"></div><button type="button" role="menuitem" data-signature-manage><span></span>Manage signatures</button>`;
+      smenu.hidden = false;
+      const at = signatureBtn.getBoundingClientRect();
+      smenu.style.left = Math.max(8, Math.min(at.left, innerWidth - smenu.offsetWidth - 8)) + "px";
+      smenu.style.top = (at.bottom + 4) + "px";
+      document.addEventListener("mousedown", outsideS, true);
+    };
+    smenu.addEventListener("mousedown", (ev) => ev.preventDefault());
+    smenu.addEventListener("click", (ev) => {
+      const use = ev.target.closest("[data-use-signature]");
+      if (use) {
+        const item = accountSignatures().find(x => x.id === use.dataset.useSignature);
+        closeS();
+        if (!item) return;
+        ensureWriteArea(body);
+        putComposeSignature(body, signatureSource(item.body)).dataset.sigId = item.id;
+        body.dispatchEvent(new Event("input", { bubbles: true }));
+        return;
+      }
+      if (ev.target.closest("[data-signature-remove]")) {
+        closeS();
+        const sig = body.querySelector("[data-sig]");
+        if (sig) sig.remove();
+        body.dispatchEvent(new Event("input", { bubbles: true }));
+        return;
+      }
+      if (ev.target.closest("[data-signature-manage]")) {
+        closeS();
+        settingsPage = "signatures";
+        if (popCompose) { toast("Signatures are in Settings in the main window."); return; }
         setView("settings");
       }
     });
@@ -17143,7 +17207,7 @@ const folderBusy = new Set();
 let syncNote = "";
 const folderRun = new Map();
 const bodyLoads = new Set();
-const APP_VERSION = "1.3.12";
+const APP_VERSION = "1.3.13";
 let appVersion = APP_VERSION;
 
 prepareDesktopAccounts();
