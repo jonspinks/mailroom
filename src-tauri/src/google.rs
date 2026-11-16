@@ -1378,10 +1378,17 @@ pub fn apply_mail(email: &str, kind: &str, message_ids: &[String], destination: 
             modify(&client, &token, &ids, &add, &remove)?;
         }
         "trash" => each(&client, &token, &ids, "trash")?,
-        "inbox" => {
+        "inbox" | "notjunk" => {
             each(&client, &token, &ids, "untrash")?;
             modify(&client, &token, &ids, &strings(&["INBOX"]), &strings(&["SPAM"]))?;
         }
+        // Gmail learns from the Spam label itself; there is no blocked list
+        // to change, so unblocking alone has nothing to do.
+        "junk" => {
+            let (add, remove) = move_labels("SPAM", source.trim())?;
+            modify(&client, &token, &ids, &add, &remove)?;
+        }
+        "unblock" => {}
         "move" => match destination.trim() {
             "TRASH" => each(&client, &token, &ids, "trash")?,
             to => {

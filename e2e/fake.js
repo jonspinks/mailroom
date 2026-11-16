@@ -15,6 +15,8 @@
     { id: "f-jobs", parentId: "", name: "Jobs", key: "f-jobs", unread: 0, total: 0, depth: 0 },
     { id: "f-kiln", parentId: "f-jobs", name: "Kiln project", key: "f-kiln", unread: 0, total: 0, depth: 1 }
   ];
+  // A test's setup can add folders (Junk Email) before the first sync.
+  window.__folders = folders;
   window.__inbox = [
     msg("m1", "Ada Lovelace", "ada@example.org", "Kiln schedule", 30),
     msg("m2", "Maya Chen", "maya@example.org", "Pipeline review", 20),

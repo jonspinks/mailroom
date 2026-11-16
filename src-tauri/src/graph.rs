@@ -1569,6 +1569,13 @@ pub fn mail_action_request(kind: &str, message_id: &str) -> Result<MailRequest, 
         "archive" => ("POST", format!("{message}/move"), serde_json::json!({ "destinationId": "archive" })),
         "trash" => ("POST", format!("{message}/move"), serde_json::json!({ "destinationId": "deleteditems" })),
         "inbox" => ("POST", format!("{message}/move"), serde_json::json!({ "destinationId": "inbox" })),
+        // Outlook's Report junk and Not junk: moves the message and adds the
+        // sender to, or takes them off, the blocked senders list.
+        "junk" => ("POST", format!("{message}/markAsJunk"), serde_json::json!({ "moveToJunk": true })),
+        "notjunk" => ("POST", format!("{message}/markAsNotJunk"), serde_json::json!({ "moveToInbox": true })),
+        // Not junk without moving: only unblocks the sender (undo of a report
+        // that sends the mail back somewhere other than the Inbox).
+        "unblock" => ("POST", format!("{message}/markAsNotJunk"), serde_json::json!({ "moveToInbox": false })),
         _ => return Err("That mail action is not available.".into()),
     };
     Ok(MailRequest {
@@ -1969,7 +1976,8 @@ pub fn apply_mail(email: &str, kind: &str, message_ids: &[String], destination: 
     let mut moved = Vec::new();
     for (id, request) in message_ids.iter().zip(&requests) {
         let reply = graph_send(&client, &token, request)?;
-        if request.url.ends_with("/move") {
+        // A move gives the message a new id; so do junk and not junk.
+        if request.url.ends_with("/move") || (request.url.ends_with("/markAsJunk") || request.url.ends_with("/markAsNotJunk")) && request.body.get("moveToJunk").or(request.body.get("moveToInbox")) == Some(&serde_json::json!(true)) {
             moved.extend(moved_id(id.trim(), &reply));
         }
     }
@@ -3444,6 +3452,15 @@ mod tests {
         assert_eq!(archived.body["destinationId"], "archive");
         assert_eq!(mail_action_request("trash", "m").unwrap().body["destinationId"], "deleteditems");
         assert_eq!(mail_action_request("inbox", "m").unwrap().body["destinationId"], "inbox");
+        let junk = mail_action_request("junk", "m").unwrap();
+        assert!(junk.url.ends_with("/me/messages/m/markAsJunk"));
+        assert_eq!((junk.method.as_str(), junk.body["moveToJunk"].clone()), ("POST", serde_json::json!(true)));
+        let not_junk = mail_action_request("notjunk", "m").unwrap();
+        assert!(not_junk.url.ends_with("/me/messages/m/markAsNotJunk"));
+        assert_eq!(not_junk.body["moveToInbox"], true);
+        let unblock = mail_action_request("unblock", "m").unwrap();
+        assert!(unblock.url.ends_with("/markAsNotJunk"));
+        assert_eq!(unblock.body["moveToInbox"], false);
         assert!(mail_action_request("send", "m").is_err());
         assert!(mail_action_request("read", "  ").is_err());
     }

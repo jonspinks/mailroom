@@ -5123,6 +5123,7 @@ function bulkPanelHtml() {
       ${btn("read", "Mark as read")}${btn("unread", "Mark as unread")}${btn("flag", "Flag")}
       ${where !== "archive" && where !== "trash" ? btn("archive", "Archive") : ""}
       ${btn("move", "Move to…")}${where !== "trash" ? btn("delete", "Delete") : ""}
+      ${list.some(inJunk) ? btn("not-junk", "Not junk") : list.some(canReportJunk) ? btn("report-junk", "Report junk") : ""}
     </div>
     <button type="button" class="linkish" data-bulk="clear">Clear selection</button>
   </div>`;
@@ -5152,6 +5153,10 @@ function bulkAction(act) {
     flagging.forEach(m => { m.flagged = true; });
     pushMailAction(flagging, "flag", () => prior.forEach(item => { const m = messages.find(x => x.id === item.id); if (m) m.flagged = item.flagged; }), prior);
     toast("Flagged " + picked.size + " conversations");
+    return done();
+  }
+  if (act === "report-junk" || act === "not-junk") {
+    if (act === "report-junk") reportJunk(list); else notJunk(list);
     return done();
   }
   if (act === "move") {
@@ -8122,6 +8127,48 @@ function canMoveToInbox(m) {
   return where === "trash" || where === "archive" || folderKind(where, m.account) === "junk";
 }
 
+// The account's Junk folder (Junk Email, or Gmail's Spam), if it has one.
+function junkKey(accountId) {
+  return accountFolderKeys(accountId).find(key => folderKind(key, accountId) === "junk") || "";
+}
+
+function inJunk(m) {
+  return folderKind(messageBox(m), m.account) === "junk";
+}
+
+// Report junk, as Outlook's: the message goes to Junk and the server blocks
+// the sender (Gmail learns from the Spam label). One account at a time.
+function canReportJunk(m) {
+  return serverMessage(m) && !m.draft && !m.pendingSend && !inJunk(m) && messageBox(m) !== "drafts" && messageBox(m) !== "outbox" && !!junkKey(m.account);
+}
+
+function reportJunk(targets) {
+  const list = (targets || []).filter(canReportJunk);
+  if (!list.length) return false;
+  const byAccount = new Map();
+  list.forEach(m => { if (!byAccount.has(m.account)) byAccount.set(m.account, []); byAccount.get(m.account).push(m); });
+  const from = new Map(list.map(m => [m, messageBox(m)]));
+  const pending = [];
+  byAccount.forEach((group, accountId) => pending.push(moveConversation({ messages: group }, junkKey(accountId), "junk")));
+  lastMove = { at: Date.now(), pending: Promise.all(pending), serverKind: "junk", items: list.map(message => ({ message, box: from.get(message) })) };
+  toastMove(list.length === 1 ? "Reported as junk" : "Reported " + list.length + " messages as junk");
+  return true;
+}
+
+// Not junk: back to the Inbox, and the sender comes off the blocked list.
+function notJunk(targets) {
+  const list = (targets || []).filter(m => serverMessage(m) && inJunk(m));
+  if (!list.length) return false;
+  const byAccount = new Map();
+  list.forEach(m => { if (!byAccount.has(m.account)) byAccount.set(m.account, []); byAccount.get(m.account).push(m); });
+  const from = new Map(list.map(m => [m, messageBox(m)]));
+  const pending = [];
+  byAccount.forEach(group => pending.push(moveConversation({ messages: group }, "inbox", "notjunk")));
+  lastMove = { at: Date.now(), pending: Promise.all(pending), serverKind: "notjunk", items: list.map(message => ({ message, box: from.get(message) })) };
+  toastMove(list.length === 1 ? "Not junk · moved to Inbox" : list.length + " messages moved to Inbox as not junk");
+  return true;
+}
+
 function moveToInbox(targets) {
   const list = (targets || []).filter(canMoveToInbox);
   if (!list.length) return false;
@@ -8247,7 +8294,7 @@ function rowTargets(id, child) {
   return messages.filter(m => m.thread === msg.thread && messageBox(m) === messageBox(msg) && m.account === msg.account);
 }
 
-function moveConversation(conv, next) {
+function moveConversation(conv, next, serverKind) {
   const prior = rememberMessages(conv.messages);
   const fromBox = new Map(conv.messages.map(m => [m, messageBox(m)]));
   conv.messages.forEach(m => {
@@ -8269,7 +8316,7 @@ function moveConversation(conv, next) {
   expanded.clear();
       folded.clear();
   render();
-  const kind = next === "trash" || next === "archive" || next === "inbox" ? next : "move";
+  const kind = serverKind || (next === "trash" || next === "archive" || next === "inbox" ? next : "move");
   const owner = conv.messages[0] && accounts[conv.messages[0].account];
   const folder = owner && (owner.liveFolders || []).find(item => item.key === next);
   const moving = conv.messages.slice();
@@ -8281,9 +8328,9 @@ function moveConversation(conv, next) {
       msg.previousBox = item.previousBox;
       msg.unread = item.unread;
     });
-  }, prior, kind === "move" ? { id: folder ? folder.id : next, key: next } : null);
+  }, prior, kind === "move" || kind === "junk" ? { id: folder ? folder.id : (kind === "junk" ? "" : next), key: next } : null);
   if (!undoing) {
-    lastMove = { at: Date.now(), pending, items: moving.map(message => ({ message, box: fromBox.get(message) || "inbox" })) };
+    lastMove = { at: Date.now(), pending, serverKind: kind, items: moving.map(message => ({ message, box: fromBox.get(message) || "inbox" })) };
   }
   return pending;
 }
@@ -8546,6 +8593,7 @@ function renderReading() {
   const tagIcon = `<svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true"><path d="M3.6 4.6v4.6l7 7 5.2-5.2-7-7H4.4a.8.8 0 0 0-.8.6z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><circle cx="7" cy="7.2" r="1.1" fill="currentColor"/></svg>`;
   const snoozeIcon = `<svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10.8" r="6" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M8.2 8.6h3.6l-3.6 4.2h3.6M4.4 3.6 2.8 5.2M15.6 3.6l1.6 1.6" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
   const moveIcon = `<svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true"><path d="M2.8 5.3c0-.6.4-1 1-1h3.6l1.5 1.6h7.3c.6 0 1 .4 1 1v8c0 .6-.4 1-1 1H3.8c-.6 0-1-.4-1-1V5.3z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><path d="M7.5 11h5M10.8 8.8 13 11l-2.2 2.2" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+  const junkIcon = `<svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="6.2" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M5.6 14.4l8.8-8.8" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>`;
   const inboxIcon = `<svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true"><path d="M3 11.2h14l-1.8 4.6H4.8L3 11.2z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><path d="M10 3.2v7M7.4 7.6L10 10.2l2.6-2.6" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
   const printIcon = `<svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true"><path d="M6 7.2V3.2h8v4M6 13.6H4a1 1 0 0 1-1-1V8.2a1 1 0 0 1 1-1h12a1 1 0 0 1 1 1v4.4a1 1 0 0 1-1 1h-2" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><path d="M6 11.2h8v5.6H6z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg>`;
   const clipIcon = `<svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true"><path d="M13.6 6.2 7.9 11.9a1.6 1.6 0 0 0 2.3 2.3l5.9-5.9a3 3 0 0 0-4.3-4.3l-6 6a4.4 4.4 0 0 0 6.2 6.2l5.2-5.2" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
@@ -8562,12 +8610,14 @@ function renderReading() {
         ${icon("mark-read", "Mark as read", readIcon)}
         ${icon("mark-unread", "Mark as unread", unreadIcon)}
         ${where === "trash" ? icon("restore", "Restore", restoreIcon) : ""}
-        ${where === "archive" || folderKind(where, conv.latest.account) === "junk" ? icon("to-inbox", "Move to inbox", inboxIcon) : ""}
+        ${where === "archive" ? icon("to-inbox", "Move to inbox", inboxIcon) : ""}
+        ${folderKind(where, conv.latest.account) === "junk" ? icon("not-junk", "Not junk", inboxIcon) : ""}
         ${where !== "trash" && where !== "archive" ? icon("archive", "Archive", archiveIcon) : ""}
         ${where !== "drafts" && where !== "outbox" ? icon("move-to", "Move to…", moveIcon) : ""}
         ${where !== "drafts" && where !== "outbox" && !isGoogleAccount(conv.latest.account) ? icon("categorize", "Categorize", tagIcon) : ""}
         ${where === "inbox" || where === "archive" ? icon("snooze", "Snooze", snoozeIcon) : ""}
         ${where !== "trash" ? icon("delete", "Delete", deleteIcon) : ""}
+        ${conv.messages.some(canReportJunk) ? icon("report-junk", "Report junk", junkIcon) : ""}
         ${icon("flag", "Flag", flagIcon)}
         ${icon("print", "Print (Ctrl+P)", printIcon)}`;
   const subjectLine = conv.topic;
@@ -8766,6 +8816,10 @@ function renderReading() {
   if (trash) trash.onclick = () => { moveConversation(conv, "trash"); toastMove("Moved to Trash"); };
   if (restore) restore.onclick = () => moveToInbox(conv.messages);
   if (toInbox) toInbox.onclick = () => moveToInbox(conv.messages);
+  const reportBtn = document.getElementById("report-junk");
+  if (reportBtn) reportBtn.onclick = () => reportJunk(conv.messages);
+  const notJunkBtn = document.getElementById("not-junk");
+  if (notJunkBtn) notJunkBtn.onclick = () => notJunk(conv.messages);
   const filesBtn = document.getElementById("thread-files");
   if (filesBtn) filesBtn.onclick = () => { const r = filesBtn.getBoundingClientRect(); showFilesMenu(r.left, r.bottom + 4, threadShown(conv)); };
   const catBtn = document.getElementById("categorize");
@@ -9485,7 +9539,8 @@ function shiftFolderCount(accountId, key, totalDelta, unreadDelta) {
   folder.unread = Math.max(0, (Number(folder.unread) || 0) + unreadDelta);
 }
 
-function applyMailShifts(prior, kind, destKey) {
+function applyMailShifts(prior, rawKind, destKey) {
+  const kind = rawKind === "junk" ? "move" : rawKind === "notjunk" ? "inbox" : rawKind;
   (prior || []).filter(item => item.live && accounts[item.account] && accounts[item.account].signedIn).forEach(item => {
     if (kind === "read" && item.unread) shiftFolderCount(item.account, item.box, 0, -1);
     if (kind === "unread" && !item.unread) shiftFolderCount(item.account, item.box, 0, 1);
@@ -10020,8 +10075,11 @@ function showFolderMenu(x, y, acct, folder) {
 function showRowMenu(x, y, id, child) {
   hideThemeMenu();
   const menu = document.getElementById("row-menu");
-  const back = rowTargets(id, child).some(canMoveToInbox);
-  const google = rowTargets(id, child).some(m => isGoogleAccount(m.account));
+  const targets = rowTargets(id, child);
+  const junked = targets.some(m => serverMessage(m) && inJunk(m));
+  const back = !junked && targets.some(canMoveToInbox);
+  const reportable = !junked && targets.some(canReportJunk);
+  const google = targets.some(m => isGoogleAccount(m.account));
   menu.innerHTML = `
     <button type="button" role="menuitem" data-act="unread">Mark as unread</button>
     <button type="button" role="menuitem" data-act="read">Mark as read</button>
@@ -10035,9 +10093,11 @@ function showRowMenu(x, y, id, child) {
     <div class="menu-rule"></div>
     <button type="button" role="menuitem" data-act="focus-${to}">Move to ${label}</button>
     <button type="button" role="menuitem" data-act="focus-always-${to}">Always move to ${label}</button>`;
-    })() : ""}${back ? `
-    <div class="menu-rule"></div>
-    <button type="button" role="menuitem" data-act="to-inbox">Move to Inbox</button>` : ""}`;
+    })() : ""}${back || reportable || junked ? `
+    <div class="menu-rule"></div>` : ""}${back ? `
+    <button type="button" role="menuitem" data-act="to-inbox">Move to Inbox</button>` : ""}${junked ? `
+    <button type="button" role="menuitem" data-act="not-junk">Not junk</button>` : ""}${reportable ? `
+    <button type="button" role="menuitem" data-act="report-junk">Report junk</button>` : ""}`;
   menu.dataset.id = id;
   menu.dataset.child = child ? "1" : "";
   menu.dataset.menu = "mail";
@@ -10134,6 +10194,8 @@ document.getElementById("row-menu").onclick = (ev) => {
   const focusAct = /^focus-(always-)?(focused|other)$/.exec(btn.dataset.act || "");
   if (focusAct) { moveFocus(rowTargets(id, child), focusAct[2], !!focusAct[1]); return; }
   if (btn.dataset.act === "to-inbox") moveToInbox(rowTargets(id, child));
+  else if (btn.dataset.act === "report-junk") reportJunk(rowTargets(id, child));
+  else if (btn.dataset.act === "not-junk") notJunk(rowTargets(id, child));
   else if (btn.dataset.act === "move") showMoveDialog(rowTargets(id, child));
   else if (btn.dataset.act === "snooze") snoozeMessages(rowTargets(id, child));
   else if (btn.dataset.act === "rule") createRuleFrom(id);
@@ -16304,7 +16366,12 @@ async function undoLastMove() {
     byBox.forEach((list, from) => {
       const byAccount = new Map();
       list.forEach(m => { if (!byAccount.has(m.account)) byAccount.set(m.account, []); byAccount.get(m.account).push(m); });
-      byAccount.forEach(group => moveConversation({ messages: group }, from));
+      byAccount.forEach(group => {
+        if (move.serverKind === "junk" && from === "inbox") return moveConversation({ messages: group }, from, "notjunk");
+        if (move.serverKind === "junk") pushMailAction(group, "unblock");
+        if (move.serverKind === "notjunk") return moveConversation({ messages: group }, from, "junk");
+        moveConversation({ messages: group }, from);
+      });
     });
   } finally {
     undoing = false;
@@ -17420,7 +17487,7 @@ const folderBusy = new Set();
 let syncNote = "";
 const folderRun = new Map();
 const bodyLoads = new Set();
-const APP_VERSION = "1.3.15";
+const APP_VERSION = "1.3.16";
 let appVersion = APP_VERSION;
 
 prepareDesktopAccounts();

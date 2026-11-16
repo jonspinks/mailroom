@@ -1502,10 +1502,14 @@ async fn apply_mail(
             requested.trim().to_lowercase()
         };
         if !email.is_empty() {
-            if kind == "move" {
-                store::record_move(&email, &destination, &message_ids)?;
-            } else {
-                store::record_mail_action(&email, &kind, &message_ids)?;
+            match kind.as_str() {
+                "move" => store::record_move(&email, &destination, &message_ids)?,
+                // Junk goes to the account's Junk folder, which the app names.
+                "junk" if !destination.trim().is_empty() => store::record_move(&email, &destination, &message_ids)?,
+                "junk" => store::forget_messages(&email, &message_ids)?,
+                "notjunk" => store::record_mail_action(&email, "inbox", &message_ids)?,
+                "unblock" => {}
+                _ => store::record_mail_action(&email, &kind, &message_ids)?,
             }
             store::rename_moved(&email, &moved)?;
         }
