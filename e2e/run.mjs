@@ -450,6 +450,35 @@ test("typing below the signature lands in the message", { fake: false }, async (
   expect(/margin: 0/.test(sent), "lines carry their spacing");
 });
 
+test("a deleted signature comes back from the Signature button, inline, in a reply and popped out", { fake: false }, async ({ p }) => {
+  const putBack = async (where) => {
+    const sigText = () => p.evaluate(() => { const s = document.querySelector("#compose-body [data-sig]"); return s ? s.textContent.trim() : ""; });
+    const had = await sigText();
+    expect(had, where + ": starts with a signature");
+    await p.evaluate(() => document.querySelector("#compose-body [data-sig]").remove());
+    await p.click("#compose-form #compose-signature"); await wait(200);
+    const items = await p.$$eval(".signature-menu:not([hidden]) [data-use-signature]", bs => bs.map(b => b.getAttribute("aria-checked")));
+    expect(items.length >= 1 && items.every(c => c === "false"), where + ": menu lists the signature, none in place", items);
+    await p.click(".signature-menu:not([hidden]) [data-use-signature]"); await wait(300);
+    same(await sigText(), had, where + ": signature back");
+    const sent = await p.evaluate(() => sentBody(document.getElementById("compose-form")));
+    expect(sent.includes("body-sig") && !sent.includes("data-sig-id"), where + ": sent with it, without the editing id");
+    await p.click("#compose-form #compose-signature"); await wait(200);
+    same(await p.$eval(".signature-menu:not([hidden]) [data-use-signature]", b => b.getAttribute("aria-checked")), "true", where + ": ticked once in place");
+    await p.click(".signature-menu:not([hidden]) [data-signature-remove]"); await wait(200);
+    same(await sigText(), "", where + ": Remove signature takes it out");
+  };
+  await p.click("#compose"); await wait(300);
+  await putBack("new message");
+  await p.goto(p.url().split(/[?#]/)[0], { waitUntil: "load" }); await wait(1200);
+  await p.evaluate(() => { const c = conversations()[0]; selected = c.latest.id; render(); document.querySelector("#reply").click(); });
+  await wait(400);
+  await p.evaluate(() => { const form = document.getElementById("compose-form"); form.dataset.kind = "new"; paintComposeSignature(form, true); });
+  await putBack("reply");
+  await p.goto(p.url().split(/[?#]/)[0] + "?compose=new", { waitUntil: "load" }); await wait(1500);
+  await putBack("pop-out");
+});
+
 test("reply all: To and Cc as Outlook, quote in Outlook form", { fake: false }, async ({ p }) => {
   const r = await p.evaluate(async () => {
     const c = conversations().find(c => c.messages.length > 1);
