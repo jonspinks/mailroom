@@ -1431,6 +1431,42 @@ test("the Categories heading collapses and stays collapsed", { fake: true }, asy
   same(await shown(), ["Jobs", "Urgent"], "categories back");
 });
 
+test("Report junk and Not junk: the server blocks or unblocks the sender, from the toolbar, the row menu and the selection", { fake: true, setup: () => {
+  window.__folders.push({ id: "f-junk", parentId: "", name: "Junk Email", key: "f-junk", unread: 0, total: 0, depth: 0 });
+} }, async ({ p, calls, clear, rightClick, boxOf }) => {
+  await clear();
+  await p.click('.row[data-id="m1"]'); await wait(400);
+  await p.click("#report-junk"); await wait(500);
+  same((await calls("apply_mail")).filter(a => a.kind !== "read").map(a => [a.kind, a.messageIds, a.destination]), [["junk", ["m1"], "f-junk"]], "toolbar: Report junk");
+  same(await boxOf("m1"), "f-junk", "the message is in Junk");
+  expect((await p.$eval("#toast", t => t.textContent)).includes("Reported as junk"), "toast says so");
+  // Undo back to the Inbox is Not junk, so the sender comes off the list.
+  await clear();
+  await p.click("#toast button"); await wait(500);
+  same((await calls("apply_mail")).filter(a => a.kind !== "read").map(a => a.kind), ["notjunk"], "Undo unblocks the sender");
+  same(await boxOf("m1"), "inbox", "and the message is back");
+  // The row menu.
+  await clear();
+  await rightClick('.row[data-id="m2"]');
+  expect((await p.$$eval("#row-menu button", b => b.map(x => x.textContent.trim()))).includes("Report junk"), "row menu offers Report junk");
+  await p.click('#row-menu [data-act="report-junk"]'); await wait(500);
+  same((await calls("apply_mail")).filter(a => a.kind !== "read").map(a => a.kind), ["junk"], "row menu: Report junk");
+  // In Junk: Not junk, in place of Move to inbox.
+  await p.evaluate(() => { box = "f-junk"; selected = "m2"; render(); }); await wait(400);
+  expect(await p.$("#not-junk"), "Junk shows Not junk");
+  expect(!(await p.$("#to-inbox")) && !(await p.$("#report-junk")), "not Move to inbox or Report junk");
+  await clear();
+  await p.click("#not-junk"); await wait(500);
+  same((await calls("apply_mail")).filter(a => a.kind !== "read").map(a => a.kind), ["notjunk"], "Not junk");
+  same(await boxOf("m2"), "inbox", "back in the Inbox");
+  // The selection bar.
+  await p.evaluate(() => { box = "inbox"; selected = null; render(); }); await wait(300);
+  await p.evaluate(() => { ["m1", "m3"].forEach(id => picked.add(conversations().find(c => c.messages.some(m => m.id === id)).id)); render(); }); await wait(300);
+  await clear();
+  await p.click('[data-bulk="report-junk"]'); await wait(500);
+  same((await calls("apply_mail")).filter(a => a.kind !== "read").map(a => [a.kind, [...a.messageIds].sort()]), [["junk", ["m1", "m3"]]], "selection: Report junk, both in one call");
+});
+
 test("rules: create from a message, list, turn off", { fake: true }, async ({ p, calls, clear, rightClick }) => {
   await rightClick('.row[data-id="m1"]');
   await p.click('#row-menu [data-act="rule"]'); await wait(500);

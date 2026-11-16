@@ -61,6 +61,7 @@ compares them with this list, and opens an issue for anything new.
 | Outlook | Mailroom |
 |---|---|
 | Archive, delete, move | ✅ with Undo |
+| Report junk, Not junk | ✅ blocks or unblocks the sender (Gmail: Spam label), with Undo |
 | Multi-select | ✅ |
 | Pin | ✅ (this computer) |
 | Snooze | ✅ Later today, Tomorrow, This weekend, Next week |
