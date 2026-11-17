@@ -11645,6 +11645,12 @@ function htmlFor(s) {
 
 const shownRemote = new Set();
 const MULTI_SUFFIXES = new Set("co.uk org.uk ac.uk gov.uk me.uk ltd.uk plc.uk net.uk sch.uk com.au net.au org.au edu.au gov.au asn.au id.au co.nz org.nz net.nz ac.nz govt.nz co.za org.za web.za net.za gov.za com.br com.mx co.jp ne.jp or.jp ac.jp go.jp com.sg com.hk com.tw co.in firm.in net.in org.in com.cn net.cn org.cn gov.cn com.tr co.kr com.ar com.pl com.pt com.es co.il org.il net.il ac.il com.ua co.id web.id my.id or.id go.id ac.id com.my com.ph com.vn co.th com.pk com.ng com.eg com.sa".split(" "));
+// Countries that register names under com., edu., gov. and the like:
+// school.edu.sg is the domain, not edu.sg, whether or not it is listed above.
+// Declared before loadSafeSenders runs: read any later, a .ca domain threw
+// while the list loaded, the list came up empty, and the next add saved over
+// it (2026-11-17).
+const REGISTRY_LABELS = new Set("ac co com edu gov govt gob gouv go mil net nic or org sch ltd plc".split(" "));
 let safeSenders = loadSafeSenders();
 // Mail providers anyone can sign up to. An account there makes only its own
 // address safe, never the whole domain, or every sender there would load
@@ -11675,9 +11681,6 @@ function publicAccountDomains() {
   return [...found].sort();
 }
 
-// Countries that register names under com., edu., gov. and the like:
-// school.edu.sg is the domain, not edu.sg, whether or not it is listed above.
-const REGISTRY_LABELS = new Set("ac co com edu gov govt gob gouv go mil net nic or org sch ltd plc".split(" "));
 
 function registrySuffix(labels) {
   return /^[a-z]{2}$/.test(labels[labels.length - 1]) && REGISTRY_LABELS.has(labels[labels.length - 2]);
@@ -17499,7 +17502,7 @@ const folderBusy = new Set();
 let syncNote = "";
 const folderRun = new Map();
 const bodyLoads = new Set();
-const APP_VERSION = "1.3.17";
+const APP_VERSION = "1.3.18";
 let appVersion = APP_VERSION;
 
 prepareDesktopAccounts();
