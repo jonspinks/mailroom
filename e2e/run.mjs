@@ -1981,6 +1981,22 @@ test("a long legal footer does not enlarge the message", { fake: true, setup: ()
   expect(fine > 0 && fine < got.body - 2, "the notice stays smaller than the note", fine);
 });
 
+test("a forward with only a signature above it keeps the forwarded mail's size", { fake: true, setup: () => {
+  const sig = '<table role="presentation"><tr><td style="width:52px"></td><td><div style="font-size:19px">Jordan Hart</div><div style="font-size:13px">289 218 8526</div><div style="font-size:13px">jordan@example.org</div><div style="font-size:11px">ENGINEERED TO BUILD BETTER.</div></td></tr></table>';
+  const fwd = '<div id="divRplyFwdMsg"><b>From:</b> Bill<br><b>Subject:</b> Quotes</div><div><p style="font-size:12pt">Sorry for the delay in sending. We just got Outlook up and running an hour ago.</p><p style="font-size:10pt">Account Representative</p><p style="font-size:8pt">This e-mail message is confidential, may be privileged or otherwise protected by law and is intended for the exclusive use of the addressee. Any other person is strictly prohibited from disclosing it.</p></div>';
+  window.__inbox.push({ id: "fwd-size", thread: "conv-fwd-size", subject: "Fw: Quotes", fromName: "Jordan", fromEmail: "jordan@example.org", received: new Date().toISOString().replace(/\.\d+Z$/, "Z"), preview: "Jordan", bodyHtml: sig + fwd, unread: true, flagged: false, hasAttachments: false, files: [], to: [], cc: [], bcc: [], categories: [] });
+} }, async ({ p }) => {
+  await p.click('.row[data-id="fwd-size"]'); await wait(800);
+  const open = await p.$("#reading .mail-quote-toggle, #reading .quote-toggle");
+  if (open) { await open.click(); await wait(400); }
+  const got = await p.evaluate(() => {
+    const all = [...document.querySelectorAll("#reading .letter *")].reverse();
+    const by = t => { const e = all.find(e => (e.textContent || "").trim().startsWith(t)); return e ? parseFloat(getComputedStyle(e).fontSize) : 0; };
+    return { note: by("Sorry for the delay"), name: by("Jordan Hart"), phone: by("289 218") };
+  });
+  same(got, { note: 16, name: 19, phone: 13 }, "nothing is enlarged by the forwarder's signature");
+});
+
 test("an open conversation marks the folded messages that have attachments", { fake: true, setup: () => {
   const at = n => new Date(Date.now() - n * 60000).toISOString().replace(/\.\d+Z$/, "Z");
   const base = { thread: "conv-clip", subject: "Update", fromName: "Kai", fromEmail: "kai@example.org", unread: false, flagged: false, cc: [], bcc: [], to: [], categories: [] };
