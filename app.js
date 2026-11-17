@@ -12547,25 +12547,37 @@ function readMailType(nodes, start, end, sizes) {
   for (let i = start; i < end && i < nodes.length; i++) {
     const node = nodes[i];
     const style = getComputedStyle(node);
-    let text = 0;
+    let text = 0, quoted = 0;
     // Quoted history and a legal footer are not the message. A long one in
     // small type must not decide the size of the words being read, whether
     // it is folded away or open.
-    if (!(node.closest && node.closest(".mail-quote"))) {
-      node.childNodes.forEach(child => { if (child.nodeType === 3) text += child.textContent.trim().length; });
-    }
-    sizes[i] = { size: parseFloat(style.fontSize), leading: style.lineHeight, text };
+    const inQuote = !!(node.closest && node.closest(".mail-quote"));
+    node.childNodes.forEach(child => {
+      if (child.nodeType !== 3) return;
+      const n = child.textContent.trim().length;
+      if (!inQuote) text += n;
+      else if (!node.closest(".mail-legal")) quoted += n;
+    });
+    sizes[i] = { size: parseFloat(style.fontSize), leading: style.lineHeight, text, quoted };
   }
 }
+
+// Fewer characters than this above quoted mail is a signature, not a note.
+const QUOTED_NOTE_MIN = 120;
 
 function raiseSmallMailType(root, nodes, sizes) {
   const floor = mailTextFloor();
   // The body's size: the one most of the text is set in.
   const weight = new Map();
   sizes.forEach(item => { if (item && item.text && item.size >= 6) weight.set(item.size, (weight.get(item.size) || 0) + item.text); });
-  let body = 0, most = 0;
+  let body = 0, most = 0, own = 0, quoted = 0;
   weight.forEach((count, size) => { if (count > most) { most = count; body = size; } });
-  if (!body || body >= floor) {
+  sizes.forEach(item => { if (item) { own += item.text || 0; quoted += item.quoted || 0; } });
+  // A forward with no note of its own, only the forwarder's signature: the
+  // signature's small contact lines are not a body to size the forwarded
+  // mail by (2026-11-17, a 12pt forward was drawn at 1.23 times).
+  const signatureOnly = quoted > 0 && own < QUOTED_NOTE_MIN;
+  if (!body || body >= floor || signatureOnly) {
     // Body already large enough: only lift what is too small to read.
     nodes.forEach((node, i) => { const item = sizes[i]; if (item && item.size >= 8 && item.size < 11) node.style.setProperty("font-size", "11px", "important"); });
     return;
@@ -17487,7 +17499,7 @@ const folderBusy = new Set();
 let syncNote = "";
 const folderRun = new Map();
 const bodyLoads = new Set();
-const APP_VERSION = "1.3.16";
+const APP_VERSION = "1.3.17";
 let appVersion = APP_VERSION;
 
 prepareDesktopAccounts();
