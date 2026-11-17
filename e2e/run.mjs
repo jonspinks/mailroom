@@ -1981,6 +1981,13 @@ test("a long legal footer does not enlarge the message", { fake: true, setup: ()
   expect(fine > 0 && fine < got.body - 2, "the notice stays smaller than the note", fine);
 });
 
+test("safe senders with a country domain survive a restart", { fake: true, setup: () => {
+  localStorage.setItem("mailroom-safe-senders", JSON.stringify(["@akhurst.ca", "@anthropic.com", "@school.edu.sg"]));
+} }, async ({ p }) => {
+  same(await p.evaluate(() => safeSenders), ["@akhurst.ca", "@anthropic.com", "@school.edu.sg"], "the saved list loads whole");
+  same(await p.evaluate(() => JSON.parse(localStorage.getItem("mailroom-safe-senders"))), ["@akhurst.ca", "@anthropic.com", "@school.edu.sg"], "and is not written over");
+});
+
 test("a forward with only a signature above it keeps the forwarded mail's size", { fake: true, setup: () => {
   const sig = '<table role="presentation"><tr><td style="width:52px"></td><td><div style="font-size:19px">Jordan Hart</div><div style="font-size:13px">289 218 8526</div><div style="font-size:13px">jordan@example.org</div><div style="font-size:11px">ENGINEERED TO BUILD BETTER.</div></td></tr></table>';
   const fwd = '<div id="divRplyFwdMsg"><b>From:</b> Bill<br><b>Subject:</b> Quotes</div><div><p style="font-size:12pt">Sorry for the delay in sending. We just got Outlook up and running an hour ago.</p><p style="font-size:10pt">Account Representative</p><p style="font-size:8pt">This e-mail message is confidential, may be privileged or otherwise protected by law and is intended for the exclusive use of the addressee. Any other person is strictly prohibited from disclosing it.</p></div>';
