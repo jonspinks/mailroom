@@ -18,10 +18,35 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
+      # The runner's own Ubuntu mirror can crawl: on 2026-11-18 four runs in a
+      # row spent 15+ minutes here, seconds per small package, and never got
+      # through WebKit. Use kernel.org's mirror, then Ubuntu's own; keep the
+      # packages between runs, even from a run that timed out; and fail after
+      # 15 minutes instead of waiting out GitHub's six hours.
+      - name: Restore system packages
+        uses: actions/cache/restore@v6
+        with:
+          path: ~/apt-debs
+          key: apt-ubuntu-24.04-webkit41-v1-${{ github.run_id }}
+          restore-keys: apt-ubuntu-24.04-webkit41-v1-
       - name: System libraries
+        timeout-minutes: 15
         run: |
+          printf 'http://mirrors.edge.kernel.org/ubuntu/\tpriority:1\nhttp://archive.ubuntu.com/ubuntu/\tpriority:2\n' | sudo tee /etc/apt/apt-mirrors.txt
+          mkdir -p ~/apt-debs
+          sudo cp ~/apt-debs/*.deb /var/cache/apt/archives/ 2>/dev/null || true
           sudo apt-get -o Acquire::Retries=5 update
           sudo apt-get -o Acquire::Retries=5 install -y libwebkit2gtk-4.1-dev build-essential libssl-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev libdbus-1-dev
+      - name: Save system packages
+        if: always()
+        run: cp /var/cache/apt/archives/*.deb ~/apt-debs/ 2>/dev/null || true
+      # A cache can't be overwritten, so each run saves its own and the next
+      # restores the newest.
+      - uses: actions/cache/save@v6
+        if: always()
+        with:
+          path: ~/apt-debs
+          key: apt-ubuntu-24.04-webkit41-v1-${{ github.run_id }}
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:

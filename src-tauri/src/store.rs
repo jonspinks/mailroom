@@ -73,6 +73,7 @@ fn ensure_schema(conn: &Connection) -> Result<(), String> {
     add_extra(conn, "messages")?;
     add_extra(conn, "folder_messages")?;
     add_body_text(conn)?;
+    repair_latin1_bodies(conn)?;
     // Newest-page reads are email + folder + received. The list asks for that
     // slice on every open, so keep it an index seek as the mailbox grows.
     conn.execute_batch(
@@ -83,6 +84,49 @@ fn ensure_schema(conn: &Connection) -> Result<(), String> {
     )
     .map_err(|err| err.to_string())?;
     Ok(())
+}
+
+/// Gmail mail cached before 1.3.21 was decoded as Latin-1 when its bytes were
+/// UTF-8, and the cache shows that copy rather than fetching again, so every
+/// non-breaking space stayed "Â ". Put those back once (user_version 1).
+fn repair_latin1_bodies(conn: &Connection) -> Result<(), String> {
+    let done: i64 = conn.query_row("pragma user_version", [], |row| row.get(0)).map_err(|err| err.to_string())?;
+    if done >= 1 {
+        return Ok(());
+    }
+    let tx = rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)
+        .map_err(|err| err.to_string())?;
+    let done: i64 = tx.query_row("pragma user_version", [], |row| row.get(0)).map_err(|err| err.to_string())?;
+    if done >= 1 {
+        return Ok(());
+    }
+    // Â and Ã start the two-byte letters, â the quotes and dashes.
+    let suspect = "(body_html like '%Â%' or body_html like '%Ã%' or body_html like '%â%')";
+    for table in ["folder_messages", "messages"] {
+        let rows = {
+            let mut stmt = tx
+                .prepare(&format!("select rowid, body_html, preview from {table} where {suspect}"))
+                .map_err(|err| err.to_string())?;
+            let found = stmt
+                .query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?)))
+                .map_err(|err| err.to_string())?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|err| err.to_string())?;
+            found
+        };
+        for (rowid, html, preview) in rows {
+            let Some(fixed) = crate::google::undo_latin1(&html) else { continue };
+            let preview = crate::google::undo_latin1(&preview).unwrap_or(preview);
+            tx.execute(&format!("update {table} set body_html = ?1, preview = ?2 where rowid = ?3"), rusqlite::params![fixed, preview, rowid])
+                .map_err(|err| err.to_string())?;
+            if table == "folder_messages" {
+                tx.execute("update folder_messages set body_text = ?1 where rowid = ?2", rusqlite::params![search_text(&fixed), rowid])
+                    .map_err(|err| err.to_string())?;
+            }
+        }
+    }
+    tx.execute_batch("pragma user_version = 1").map_err(|err| err.to_string())?;
+    tx.commit().map_err(|err| err.to_string())
 }
 
 fn add_people(conn: &Connection, table: &str) -> Result<(), String> {
@@ -2347,6 +2391,27 @@ mod tests {
         assert_eq!(search_ids(&conn, &["interac"]), vec!["old"]);
         ensure_schema(&conn).unwrap();
         assert_eq!(search_ids(&conn, &["interac"]), vec!["old"]);
+    }
+
+    #[test]
+    fn mail_cached_as_latin1_mojibake_is_put_back_once() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        ensure_schema(&conn).unwrap();
+        let mut bad = message("bad");
+        bad.body_html = "<p>project.\u{c2}\u{a0} I hope</p>".into();
+        bad.preview = "project.\u{c2}\u{a0} I hope".into();
+        let mut real = message("real");
+        real.body_html = "<p>Café crème Â la carte</p>".into();
+        replace_folder_messages_on(&mut conn, "jon@example.com", "in", &[bad, real]).unwrap();
+        conn.execute_batch("pragma user_version = 0").unwrap();
+        ensure_schema(&conn).unwrap();
+        let body = |id: &str| -> (String, String) {
+            conn.query_row("select body_html, preview from folder_messages where id = ?1", [id], |r| Ok((r.get(0)?, r.get(1)?))).unwrap()
+        };
+        assert_eq!(body("bad"), ("<p>project.\u{a0} I hope</p>".into(), "project.\u{a0} I hope".into()));
+        assert_eq!(body("real").0, "<p>Café crème Â la carte</p>");
+        let version: i64 = conn.query_row("pragma user_version", [], |r| r.get(0)).unwrap();
+        assert_eq!(version, 1);
     }
 
     #[test]
