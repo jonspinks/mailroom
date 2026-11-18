@@ -534,9 +534,18 @@ const CP1252: [char; 32] = [
 
 /// Text in its charset. UTF-8 and ASCII as they are, Latin-1 and Windows-1252
 /// byte by byte; anything else is read as UTF-8, mending what isn't.
+///
+/// Gmail's format=full hands over bodies already turned into UTF-8 but keeps
+/// the sender's charset in Content-Type, so a "Latin-1" body that is valid
+/// UTF-8 is UTF-8. Real Latin-1 with anything past ASCII almost never is:
+/// read byte by byte, each non-breaking space came out as "Â " (2026-11-18,
+/// an invoice mailer).
 pub(crate) fn decode_text(bytes: &[u8], charset: &str) -> String {
     match charset.trim().to_ascii_lowercase().as_str() {
         "iso-8859-1" | "iso8859-1" | "latin1" | "latin-1" | "l1" | "windows-1252" | "cp1252" | "iso-8859-15" => {
+            if let Ok(text) = std::str::from_utf8(bytes) {
+                return text.to_string();
+            }
             bytes
                 .iter()
                 .map(|b| match *b {
@@ -2230,6 +2239,8 @@ mod tests {
         assert_eq!(decode_words("=?UTF-8?B?w6k=?= =?UTF-8?B?w6k=?="), "éé", "the space between encoded words goes");
         assert_eq!(decode_words("plain"), "plain");
         assert_eq!(decode_text(&[0x93, b'h', b'i', 0x94], "windows-1252"), "“hi”");
+        assert_eq!(decode_text(&[b'a', 0xa0, b'b'], "iso-8859-1"), "a\u{a0}b");
+        assert_eq!(decode_text("a\u{a0}b café".as_bytes(), "iso-8859-1"), "a\u{a0}b café");
         assert_eq!(decode_text("é".as_bytes(), "utf-8"), "é");
         let found: Vec<(String, String)> = people("a@x.org, \"Doe, J\" <j@x.org>, nobody").into_iter().map(|p| (p.name, p.email)).collect();
         assert_eq!(found, vec![(String::new(), "a@x.org".to_string()), ("Doe, J".to_string(), "j@x.org".to_string())]);
