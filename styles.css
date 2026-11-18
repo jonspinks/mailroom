@@ -2041,6 +2041,8 @@
   #choose-layer { position: fixed; inset: 0; z-index: 30; }
   #choose-layer .backdrop { z-index: 30; }
   #choose-layer .dialog { z-index: 31; width: min(360px, calc(100vw - 32px)); }
+  #choose-layer .link-dialog { width: min(440px, calc(100vw - 32px)); }
+  .link-dialog .link-remove { margin-right: auto; }
   .choose-list { display: flex; flex-direction: column; gap: 8px; margin: 12px 0 4px; }
   .choose-list button { width: 100%; justify-content: center; }
   .repeat-row select { max-width: 100%; }
@@ -2735,6 +2737,11 @@
     outline: none;
   }
   .html-body:focus { border-color: var(--blue); }
+  /* What you type is shown in the font and size it is sent in (OUT_FONT in
+     app.js): 12pt Aptos, Outlook's default, so a reply matches the mail it
+     answers (2026-11-18: typing was in the 15px interface font, the quoted
+     12pt mail looked bigger, and 11pt went out). */
+  #compose-body { font-family: Aptos, Calibri, 'Segoe UI', Arial, sans-serif; font-size: 12pt; line-height: 1.4; }
   .compose-canvas {
     background: var(--field);
     border: 1px solid var(--line-strong);

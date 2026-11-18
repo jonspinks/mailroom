@@ -10,6 +10,7 @@ mod google;
 mod graph;
 mod inline;
 mod launch;
+mod linkmenu;
 mod mailbox;
 mod migrate;
 mod notify;
@@ -1704,6 +1705,7 @@ async fn pop_compose(app: tauri::AppHandle, query: String) -> Result<(), String>
     }
     let window = builder.build().map_err(|err| err.to_string())?;
     spell::apply(&window);
+    linkmenu::attach(&window);
     Ok(())
 }
 
@@ -2055,6 +2057,7 @@ pub fn run() {
         .setup(|app| {
             if let Some(main) = app.get_webview_window("main") {
                 spell::apply(&main);
+                linkmenu::attach(&main);
                 // Omarchy draws its own titlebars where windows float; a GTK
                 // one as well would make two.
                 if omarchy::detected() {

@@ -2069,7 +2069,7 @@ test("compose bar follows Outlook: full ribbon in a new message, none in an inli
   const styled = await p.$eval(write, w => { const t = [...w.querySelectorAll("*")].filter(e => e.textContent === "world"); return { face: t.some(e => /Georgia/.test(e.style.fontFamily)), size: t.some(e => e.style.fontSize === "14pt"), font: !!w.querySelector("font") }; });
   same(styled, { face: true, size: true, font: false }, "Georgia 14pt on the selection, as styles");
   await selectWord("Hello");
-  same(await p.$eval("#compose-form [data-font-size]", s => s.value), "11", "the picker shows the default where nothing is set");
+  same(await p.$eval("#compose-form [data-font-size]", s => s.value), "12", "the picker shows the default where nothing is set");
   await selectWord("world");
   same(await p.$eval("#compose-form [data-font-size]", s => s.value), "14", "and 14 on the styled word");
   // A size picked with nothing selected applies to what is typed next.
@@ -2108,12 +2108,70 @@ test("compose bar follows Outlook: full ribbon in a new message, none in an inli
   same(await p.evaluate(() => localStorage.getItem("mailroom-format-bar")), "1", "remembered");
 });
 
+test("compose: what you type shows at the size it is sent, 12pt as Outlook", { fake: true }, async ({ p }) => {
+  await p.click("#compose"); await wait(300);
+  await p.click("#compose-body"); await wait(100);
+  await p.keyboard.type("Hello Sam");
+  const shown = await p.evaluate(() => { const n = getSelection().anchorNode; const e = n.nodeType === 1 ? n : n.parentElement; const c = getComputedStyle(e); return [c.fontSize, c.fontFamily.split(",")[0].trim()]; });
+  same(shown, ["16px", "Aptos"], "typed text is 12pt Aptos on screen");
+  const sent = await p.evaluate(() => sentBody(document.getElementById("compose-form")));
+  expect(/font-size:\s*12pt/.test(sent), "and goes out at 12pt", sent.slice(0, 200));
+});
+
 test("compose: Bullets, Numbers and Link are icons", { fake: true }, async ({ p }) => {
   await p.click("#compose"); await wait(300);
   for (const [cmd, name] of [["insertUnorderedList", "Bullets"], ["insertOrderedList", "Numbers"], ["link", "Link"]]) {
     const b = await p.$eval(`#compose-form .format-bar [data-cmd="${cmd}"]`, e => ({ text: e.textContent.trim(), svg: !!e.querySelector("svg"), label: e.getAttribute("aria-label") }));
     same(b, { text: "", svg: true, label: name }, name + " is an icon with its name for screen readers");
   }
+});
+
+test("compose: Link inserts, edits and removes a link on a word, as from the right-click menu", { fake: true }, async ({ p }) => {
+  await p.click("#compose"); await wait(300);
+  const write = "#compose-body";
+  await p.click(write); await wait(100);
+  await p.keyboard.type("See the drawings today");
+  const pick = (word) => p.evaluate((sel, word) => {
+    const w = document.querySelector(sel);
+    const walk = document.createTreeWalker(w, NodeFilter.SHOW_TEXT);
+    for (let n; (n = walk.nextNode());) {
+      const at = n.data.indexOf(word);
+      if (at < 0) continue;
+      const r = document.createRange(); r.setStart(n, at); r.setEnd(n, at + word.length);
+      const s = getSelection(); s.removeAllRanges(); s.addRange(r);
+      return true;
+    }
+    return false;
+  }, write, word);
+  // What the menu item runs.
+  same(await pick("drawings"), true, "the word is found");
+  await p.evaluate(() => window.mailroomLinkFromMenu()); await wait(150);
+  same(await p.$eval(".link-dialog h2", e => e.textContent), "Insert link", "the dialog opens");
+  same(await p.$eval('.link-dialog [name="text"]', e => e.value), "drawings", "the word is the text to display");
+  await p.type('.link-dialog [name="href"]', "notaurl");
+  await p.click('.link-dialog [type="submit"]'); await wait(100);
+  same(await p.$eval(".link-dialog .form-error", e => e.hidden), false, "a non-address is refused");
+  await p.$eval('.link-dialog [name="href"]', e => { e.value = "example.com/plans"; });
+  await p.click('.link-dialog [type="submit"]'); await wait(150);
+  same(await p.$eval(write, w => [...w.querySelectorAll("a")].map(a => [a.textContent, a.getAttribute("href")])), [["drawings", "https://example.com/plans"]], "the word is linked, https:// added");
+  // On the link again: Edit, with Remove link.
+  await pick("draw");
+  await p.evaluate(() => window.mailroomLinkFromMenu()); await wait(150);
+  same(await p.$eval(".link-dialog h2", e => e.textContent), "Edit link", "editing an existing link");
+  same(await p.$eval('.link-dialog [name="href"]', e => e.value), "https://example.com/plans", "its address is filled in");
+  await p.$eval('.link-dialog [name="href"]', e => { e.value = "jordan@example.com"; });
+  await p.click('.link-dialog [type="submit"]'); await wait(150);
+  same(await p.$eval(write + " a", a => a.getAttribute("href")), "mailto:jordan@example.com", "an email address becomes mailto:");
+  await pick("drawings");
+  await p.evaluate(() => window.mailroomLinkFromMenu()); await wait(150);
+  await p.click(".link-dialog [data-link-remove]"); await wait(150);
+  same(await p.$$eval(write + " a", a => a.length), 0, "Remove link");
+  same(await p.$eval(write, w => w.textContent.includes("See the drawings today")), true, "the text stays");
+  // Escape cancels, and leaves the compose window open.
+  await pick("today");
+  await p.evaluate(() => window.mailroomLinkFromMenu()); await wait(150);
+  await p.keyboard.press("Escape"); await wait(150);
+  same([await p.$(".link-dialog"), !!(await p.$("#compose-form"))], [null, true], "Escape closes only the dialog");
 });
 
 test("compose: pasted lines become paragraphs, so Numbers lists them all", { fake: true }, async ({ p }) => {
