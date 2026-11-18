@@ -3840,6 +3840,19 @@ html[data-look="omarchy"] :is(.avatar, .event-avatar)[style*="#a33b32"] { backgr
 /* Print (Ctrl+P): only the message printMessage puts in #print-sheet,
    in black on white whatever the theme. */
 #print-sheet { display: none; }
+/* A message in a window of its own: only the reading pane, at any width.
+   Placed after the narrow-window rules, which would hide it. */
+html:has(body[data-read="window"]),
+body[data-read="window"] { height: 100%; min-height: 100%; overflow: hidden; }
+body[data-read="window"] { display: block; background: var(--panel); }
+body[data-read="window"] .top,
+body[data-read="window"] .auth-banner,
+body[data-read="window"] .sync-note,
+body[data-read="window"] .shell > :not(.reading) { display: none; }
+body[data-read="window"] .shell { display: block; height: 100%; }
+html body[data-read="window"] .shell > .reading { display: flex; height: 100%; }
+html body[data-read="window"] .close-message { display: inline-grid; }
+
 @media print {
   html, body { background: #fff !important; color: #000 !important; height: auto !important; overflow: visible !important; }
   body > :not(#print-sheet) { display: none !important; }

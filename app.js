@@ -1594,15 +1594,22 @@ const params = new URLSearchParams(location.search);
 const popCompose = params.get("compose") === "reply" || params.get("compose") === "new";
 if (popCompose) document.body.dataset.compose = "pop";
 const assistWindow = params.get("assist") === "1";
+// A message opened in a window of its own (double-click in the list).
+const readWindow = params.get("read") === "1";
+if (readWindow) document.body.dataset.read = "window";
 if (assistWindow) {
   document.body.dataset.assist = "window";
   try { localStorage.setItem("mailroom-assist-pop", params.get("owner") === "compose" ? "compose" : "main"); } catch (e) {}
   window.addEventListener("pagehide", () => {
     try { localStorage.removeItem("mailroom-assist-pop"); } catch (err) {}
   });
-} else if (!popCompose) {
+} else if (!popCompose && !readWindow) {
   try { localStorage.removeItem("mailroom-assist-pop"); } catch (e) {}
 }
+// The compose, assistant and reading windows share this page but not the
+// mailbox: polling, the Outbox, reminders, updates and the Omarchy bar stay
+// with the main window, or they would run twice.
+const sideWindow = popCompose || assistWindow || readWindow;
 let view = ["calendar", "people", "settings"].includes(params.get("view")) ? params.get("view") : "mail";
 let calView = "work";
 let calFocus = inDesktop() ? new Date() : new Date(2026, 9, 15);
@@ -2954,7 +2961,7 @@ function closeAddAccountPopup() {
 }
 
 function openAddAccountPopup() {
-  if (!inDesktop() || popCompose || assistWindow || Object.keys(accounts).length) return;
+  if (!inDesktop() || sideWindow || Object.keys(accounts).length) return;
   if (popRoot.querySelector("#add-account-popup")) return;
   if (addAccountKey) document.removeEventListener("keydown", addAccountKey);
   popRoot.innerHTML = `
@@ -5052,6 +5059,10 @@ function renderList() {
       showRowMenu(ev.clientX, ev.clientY, btn.dataset.id, btn.classList.contains("child"));
     });
     btn.onclick = (ev) => {
+      // A double-click opens the message in a window of its own, as Outlook
+      // does. Counted on the click: the first one repaints the row, and a
+      // browser sends no dblclick to a row that was replaced under it.
+      if (ev.detail === 2 && !ev.ctrlKey && !ev.metaKey && !ev.shiftKey && !sideWindow) return popOutMessage(btn.dataset.id);
       if ((ev.ctrlKey || ev.metaKey) && !btn.classList.contains("child")) return togglePick(btn.dataset.thread);
       if (ev.shiftKey && !btn.classList.contains("child")) return pickRange(btn.dataset.thread);
       if (picked.size) { picked.clear(); pickAnchor = null; }
@@ -5187,7 +5198,7 @@ let updateRunning = false;
 
 // Quietly look for a newer version; say so once per version.
 async function checkForUpdate(quiet) {
-  if (!inDesktop() || popCompose || assistWindow) return null;
+  if (!inDesktop() || sideWindow) return null;
   let status;
   try {
     status = await tauriInvoke("check_update");
@@ -5687,7 +5698,7 @@ function eventStart(ev) {
 // Raise a reminder once for each meeting, from its reminder time until it
 // has been under way for five minutes.
 function checkReminders() {
-  if (!inDesktop() || popCompose || assistWindow) return;
+  if (!inDesktop() || sideWindow) return;
   const now = Date.now();
   const shown = remindedKeys();
   let changed = false;
@@ -5777,7 +5788,7 @@ async function answeredOnServer(item) {
 
 let checkingFollowUps = false;
 async function checkFollowUps() {
-  if (checkingFollowUps || !inDesktop() || popCompose || assistWindow) return;
+  if (checkingFollowUps || !inDesktop() || sideWindow) return;
   checkingFollowUps = true;
   try {
     const now = Date.now();
@@ -6358,7 +6369,7 @@ document.addEventListener("keydown", (ev) => {
   if (document.getElementById("viewer")) return;
   const ctrl = ev.ctrlKey || ev.metaKey;
   const key = ev.key;
-  if (key === "F5" && !popCompose && !assistWindow) {
+  if (key === "F5" && !sideWindow) {
     // F5 checks for mail rather than reloading the window.
     ev.preventDefault();
     if (view === "mail") checkMailNow();
@@ -6374,7 +6385,20 @@ document.addEventListener("keydown", (ev) => {
     }
     return;
   }
-  if (popCompose || assistWindow) return;
+  if (readWindow && !typingIn(ev.target) && !ev.altKey) {
+    if (key === "Escape") {
+      ev.preventDefault();
+      if (popRoot.firstElementChild) closePop();
+      else closeComposeWindow();
+      return;
+    }
+    if (ctrl && key.toLowerCase() === "p") {
+      const msg = messages.find(m => m.id === selected);
+      if (msg) { ev.preventDefault(); printMessage(msg); }
+      return;
+    }
+  }
+  if (sideWindow) return;
   if (typingIn(ev.target) || ev.altKey) return;
   if (document.getElementById("choose-layer") || document.getElementById("discard-confirm")) return;
   if (popRoot.firstElementChild) {
@@ -7332,7 +7356,7 @@ function bodyForSend(message) {
 // The Outbox belongs to the main window. A pop-out that restored it too
 // would send the same mail again, or save over the main window's list.
 function ownsOutbox() {
-  return inDesktop() && !popCompose && !assistWindow;
+  return inDesktop() && !sideWindow;
 }
 
 function rememberOutbox() {
@@ -7974,6 +7998,7 @@ function startReply(msg, all) {
   selected = msg.id;
   focusReply = true;
   render();
+  if (readWindow) popReaderReply(draft.id);
 }
 
 function messagePlain(m) {
@@ -8088,6 +8113,7 @@ function startForward(msg) {
   selected = msg.id;
   focusReply = true;
   render();
+  if (readWindow) popReaderReply(draft.id);
 }
 
 function toggleFlag(id) {
@@ -8600,13 +8626,22 @@ function renderReading() {
   // While you write a reply the paperclip would read as yours; it lists
   // the thread's files, so it waits until you are reading again.
   const fileTotal = folderDraft || showReply ? 0 : shown.reduce((n, m) => n + (messageFiles(m).length || (m.hasAttachment ? 1 : 0)), 0);
-  const tools = (folderDraft || held)
+  const fileBtn = fileTotal ? `<button class="icon-btn files-btn" type="button" id="thread-files" title="Attachments (${fileTotal})" aria-label="Attachments (${fileTotal})" aria-haspopup="menu">${clipIcon}<span class="files-count">${fileTotal}</span></button>` : "";
+  // The reading window only reads: moving, flagging or deleting belongs to
+  // the main window, whose list would otherwise go stale.
+  const tools = readWindow
+    ? `${icon("reply", "Reply", replyIcon)}
+        ${icon("reply-all", "Reply all", replyAllIcon)}
+        ${icon("forward", "Forward", forwardIcon)}
+        ${fileBtn}
+        ${icon("print", "Print (Ctrl+P)", printIcon)}`
+    : (folderDraft || held)
     ? icon("delete", "Delete", deleteIcon)
     : `${icon("reply", "Reply", replyIcon)}
         ${icon("reply-all", "Reply all", replyAllIcon)}
         ${icon("forward", "Forward", forwardIcon)}
         ${icon("reply-invite", "Reply with invite", replyInviteIcon)}
-        ${fileTotal ? `<button class="icon-btn files-btn" type="button" id="thread-files" title="Attachments (${fileTotal})" aria-label="Attachments (${fileTotal})" aria-haspopup="menu">${clipIcon}<span class="files-count">${fileTotal}</span></button>` : ""}
+        ${fileBtn}
         ${icon("mark-read", "Mark as read", readIcon)}
         ${icon("mark-unread", "Mark as unread", unreadIcon)}
         ${where === "trash" ? icon("restore", "Restore", restoreIcon) : ""}
@@ -8639,7 +8674,7 @@ function renderReading() {
     ${replyMsg ? replyTabsHtml(conv, replyMsg) : ""}
   `;
   const closeBtn = document.getElementById("close-message");
-  if (closeBtn) closeBtn.onclick = () => backToList();
+  if (closeBtn) closeBtn.onclick = () => (readWindow ? closeComposeWindow() : backToList());
   if (!folderDraft) loadThreadSent(conv);
   if ((folderDraft || showReply || showDraftCard) && reading.querySelector("#compose-form")) bindCompose(reading, { mode: "inline", kind: composeKind, draft: replyDraft });
   if (replyMsg) bindReplyTabs();
@@ -8693,6 +8728,8 @@ function renderReading() {
   });
   reading.querySelectorAll("[data-person]").forEach(btn => {
     btn.onclick = () => {
+      // People is in the main window.
+      if (readWindow) return;
       selectedContact = btn.dataset.person;
       contactAccount = "all";
       document.body.dataset.open = "1";
@@ -9564,6 +9601,7 @@ function followMovedIds(moved) {
 }
 
 async function pushMailAction(targets, kind, revert, prior, destination) {
+  if (readWindow) return;
   const live = (targets || []).filter(serverMessage);
   if (!live.length) return;
   const snapshot = prior || rememberMessages(live);
@@ -9640,6 +9678,9 @@ function dropGoneMessage(message) {
 }
 
 function setUnread(targets, unread, announce) {
+  // The main window marked it read as it opened this window, and owns the
+  // mailbox; a change made here would not show there.
+  if (readWindow) { render(); return; }
   const changed = (targets || []).filter(message => !!message.unread !== unread);
   if (!changed.length) return;
   const prior = rememberMessages(changed);
@@ -9856,7 +9897,7 @@ function applyOmarchyLook(look) {
   // the theme menu decides.
   let adopted = true;
   try { adopted = localStorage.getItem("mailroom-omarchy-adopted") === "1"; } catch (e) {}
-  if (!adopted && !popCompose && !assistWindow) {
+  if (!adopted && !sideWindow) {
     try { localStorage.setItem("mailroom-omarchy-adopted", "1"); } catch (e) {}
     if (savedTheme() !== "omarchy") {
       try { localStorage.setItem("mailroom-theme", "omarchy"); } catch (e) {}
@@ -9892,7 +9933,7 @@ async function initOmarchy() {
 let reportedUnread = -1;
 let unreadReportTimer = 0;
 function reportUnread(force) {
-  if (!omarchyLook || popCompose || assistWindow) return;
+  if (!omarchyLook || sideWindow) return;
   clearTimeout(unreadReportTimer);
   unreadReportTimer = setTimeout(() => {
     const count = messages.filter(m => m.live && m.unread && messageBox(m) === "inbox" && accountInProfile(m.account)).length;
@@ -9905,7 +9946,7 @@ function reportUnread(force) {
 
 // A mailto: link, --compose or --check-mail that Mailroom was started with.
 function openLaunchRequest(request) {
-  if (!request || typeof request !== "object" || popCompose || assistWindow) return;
+  if (!request || typeof request !== "object" || sideWindow) return;
   if (request.kind === "check") {
     checkMailNow();
     return;
@@ -9918,7 +9959,7 @@ function openLaunchRequest(request) {
 }
 
 async function takeLaunchRequest() {
-  if (!inDesktop() || popCompose || assistWindow) return;
+  if (!inDesktop() || sideWindow) return;
   let request = null;
   try { request = await tauriInvoke("take_launch_request"); } catch (e) { request = null; }
   if (request) openLaunchRequest(request);
@@ -10095,6 +10136,8 @@ function showRowMenu(x, y, id, child) {
   const reportable = !junked && targets.some(canReportJunk);
   const google = targets.some(m => isGoogleAccount(m.account));
   menu.innerHTML = `
+    <button type="button" role="menuitem" data-act="open-window">Open in new window</button>
+    <div class="menu-rule"></div>
     <button type="button" role="menuitem" data-act="unread">Mark as unread</button>
     <button type="button" role="menuitem" data-act="read">Mark as read</button>
     <button type="button" role="menuitem" data-act="move">Move to…</button>
@@ -10207,7 +10250,9 @@ document.getElementById("row-menu").onclick = (ev) => {
   }
   const focusAct = /^focus-(always-)?(focused|other)$/.exec(btn.dataset.act || "");
   if (focusAct) { moveFocus(rowTargets(id, child), focusAct[2], !!focusAct[1]); return; }
-  if (btn.dataset.act === "to-inbox") moveToInbox(rowTargets(id, child));
+  // As a double-click on the row does.
+  if (btn.dataset.act === "open-window") popOutMessage(id);
+  else if (btn.dataset.act === "to-inbox") moveToInbox(rowTargets(id, child));
   else if (btn.dataset.act === "report-junk") reportJunk(rowTargets(id, child));
   else if (btn.dataset.act === "not-junk") notJunk(rowTargets(id, child));
   else if (btn.dataset.act === "move") showMoveDialog(rowTargets(id, child));
@@ -13269,7 +13314,7 @@ function renderMailSettings(body) {
   pollSelect.onchange = () => {
     pollMinutes = Number(pollSelect.value);
     try { localStorage.setItem("mailroom-poll-minutes", String(pollMinutes)); } catch (e) {}
-    if (inDesktop() && !popCompose && !assistWindow) armMailPolling();
+    if (inDesktop() && !sideWindow) armMailPolling();
     toast(pollLabel(pollMinutes));
   };
   const notifyBox = body.querySelector("#notify-new-mail");
@@ -15058,6 +15103,91 @@ async function popOutCompose(form, ctx) {
   closePop();
 }
 
+// ---- A message in a window of its own (double-click in the list) ----
+// The reading window does not load the mailbox, so it is handed the
+// conversation as it shows here, bodies included. A body not loaded yet
+// comes from the local cache in that window, as it would here.
+const READ_POP_KEY = "mailroom-read-pop";
+function readPopMessages(msg) {
+  const conv = conversationFor(msg.id);
+  const shown = conv ? threadShown(conv).filter(m => !m.draft && !m.pendingSend) : [];
+  return shown.some(m => m.id === msg.id) ? shown : [msg];
+}
+
+function storeReadPop(msgId, list) {
+  try {
+    localStorage.setItem(READ_POP_KEY, JSON.stringify({ msgId, messages: list.map(m => JSON.parse(JSON.stringify(m))) }));
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+async function popOutMessage(id) {
+  const msg = messages.find(m => m.id === id);
+  if (!msg) return;
+  // A draft or a message still in the Outbox opens in the reading pane:
+  // only the main window can edit or undo it.
+  if (msg.draft || msg.pendingSend) {
+    selectListedMessage(id);
+    return;
+  }
+  if (selected !== id || msg.unread) selectListedMessage(id);
+  // A long conversation may not fit in local storage; then just this one.
+  if (!storeReadPop(id, readPopMessages(msg)) && !storeReadPop(id, [msg])) {
+    toast("Could not open that message in a window");
+    return;
+  }
+  const query = "read=1&msg=" + encodeURIComponent(id) + "&d=" + Date.now();
+  if (inDesktop()) {
+    try {
+      const pending = tauriInvoke("pop_message", { query, title: cleanSubject(msg.subject) || "Message" });
+      if (!pending || !pending.then) throw new Error("no window");
+      await pending;
+    } catch (e) {
+      toast("Could not open that message in a window");
+    }
+    return;
+  }
+  const base = location.href.split("?")[0];
+  if (!window.open(base + "?" + query, "mailroom-read", "popup=yes,width=820,height=760")) toast("Could not open that message in a window");
+}
+
+function openReadWindow() {
+  const msgId = params.get("msg") || "";
+  const saved = readStoredCompose(READ_POP_KEY);
+  if (saved && saved.msgId === msgId) adoptPopOriginals(saved.messages);
+  // A long thread's bodies would otherwise sit in the storage the Outbox and
+  // drafts share.
+  try { localStorage.removeItem(READ_POP_KEY); } catch (e) {}
+  const msg = msgId ? messages.find(m => m.id === msgId) : null;
+  document.body.dataset.open = "1";
+  if (!msg) {
+    document.body.dataset.view = view = "mail";
+    reading.innerHTML = `<div class="empty">That message is no longer here. Open it again from the main window.</div>`;
+    return;
+  }
+  // Read it where it is filed, whichever folder the main window shows.
+  box = messageBox(msg);
+  account = "all";
+  selected = msg.id;
+  expanded.add(msg.id);
+  revealReading = true;
+  document.title = cleanSubject(msg.subject) || "Message";
+  setView("mail");
+}
+
+// The reading window has no reply pane: a reply or forward started there
+// goes straight on to the compose window, with the message it answers.
+async function popReaderReply(draftId) {
+  const form = reading.querySelector("#compose-form");
+  if (form && replyDraft) await popOutCompose(form, { mode: "inline", draft: replyDraft });
+  replyDraft = null;
+  removeDraft(draftId);
+  reading.dataset.paint = "";
+  renderReading();
+}
+
 const ATTACH_LIMIT = 35 * 1024 * 1024;
 
 function stageComposeFile(file) {
@@ -16562,7 +16692,7 @@ function setView(next) {
 function applyMailEvent() {
   // Only the main window takes a queued send; a pop-out taking it first
   // would lose it when closed.
-  if (popCompose || assistWindow) return;
+  if (sideWindow) return;
   const raw = localStorage.getItem("outlook-mock-mail-event");
   if (!raw) return;
   localStorage.removeItem("outlook-mock-mail-event");
@@ -17631,7 +17761,7 @@ const folderBusy = new Set();
 let syncNote = "";
 const folderRun = new Map();
 const bodyLoads = new Set();
-const APP_VERSION = "1.4.0";
+const APP_VERSION = "1.3.24";
 let appVersion = APP_VERSION;
 
 prepareDesktopAccounts();
@@ -17639,6 +17769,7 @@ settleProfileSelection();
 restoreSignatures();
 syncAccountChoices();
 if (popCompose) openPopCompose();
+else if (readWindow) openReadWindow();
 else if (!assistWindow) setView(view);
 
 const sampleMessages = messages.map(message => Object.assign({}, message));
@@ -18879,7 +19010,7 @@ const backfilling = new Set();
 
 async function backfillFolder(accountId, key) {
   const acct = accounts[accountId];
-  if (!acct || !acct.signedIn || !acct.email || !inDesktop() || popCompose || assistWindow) return;
+  if (!acct || !acct.signedIn || !acct.email || !inDesktop() || sideWindow) return;
   const folder = (acct.liveFolders || []).find(item => item.key === key);
   const folderId = graphFolderId(folder);
   const mark = folderMark(accountId, key);
@@ -18919,7 +19050,7 @@ async function backfillInboxes() {
 }
 
 function showStartupSync(text) {
-  if (popCompose || assistWindow) return;
+  if (sideWindow) return;
   setSyncNote(text || "Syncing your mail…");
   if (view === "mail") render();
 }
@@ -18963,7 +19094,8 @@ async function bootLiveMail() {
     authProblem = "";
     refreshAuthBanner();
     // This webview shares the WebKit process with the main window. A mailbox sync here freezes the app.
-    if (popCompose) {
+    // The reading window has the message it was handed and loads only its body.
+    if (popCompose || readWindow) {
       setSyncNote("");
       return;
     }
@@ -19016,7 +19148,7 @@ async function bootLiveMail() {
     setSyncNote("");
     authProblem = String(err && err.message || err);
     refreshAuthBanner();
-    if (popCompose) return;
+    if (popCompose || readWindow) return;
     if (Object.keys(accounts).length) {
       if (view === "mail") render();
       return;
@@ -19185,7 +19317,7 @@ async function checkMailNow() {
 }
 
 function startMailPolling() {
-  if (!inDesktop() || popCompose || assistWindow) return;
+  if (!inDesktop() || sideWindow) return;
   armMailPolling();
   setInterval(checkSnoozes, 60 * 1000);
   checkSnoozes();

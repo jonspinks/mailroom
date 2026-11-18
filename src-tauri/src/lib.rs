@@ -1667,6 +1667,71 @@ fn assist_window_query(raw: &str) -> Result<String, String> {
     Ok(out)
 }
 
+fn read_window_query(raw: &str) -> Result<String, String> {
+    let raw = raw.trim().trim_start_matches('?');
+    if raw.is_empty()
+        || raw.len() > 512
+        || raw.contains("://")
+        || raw.contains("..")
+        || raw.contains('\\')
+        || raw.contains('\0')
+    {
+        return Err("That message window is not available.".into());
+    }
+    let mut read = false;
+    let mut msg = None;
+    let mut stamp = None;
+    for part in raw.split('&') {
+        if part.is_empty() {
+            continue;
+        }
+        let (key, value) = part.split_once('=').unwrap_or((part, ""));
+        match key {
+            "read" if !read && value == "1" => read = true,
+            "msg" if msg.is_none() => {
+                let decoded = percent_decode_token(value).map_err(|_| "That message window is not available.".to_string())?;
+                if !valid_msg_token(&decoded) {
+                    return Err("That message window is not available.".into());
+                }
+                msg = Some(percent_encode_token(&decoded));
+            }
+            "d"
+                if stamp.is_none()
+                    && !value.is_empty()
+                    && value.len() <= 20
+                    && value.bytes().all(|byte| byte.is_ascii_digit()) =>
+            {
+                stamp = Some(value);
+            }
+            _ => return Err("That message window is not available.".into()),
+        }
+    }
+    let (true, Some(msg)) = (read, msg) else {
+        return Err("That message window is not available.".into());
+    };
+    let mut out = format!("read=1&msg={msg}");
+    if let Some(stamp) = stamp {
+        out.push_str("&d=");
+        out.push_str(stamp);
+    }
+    Ok(out)
+}
+
+/// The subject as a window title: one line, not too long, never empty.
+fn read_window_title(raw: Option<&str>) -> String {
+    let flat: String = raw
+        .unwrap_or("")
+        .chars()
+        .map(|ch| if ch.is_control() { ' ' } else { ch })
+        .collect();
+    let title: String = flat.split_whitespace().collect::<Vec<_>>().join(" ").chars().take(200).collect();
+    if title.is_empty() {
+        "Message".into()
+    } else {
+        title
+    }
+}
+
 fn compose_page(current: &tauri::Url, query: &str) -> tauri::Url {
     let mut next = current.clone();
     if next.path() == "/" || next.path().is_empty() {
@@ -1731,6 +1796,40 @@ async fn pop_assist(app: tauri::AppHandle, query: String) -> Result<(), String> 
         .build()
         .map_err(|err| err.to_string())?;
     spell::apply(&window);
+    Ok(())
+}
+
+/// A message opened in a window of its own. One reading window, reused, as
+/// the compose window is.
+#[tauri::command(async)]
+async fn pop_message(app: tauri::AppHandle, query: String, title: Option<String>) -> Result<(), String> {
+    let query = read_window_query(&query)?;
+    let title = read_window_title(title.as_deref());
+    if let Some(window) = app.get_webview_window("read") {
+        let current = window.url().map_err(|err| err.to_string())?;
+        window
+            .navigate(compose_page(&current, &query))
+            .map_err(|err| err.to_string())?;
+        let _ = window.set_title(&title);
+        let _ = window.unminimize();
+        window.show().map_err(|err| err.to_string())?;
+        window.set_focus().map_err(|err| err.to_string())?;
+        return Ok(());
+    }
+    let url = tauri::WebviewUrl::App(format!("index.html?{query}").into());
+    let on_omarchy = omarchy::detected();
+    let mut builder = tauri::WebviewWindowBuilder::new(&app, "read", url)
+        .title(&title)
+        .decorations(!on_omarchy)
+        .inner_size(820.0, 760.0);
+    // Floats over Mailroom, centred, as the compose window does.
+    if let Some(main) = app.get_webview_window("main") {
+        if main.is_visible().unwrap_or(false) {
+            builder = builder.parent(&main).map_err(|err| err.to_string())?;
+        }
+    }
+    let window = builder.build().map_err(|err| err.to_string())?;
+    linkmenu::attach(&window);
     Ok(())
 }
 
@@ -2140,6 +2239,7 @@ pub fn run() {
             apply_mail,
             pop_compose,
             pop_assist,
+            pop_message,
             saved_inbox,
             sync_calendar,
             sync_contacts,
@@ -2283,7 +2383,7 @@ fn request_quit_after_drafts(app: &tauri::AppHandle, code: i32) {
 mod tests {
     use super::{
         app_page, remember_picked_folder, take_picked_folder,
-        assist_window_query, compose_window_query, draft_close, file_id_from_body, flush_drafts_script, folder_id_from_body, message_id_from_body,
+        assist_window_query, compose_window_query, draft_close, read_window_query, read_window_title, file_id_from_body, flush_drafts_script, folder_id_from_body, message_id_from_body,
         omit_message_bodies, reconcile_is_due, reported_email, DraftClose,
     };
 
@@ -2339,6 +2439,33 @@ mod tests {
         assert!(compose_window_query("http://evil").is_err());
         assert!(compose_window_query("compose=new&msg=../secret").is_err());
         assert!(compose_window_query("").is_err());
+    }
+
+    #[test]
+    fn read_window_query_needs_one_message() {
+        assert_eq!(
+            read_window_query("read=1&msg=AAMk%2Bid%2F%3D&d=99").unwrap(),
+            "read=1&msg=AAMk%2Bid%2F%3D&d=99"
+        );
+        assert_eq!(read_window_query("?msg=m3&read=1").unwrap(), "read=1&msg=m3");
+        assert!(read_window_query("read=1").is_err());
+        assert!(read_window_query("msg=m3").is_err());
+        assert!(read_window_query("read=2&msg=m3").is_err());
+        assert!(read_window_query("read=1&msg=m3&compose=new").is_err());
+        assert!(read_window_query("read=1&msg=m3&msg=m4").is_err());
+        assert!(read_window_query("read=1&msg=../secret").is_err());
+        assert!(read_window_query("read=1&msg=a%3Cb").is_err());
+        assert!(read_window_query("read=1&msg=m3&d=12x").is_err());
+        assert!(read_window_query("http://evil").is_err());
+        assert!(read_window_query("").is_err());
+    }
+
+    #[test]
+    fn read_window_title_is_one_short_line() {
+        assert_eq!(read_window_title(Some("  Kiln\nschedule\t ")), "Kiln schedule");
+        assert_eq!(read_window_title(Some("")), "Message");
+        assert_eq!(read_window_title(None), "Message");
+        assert_eq!(read_window_title(Some(&"x".repeat(500))).chars().count(), 200);
     }
 
     #[test]
