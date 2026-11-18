@@ -1085,6 +1085,9 @@ test("Work and Personal keep their mail apart", { fake: false }, async ({ p }) =
   expect(!(await subjects()).includes("Tickets for Saturday"), "personal mail stays out of Work");
   const badge = await p.$eval('[data-set-profile="personal"] .profile-badge', e => e.textContent).catch(() => "");
   expect(badge, "Personal shows its unread count", badge);
+  await p.evaluate(() => setView("calendar")); await wait(500);
+  same(await p.$$eval(".profile-switch .profile-badge", bs => bs.length), 0, "Calendar shows no unread counts");
+  await p.evaluate(() => setView("mail")); await wait(300);
   await p.click('[data-set-profile="personal"]'); await wait(250);
   const personal = await names();
   expect(personal.some(n => n === "Personal"), "Personal shows its account", personal);

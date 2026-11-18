@@ -1413,7 +1413,7 @@ function profileSwitchHtml() {
   const showBoth = view === "calendar" && profileAccountIds("work").length > 0 && profileAccountIds("personal").length > 0;
   const button = (profile) => {
     const on = activeProfile === profile && !(showBoth && calendarBoth);
-    const n = on ? 0 : profileUnread(profile);
+    const n = on || view === "calendar" ? 0 : profileUnread(profile);
     const badge = n ? `<span class="profile-badge">${n > 99 ? "99+" : n}</span>` : "";
     return `<button type="button" data-set-profile="${profile}" aria-pressed="${on}">${profileLabel(profile)}${badge}</button>`;
   };
@@ -17617,7 +17617,7 @@ const folderBusy = new Set();
 let syncNote = "";
 const folderRun = new Map();
 const bodyLoads = new Set();
-const APP_VERSION = "1.3.19";
+const APP_VERSION = "1.3.20";
 let appVersion = APP_VERSION;
 
 prepareDesktopAccounts();
