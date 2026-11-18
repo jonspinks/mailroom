@@ -17617,7 +17617,7 @@ const folderBusy = new Set();
 let syncNote = "";
 const folderRun = new Map();
 const bodyLoads = new Set();
-const APP_VERSION = "1.3.20";
+const APP_VERSION = "1.3.21";
 let appVersion = APP_VERSION;
 
 prepareDesktopAccounts();
