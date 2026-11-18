@@ -11413,6 +11413,82 @@ function safeNoteUrl(raw) {
   return "";
 }
 
+// What was typed in a link's address, as a link: a web address with or
+// without https://, or an email address. "" when it is neither.
+function linkAddress(raw) {
+  const text = String(raw || "").trim();
+  if (!text) return "";
+  if (/^[^\s@:/]+@[^\s@]+\.[^\s@]+$/.test(text)) return safeNoteUrl("mailto:" + text);
+  if (/^[a-z][a-z0-9+.-]*:/i.test(text)) return safeNoteUrl(text);
+  if (/^(www\.)?[a-z0-9-]+(\.[a-z0-9-]+)*\.[a-z]{2,}(?::\d+)?([/?#]|$)/i.test(text)) return safeNoteUrl("https://" + text);
+  return "";
+}
+
+// Outlook's Insert link: the address and the text to show. Resolves to
+// { href, text }, "remove" for Remove link, or null when cancelled.
+function linkDialog({ href, text, editing }) {
+  return new Promise(resolve => {
+    const layer = document.createElement("div");
+    layer.id = "choose-layer";
+    layer.innerHTML = `
+      <div class="backdrop dim" data-link-dismiss></div>
+      <form class="dialog link-dialog" role="dialog" aria-modal="true" aria-label="${editing ? "Edit link" : "Insert link"}" novalidate>
+        <h2>${editing ? "Edit link" : "Insert link"}</h2>
+        <p class="form-error" hidden></p>
+        <label class="field">Web address or email<input name="href" autocomplete="off" spellcheck="false" placeholder="https://example.com" value="${esc(href)}"></label>
+        <label class="field">Text to display<input name="text" autocomplete="off" value="${esc(text)}"></label>
+        <div class="dialog-actions">
+          ${editing ? `<button class="ghost link-remove" type="button" data-link-remove>Remove link</button>` : ""}
+          <button class="ghost" type="button" data-link-dismiss>Cancel</button>
+          <button class="primary" type="submit">${editing ? "Save" : "Insert"}</button>
+        </div>
+      </form>`;
+    document.body.appendChild(layer);
+    const form = layer.querySelector("form");
+    const hrefInput = form.querySelector("[name=href]");
+    const textInput = form.querySelector("[name=text]");
+    const done = (value) => {
+      document.removeEventListener("keydown", onKey, true);
+      layer.remove();
+      resolve(value);
+    };
+    function onKey(ev) {
+      if (ev.key !== "Escape") return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      done(null);
+    }
+    document.addEventListener("keydown", onKey, true);
+    layer.addEventListener("click", ev => {
+      if (ev.target.closest("[data-link-remove]")) return done("remove");
+      if (ev.target.closest("[data-link-dismiss]")) done(null);
+    });
+    form.onsubmit = (ev) => {
+      ev.preventDefault();
+      const address = linkAddress(hrefInput.value);
+      if (!address) {
+        const note = form.querySelector(".form-error");
+        note.hidden = false;
+        note.textContent = "Enter a web address or an email address.";
+        hrefInput.focus();
+        return;
+      }
+      done({ href: address, text: textInput.value.trim() || hrefInput.value.trim() });
+    };
+    hrefInput.focus();
+    hrefInput.select();
+  });
+}
+
+// "Link…" on WebKit's right-click menu runs this (src-tauri/src/linkmenu.rs).
+window.mailroomLinkFromMenu = () => {
+  const sel = window.getSelection();
+  const node = sel && sel.anchorNode;
+  const el = node && (node.nodeType === 1 ? node : node.parentElement);
+  const host = el && el.closest("#compose-body");
+  if (host && host.linkFromMenu) host.linkFromMenu();
+};
+
 function trimUrlTail(url) {
   let end = url.length;
   while (end > 0 && ".,;:!?".includes(url[end - 1])) end -= 1;
@@ -14337,7 +14413,7 @@ function historyMarkup(msgId, open) {
 
 // Mail apps add their own gaps to bare paragraphs, so the spacing typed
 // here is written into the message itself.
-const OUT_FONT = "font-family: Aptos, Calibri, 'Segoe UI', Arial, sans-serif; font-size: 11pt; line-height: 1.4;";
+const OUT_FONT = "font-family: Aptos, Calibri, 'Segoe UI', Arial, sans-serif; font-size: 12pt; line-height: 1.4;";
 
 // Colours that only mean "the screen was dark": a near-black grey
 // background and near-white grey text. They come with text copied from a
@@ -14524,7 +14600,7 @@ const FONT_FACES = [
   ["Courier New", "'Courier New', Courier, monospace"]
 ];
 const FONT_SIZES = [8, 9, 10, 10.5, 11, 12, 14, 16, 18, 20, 24, 28, 36, 48, 72];
-const DEFAULT_FONT_SIZE = 11;
+const DEFAULT_FONT_SIZE = 12;
 // What More formatting (…) holds, in Outlook's order.
 const MORE_FORMATS = [
   ["justifyLeft", "Align left"], ["justifyCenter", "Centre"], ["justifyRight", "Align right"],
@@ -15739,8 +15815,8 @@ function bindCompose(root, ctx) {
   function runFormat(cmd) {
     const write = caretInMessage(null);
     if (cmd === "link") {
-      const url = window.prompt("Link address", "https://");
-      if (url) document.execCommand("createLink", false, url);
+      editLink(write);
+      return;
     } else if (cmd === "insertUnorderedList" || cmd === "insertOrderedList") {
       applyList(write, cmd === "insertOrderedList");
     } else {
@@ -15750,6 +15826,45 @@ function bindCompose(root, ctx) {
     }
     afterFormat(write);
   }
+  // Insert or edit a link on the selection, the word under a right-click, or
+  // the link the caret is in. From the ribbon's Link button and from "Link…"
+  // on the right-click menu (src-tauri/src/linkmenu.rs adds that item).
+  async function editLink(write) {
+    const sel = window.getSelection();
+    let range = sel && sel.rangeCount ? sel.getRangeAt(0).cloneRange() : null;
+    if (!range || !write.contains(range.commonAncestorContainer)) {
+      caretInMessage(null);
+      range = sel.getRangeAt(0).cloneRange();
+    }
+    const at = range.startContainer.nodeType === 1 ? range.startContainer : range.startContainer.parentElement;
+    const existing = at && at.closest("a[href]");
+    const link = existing && write.contains(existing) ? existing : null;
+    if (link) {
+      range = document.createRange();
+      range.selectNodeContents(link);
+    }
+    const shown = range.toString();
+    const answer = await linkDialog({
+      href: link ? link.getAttribute("href") || "" : linkAddress(shown) ? shown.trim() : "",
+      text: shown,
+      editing: !!link
+    });
+    body.focus();
+    sel.removeAllRanges();
+    sel.addRange(range);
+    if (answer === "remove" && link) {
+      document.execCommand("unlink", false, null);
+    } else if (answer && link) {
+      link.setAttribute("href", answer.href);
+      if (answer.text !== shown) link.textContent = answer.text;
+    } else if (answer && shown && answer.text === shown) {
+      document.execCommand("createLink", false, answer.href);
+    } else if (answer) {
+      document.execCommand("insertHTML", false, `<a href="${esc(answer.href)}">${esc(answer.text)}</a>`);
+    }
+    afterFormat(write);
+  }
+  body.linkFromMenu = () => editLink(body.querySelector(".body-write") || body);
   form.querySelectorAll(".format-bar [data-cmd]").forEach(btn => {
     btn.addEventListener("mousedown", (e) => e.preventDefault());
     btn.onclick = () => runFormat(btn.dataset.cmd);
@@ -17502,7 +17617,7 @@ const folderBusy = new Set();
 let syncNote = "";
 const folderRun = new Map();
 const bodyLoads = new Set();
-const APP_VERSION = "1.3.18";
+const APP_VERSION = "1.3.19";
 let appVersion = APP_VERSION;
 
 prepareDesktopAccounts();
