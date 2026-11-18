@@ -2842,6 +2842,13 @@ test("a throttled server is a toast, not the sign-in banner", { fake: true, setu
   expect(/busy/.test(await toast()), "says the server is busy", await toast());
 });
 
+test("the main window stays the main window whatever its URL says", { fake: true, label: "main" }, async ({ p, calls }) => {
+  await p.goto(p.url().split(/[?#]/)[0] + "?read=1&msg=m3", { waitUntil: "load" }); await wait(1600);
+  const r = await p.evaluate(() => ({ read: document.body.dataset.read || "", side: sideWindow, list: !!document.querySelector('.row[data-id="m1"]') }));
+  same(r, { read: "", side: false, list: true }, "a made-up ?read=1 does not turn it into a reading window");
+  expect((await calls("sync_inbox")).length > 0, "and it still syncs the mailbox");
+});
+
 test("an error banner can be closed; a sign-in banner cannot", { fake: true, setup: unreadPair }, async ({ p }) => {
   await p.evaluate(() => { window.__applyFail = "Microsoft couldn't do that (401)."; });
   await p.click('.row[data-id="u1"]'); await wait(400);
@@ -3009,6 +3016,13 @@ for (const t of tests.filter(t => t.name.includes(filter))) {
   });
   if (t.opts.fake) await page.evaluateOnNewDocument(FAKE);
   if (t.opts.setup) await page.evaluateOnNewDocument(t.opts.setup);
+  // Tauri tells the page which window it is in, by the label Rust gave it;
+  // the app trusts that, not the URL. Here the URL stands in for Rust.
+  await page.evaluateOnNewDocument((forced) => {
+    const q = new URLSearchParams(location.search);
+    const label = forced || (q.get("compose") ? "compose" : q.get("assist") === "1" ? "assist" : q.get("read") === "1" ? "read" : "main");
+    window.__TAURI_INTERNALS__ = Object.assign(window.__TAURI_INTERNALS__ || {}, { metadata: { currentWindow: { label }, currentWebview: { label } } });
+  }, t.opts.label || "");
   try {
     await page.goto(url, { waitUntil: "load" });
     await wait(t.opts.fake ? 1600 : 700);

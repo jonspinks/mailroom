@@ -1591,11 +1591,24 @@ function prepareDesktopAccounts() {
 }
 
 const params = new URLSearchParams(location.search);
-const popCompose = params.get("compose") === "reply" || params.get("compose") === "new";
+// Which window this page is in comes from the label Rust gave the window, not
+// from the URL: a URL can be made up, the label cannot, and these flags decide
+// what the page may do (CodeQL js/user-controlled-bypass, alerts 22 and 25).
+// The query still says what to show: a new message or a reply, which message.
+function windowLabel() {
+  try {
+    const meta = window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.metadata;
+    return String((meta && meta.currentWindow && meta.currentWindow.label) || "main");
+  } catch (e) {
+    return "main";
+  }
+}
+const ownWindow = windowLabel();
+const popCompose = ownWindow === "compose";
 if (popCompose) document.body.dataset.compose = "pop";
-const assistWindow = params.get("assist") === "1";
+const assistWindow = ownWindow === "assist";
 // A message opened in a window of its own (double-click in the list).
-const readWindow = params.get("read") === "1";
+const readWindow = ownWindow === "read";
 if (readWindow) document.body.dataset.read = "window";
 if (assistWindow) {
   document.body.dataset.assist = "window";
