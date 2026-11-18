@@ -558,6 +558,32 @@ pub(crate) fn decode_text(bytes: &[u8], charset: &str) -> String {
     }
 }
 
+/// Text that went through the Latin-1 branch of `decode_text` when its bytes
+/// were really UTF-8, put back: each character turned into the byte it came
+/// from, read as UTF-8. None when the text is not that: a character no
+/// Latin-1 byte gives, nothing past ASCII, or bytes that are not UTF-8. Bodies
+/// cached before 1.3.21 kept their "Â " (2026-11-18, the Halton invoice mail).
+pub(crate) fn undo_latin1(text: &str) -> Option<String> {
+    let mut bytes = Vec::with_capacity(text.len());
+    let mut wide = false;
+    for c in text.chars() {
+        let code = c as u32;
+        let byte = if code < 0x80 || (0xa0..=0xff).contains(&code) {
+            code as u8
+        } else if let Some(i) = CP1252.iter().position(|&m| m == c) {
+            0x80 + i as u8
+        } else {
+            return None;
+        };
+        wide |= byte >= 0x80;
+        bytes.push(byte);
+    }
+    if !wide {
+        return None;
+    }
+    String::from_utf8(bytes).ok()
+}
+
 /// Encoded words (RFC 2047) left in a header, decoded.
 pub(crate) fn decode_words(value: &str) -> String {
     if !value.contains("=?") {
@@ -2240,6 +2266,12 @@ mod tests {
         assert_eq!(decode_words("plain"), "plain");
         assert_eq!(decode_text(&[0x93, b'h', b'i', 0x94], "windows-1252"), "“hi”");
         assert_eq!(decode_text(&[b'a', 0xa0, b'b'], "iso-8859-1"), "a\u{a0}b");
+        // Mojibake from before 1.3.21 comes back; real Latin-1 text is left alone.
+        assert_eq!(undo_latin1("project.\u{c2}\u{a0} I hope").as_deref(), Some("project.\u{a0} I hope"));
+        assert_eq!(undo_latin1("it\u{e2}\u{20ac}\u{2122}s").as_deref(), Some("it\u{2019}s"));
+        assert_eq!(undo_latin1("Café crème"), None);
+        assert_eq!(undo_latin1("plain"), None);
+        assert_eq!(undo_latin1("\u{c2}\u{a0} and an emoji 🙂"), None);
         assert_eq!(decode_text("a\u{a0}b café".as_bytes(), "iso-8859-1"), "a\u{a0}b café");
         assert_eq!(decode_text("é".as_bytes(), "utf-8"), "é");
         let found: Vec<(String, String)> = people("a@x.org, \"Doe, J\" <j@x.org>, nobody").into_iter().map(|p| (p.name, p.email)).collect();
