@@ -5144,7 +5144,7 @@ function bulkAction(act) {
   }
   const done = () => { picked.clear(); pickAnchor = null; render(); };
   if (act === "read" || act === "unread") {
-    setUnread(list, act === "unread", true);
+    setUnread(act === "read" ? withThreadSent(list) : list, act === "unread", true);
     return done();
   }
   if (act === "flag") {
@@ -9660,11 +9660,25 @@ function markUnread(id) {
   if (msg) setUnread([msg], true, true);
 }
 
+// A folded conversation shows its replies from Sent Items too, and is bold
+// while any of them is unread, so marking it read covers those as well.
+// Exchange can leave a Sent copy unread, e.g. a reply sent from a phone
+// (2026-11-18: the row stayed bold after Mark as read).
+function withThreadSent(list) {
+  const out = list.slice();
+  const seen = new Set(out.map(m => m.id));
+  new Set(list.map(m => m.thread)).forEach(thread => {
+    const conv = conversations().find(c => c.id === thread);
+    threadSent(conv).forEach(m => { if (!seen.has(m.id)) { seen.add(m.id); out.push(m); } });
+  });
+  return out;
+}
+
 function markRead(id, whole) {
   const msg = messages.find(m => m.id === id);
   if (!msg) return;
   const targets = whole
-    ? messages.filter(m => m.thread === msg.thread && messageBox(m) === messageBox(msg) && m.account === msg.account)
+    ? withThreadSent(messages.filter(m => m.thread === msg.thread && messageBox(m) === messageBox(msg) && m.account === msg.account))
     : [msg];
   setUnread(targets, false, true);
 }
@@ -17617,7 +17631,7 @@ const folderBusy = new Set();
 let syncNote = "";
 const folderRun = new Map();
 const bodyLoads = new Set();
-const APP_VERSION = "1.3.21";
+const APP_VERSION = "1.3.22";
 let appVersion = APP_VERSION;
 
 prepareDesktopAccounts();

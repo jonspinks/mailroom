@@ -2007,6 +2007,26 @@ test("a forward with only a signature above it keeps the forwarded mail's size",
   same(got, { note: 16, name: 19, phone: 13 }, "nothing is enlarged by the forwarder's signature");
 });
 
+test("Mark as read on a folded conversation marks every message in it", { fake: true, setup: () => {
+  const at = n => new Date(Date.now() - n * 60000).toISOString().replace(/\.\d+Z$/, "Z");
+  const base = { thread: "conv-fold", subject: "Quote", fromName: "Kai", fromEmail: "kai@example.org", unread: true, flagged: false, cc: [], bcc: [], to: [], categories: [], hasAttachments: false, files: [] };
+  ["fold-1", "fold-2", "fold-3"].forEach((id, i) => window.__inbox.push(Object.assign({}, base, { id, received: at(90 - i * 30), preview: id, bodyHtml: "<p>" + id + "</p>" })));
+} }, async ({ p, calls, clear, rightClick }) => {
+  await clear();
+  // A reply of yours in Sent Items that Exchange left unread keeps the row bold.
+  await p.evaluate(() => {
+    const head = messages.find(m => m.id === "fold-3");
+    messages.push(Object.assign({}, head, { id: "fold-sent", box: "sent", seq: head.seq + 1, unread: true, fromName: "Me", preview: "Thanks" }));
+    render();
+  }); await wait(200);
+  const row = await p.evaluate(() => { const r = document.querySelector('.row[data-thread="conv-fold"], .conv-title[data-thread="conv-fold"]'); return r && [r.className, r.dataset.id]; });
+  expect(row, "the folded conversation is listed", row);
+  await rightClick(`[data-id="${row[1]}"]`);
+  await p.evaluate(() => [...document.querySelectorAll("#row-menu button")].find(b => b.textContent.trim() === "Mark as read").click()); await wait(500);
+  same(await p.evaluate(() => messages.filter(m => m.thread === "conv-fold").map(m => [m.id, m.unread]).sort()), [["fold-1", false], ["fold-2", false], ["fold-3", false], ["fold-sent", false]], "every message is read, the Sent reply too");
+  same(await p.$$eval('[data-thread="conv-fold"].unread, [data-thread="conv-fold"] .unread', e => e.length), 0, "the row no longer shows unread");
+});
+
 test("an open conversation marks the folded messages that have attachments", { fake: true, setup: () => {
   const at = n => new Date(Date.now() - n * 60000).toISOString().replace(/\.\d+Z$/, "Z");
   const base = { thread: "conv-clip", subject: "Update", fromName: "Kai", fromEmail: "kai@example.org", unread: false, flagged: false, cc: [], bcc: [], to: [], categories: [] };
