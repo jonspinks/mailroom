@@ -1182,7 +1182,7 @@ test("the banner shows only after the retries give up", { fake: true, setup: () 
 } }, async ({ p }) => {
   await wait(1500);
   const state = await p.evaluate(() => ({
-    banner: document.getElementById("auth-banner").hidden ? "" : document.getElementById("auth-banner").textContent,
+    banner: document.getElementById("auth-banner").hidden ? "" : document.querySelector("#auth-banner .auth-text").textContent,
     note: (document.querySelector(".sync-note-text") || {}).textContent || ""
   }));
   same(state.banner, "Could not reach Google.", "the banner says Google could not be reached");
@@ -2763,6 +2763,18 @@ test("a throttled server is a toast, not the sign-in banner", { fake: true, setu
   expect(!/Graph refused|Throttled/.test(r.banner), "no raw Graph error in the banner", r.banner);
   expect(r.unread, "the read mark is put back", r);
   expect(/busy/.test(await toast()), "says the server is busy", await toast());
+});
+
+test("an error banner can be closed; a sign-in banner cannot", { fake: true, setup: unreadPair }, async ({ p }) => {
+  await p.evaluate(() => { window.__applyFail = "Microsoft couldn't do that (401)."; });
+  await p.click('.row[data-id="u1"]'); await wait(400);
+  await p.click('.row[data-id="u2"]'); await wait(800);
+  const shown = await p.evaluate(() => ({ hidden: document.getElementById("auth-banner").hidden, text: (document.querySelector("#auth-banner .auth-text") || {}).textContent, close: !!document.querySelector("#auth-banner .auth-close") }));
+  same(shown, { hidden: false, text: "Microsoft couldn't do that (401).", close: true }, "the refusal shows, with a close button");
+  await p.click("#auth-banner .auth-close"); await wait(200);
+  same(await p.evaluate(() => document.getElementById("auth-banner").hidden), true, "closing it clears the banner");
+  await p.evaluate(() => { const id = Object.keys(accounts)[0]; accounts[id].signedIn = false; refreshAuthBanner(); });
+  same(await p.evaluate(() => [!!document.querySelector("#auth-banner .auth-link"), !!document.querySelector("#auth-banner .auth-close")]), [true, false], "a sign-in prompt has no close button");
 });
 
 test("dark mode turns a designed mail over colour by colour, with no filter on the letter", { fake: true, setup: () => {

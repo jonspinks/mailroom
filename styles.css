@@ -319,6 +319,24 @@
   }
   .auth-banner.problem { background: var(--clay-soft); color: var(--clay-ink); }
   .auth-banner[hidden] { display: none; }
+  .auth-banner:not([hidden]) { display: flex; align-items: center; gap: 8px; }
+  .auth-banner .auth-text, .auth-banner .auth-link { flex: 1; min-width: 0; text-align: left; }
+  .auth-close {
+    flex: none;
+    width: 22px;
+    height: 22px;
+    margin: -3px -8px -3px 0;
+    padding: 0;
+    border: 0;
+    border-radius: 4px;
+    background: none;
+    color: inherit;
+    font: inherit;
+    font-size: 16px;
+    line-height: 1;
+    cursor: pointer;
+  }
+  .auth-close:hover { background: color-mix(in srgb, currentColor 12%, transparent); }
   .auth-link {
     padding: 0;
     border: 0;

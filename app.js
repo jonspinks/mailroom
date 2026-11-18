@@ -17631,7 +17631,7 @@ const folderBusy = new Set();
 let syncNote = "";
 const folderRun = new Map();
 const bodyLoads = new Set();
-const APP_VERSION = "1.3.22";
+const APP_VERSION = "1.3.23";
 let appVersion = APP_VERSION;
 
 prepareDesktopAccounts();
@@ -18396,7 +18396,26 @@ function refreshAuthBanner() {
     link.onclick = () => showSettings("accounts");
     banner.appendChild(link);
   } else if (state.text) {
-    banner.textContent = state.text;
+    const words = document.createElement("span");
+    words.className = "auth-text";
+    words.textContent = state.text;
+    banner.appendChild(words);
+  }
+  // A refused action or a sync error stays until something succeeds, which
+  // may be never (2026-11-18: "Microsoft couldn't do that (401)" all day).
+  // Those can be closed; a sign-in that is needed cannot.
+  if (state.text && !state.link) {
+    const close = document.createElement("button");
+    close.type = "button";
+    close.className = "auth-close";
+    close.title = "Dismiss";
+    close.setAttribute("aria-label", "Dismiss");
+    close.textContent = "×";
+    close.onclick = () => {
+      authProblem = "";
+      refreshAuthBanner();
+    };
+    banner.appendChild(close);
   }
   document.body.classList.toggle("has-auth-banner", !!state.text);
 }
