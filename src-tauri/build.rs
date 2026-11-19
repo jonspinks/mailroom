@@ -82,6 +82,7 @@ fn main() {
             "ask_mail",
             "draft_mail",
             "pop_assist",
+            "pop_message",
             "assist_mail",
             "finish_quit",
             "save_draft",
