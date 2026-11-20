@@ -1,5 +1,6 @@
 //! What Mailroom was started with, beyond `--hidden`: a `mailto:` link (as
-//! the desktop's mail app), `--compose` for a new message, or `--check-mail`.
+//! the desktop's mail app), a `mailroom://message/<account>/<id>` link to one
+//! message, `--compose` for a new message, or `--check-mail`.
 //!
 //! A first launch keeps the request until the page asks for it. A second
 //! launch hands its arguments to the running Mailroom (single instance),
@@ -11,11 +12,17 @@ use std::sync::Mutex;
 const MAX_ADDRESSES: usize = 50;
 const MAX_SUBJECT: usize = 1000;
 const MAX_BODY: usize = 100_000;
+/// A whole mailroom: link. A Microsoft 365 id is about 152 characters, a
+/// Gmail id 16, an address at most 254; percent-encoding can triple them.
+const MAX_LINK: usize = 2048;
+const MAX_ACCOUNT: usize = 254;
+const MAX_MESSAGE_ID: usize = 512;
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Request {
-    /// "compose" or "check".
+    /// "compose", "check", "open" (a mailroom: link) or "badlink" (a
+    /// mailroom: link that could not be read).
     pub kind: String,
     pub to: Vec<String>,
     pub cc: Vec<String>,
@@ -23,6 +30,9 @@ pub struct Request {
     pub subject: String,
     /// Plain text; the page turns it into the message body.
     pub body: String,
+    /// "open": the account's address and the message id, both decoded.
+    pub account: String,
+    pub id: String,
 }
 
 impl Request {
@@ -39,6 +49,9 @@ pub fn from_args(args: &[String]) -> Option<Request> {
         let arg = arg.trim();
         if arg.get(..7).is_some_and(|scheme| scheme.eq_ignore_ascii_case("mailto:")) {
             return parse_mailto(arg);
+        }
+        if arg.get(..9).is_some_and(|scheme| scheme.eq_ignore_ascii_case("mailroom:")) {
+            return Some(parse_mailroom(arg));
         }
         if arg == "--compose" {
             return Some(Request { kind: "compose".into(), ..Default::default() });
@@ -97,6 +110,80 @@ pub fn parse_mailto(link: &str) -> Option<Request> {
         }
     }
     Some(request)
+}
+
+/// A `mailroom://message/<account>/<id>` link: open that message, and only
+/// open it. Both parts are percent-encoded. Anything else, or anything odd,
+/// is a "badlink" request, which the page answers with a notice.
+pub fn parse_mailroom(link: &str) -> Request {
+    match mailroom_parts(link) {
+        Some((account, id)) => Request { kind: "open".into(), account, id, ..Default::default() },
+        None => Request { kind: "badlink".into(), ..Default::default() },
+    }
+}
+
+fn mailroom_parts(link: &str) -> Option<(String, String)> {
+    if link.len() > MAX_LINK {
+        return None;
+    }
+    let scheme = link.get(..11)?;
+    if !scheme.eq_ignore_ascii_case("mailroom://") {
+        return None;
+    }
+    let rest = &link[11..];
+    // Only characters a URI may carry: no query, fragment or spaces.
+    if !rest.chars().all(|c| c.is_ascii_alphanumeric() || "-._~!$&'()*+,;=:@%/".contains(c)) {
+        return None;
+    }
+    let parts: Vec<&str> = rest.split('/').collect();
+    let [kind, account, id] = parts.as_slice() else { return None };
+    if !kind.eq_ignore_ascii_case("message") {
+        return None;
+    }
+    let account = strict_decode(account)?;
+    let id = strict_decode(id)?;
+    (plausible_account(&account) && plausible_message_id(&id)).then_some((account, id))
+}
+
+/// Percent-decoding that refuses a stray `%`, a bad hex pair, or bytes that
+/// are not UTF-8. `+` stays a plus sign.
+fn strict_decode(value: &str) -> Option<String> {
+    let bytes = value.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' {
+            let hex = value.get(index + 1..index + 3)?;
+            if !hex.chars().all(|c| c.is_ascii_hexdigit()) {
+                return None;
+            }
+            out.push(u8::from_str_radix(hex, 16).ok()?);
+            index += 3;
+        } else {
+            out.push(bytes[index]);
+            index += 1;
+        }
+    }
+    String::from_utf8(out).ok()
+}
+
+/// `local@domain`, as an account's address is shown.
+fn plausible_account(address: &str) -> bool {
+    let Some((local, domain)) = address.split_once('@') else { return false };
+    address.len() <= MAX_ACCOUNT
+        && !local.is_empty()
+        && local.len() <= 64
+        && local.chars().all(|c| c.is_ascii_alphanumeric() || "!#$%&'*+/=?^_`{|}~.-".contains(c))
+        && domain.contains('.')
+        && !domain.starts_with(['.', '-'])
+        && !domain.ends_with(['.', '-'])
+        && domain.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-')
+}
+
+/// Graph ids are base64 (`-`, `_` and `=`, or `+` and `/` in the standard
+/// alphabet); Gmail ids are hex. Nothing else reaches the page.
+fn plausible_message_id(id: &str) -> bool {
+    !id.is_empty() && id.len() <= MAX_MESSAGE_ID && id.chars().all(|c| c.is_ascii_alphanumeric() || "-_=+/".contains(c))
 }
 
 /// Comma-separated addresses, each one `local@domain` with no spaces or
@@ -175,6 +262,111 @@ mod tests {
         let script = page_script(&request);
         assert!(script.starts_with("window.openLaunchRequest && window.openLaunchRequest({"));
         assert!(script.contains("\\\");alert(1);(\\\""));
+    }
+
+    const GRAPH_ID: &str = "AAMkADc3YzM0ZTlkLWE5ZjAtNGE2Ni1hNWM0LTVmNjI1MmVmNTVkOABGAAAAAAB_x-Uq9aNgSKfF8wQ2hUkbBwBQ1i3pAAAAAAEMAAA=";
+
+    fn encode(value: &str) -> String {
+        value
+            .bytes()
+            .map(|b| if b.is_ascii_alphanumeric() || b"-._~".contains(&b) { (b as char).to_string() } else { format!("%{b:02X}") })
+            .collect()
+    }
+
+    fn link(account: &str, id: &str) -> String {
+        format!("mailroom://message/{}/{}", encode(account), encode(id))
+    }
+
+    #[test]
+    fn a_mailroom_link_opens_one_message() {
+        let got = from_args(&args(&["mailroom", &link("jon@timberworks.example", GRAPH_ID)])).unwrap();
+        assert_eq!(got.kind, "open");
+        assert_eq!(got.account, "jon@timberworks.example");
+        assert_eq!(got.id, GRAPH_ID);
+        assert!(!got.checks_mail());
+        let gmail = parse_mailroom("MailRoom://MESSAGE/jon%40gmail.com/18c2f0a1b2c3d4e5");
+        assert_eq!((gmail.kind.as_str(), gmail.account.as_str(), gmail.id.as_str()), ("open", "jon@gmail.com", "18c2f0a1b2c3d4e5"));
+    }
+
+    #[test]
+    fn ids_round_trip_with_every_base64_character() {
+        for id in [GRAPH_ID, "a-b_c=d", "AAMk+x/y==", "++//==", "-_-", "0123456789abcdef"] {
+            for account in ["jon@timberworks.example", "first.last+tag@sub.example.co.uk"] {
+                let got = parse_mailroom(&link(account, id));
+                assert_eq!((got.kind.as_str(), got.account.as_str(), got.id.as_str()), ("open", account, id), "{id}");
+            }
+        }
+        // A literal + or = needs no escape, nor does the @.
+        let got = parse_mailroom("mailroom://message/jon@example.com/AAMk+x=");
+        assert_eq!((got.kind.as_str(), got.id.as_str()), ("open", "AAMk+x="));
+        // A / in an id must be %2F: a bare one is another segment.
+        assert_eq!(parse_mailroom("mailroom://message/jon@example.com/AAMk/x=").kind, "badlink");
+        assert_eq!(parse_mailroom("mailroom://message/jon@example.com/AAMk%2fx=").id, "AAMk/x=");
+    }
+
+    #[test]
+    fn malformed_escapes_are_refused() {
+        for bad in ["%", "%4", "%zz", "%G1", "abc%2", "%+1", "%C3%28", "%FF"] {
+            assert_eq!(parse_mailroom(&format!("mailroom://message/jon%40example.com/{bad}")).kind, "badlink", "{bad}");
+        }
+        assert_eq!(parse_mailroom("mailroom://message/jon%4/abc").kind, "badlink");
+    }
+
+    #[test]
+    fn the_shape_must_be_exact() {
+        for bad in [
+            "mailroom:",
+            "mailroom:message/jon@example.com/abc",
+            "mailroom://",
+            "mailroom://message",
+            "mailroom://message/jon@example.com",
+            "mailroom://message/jon@example.com/",
+            "mailroom://message//abc",
+            "mailroom://message/jon@example.com/abc/",
+            "mailroom://message/jon@example.com/abc/def",
+            "mailroom:///message/jon@example.com/abc",
+            "mailroom://compose/jon@example.com/abc",
+            "mailroom://message/jon@example.com/abc?x=1",
+            "mailroom://message/jon@example.com/abc#top",
+            "mailroom://message/jon@example.com/a bc",
+            "mailroom://message/not-an-address/abc",
+            "mailroom://message/%40example.com/abc",
+            "mailroom://message/jon%40/abc",
+            "mailroom://message/jon%40localhost/abc",
+            "mailroom://message/jon%40example.com/a%2Eb",
+            "mailroom://message/jon%40example.com/a%20b",
+            "mailroom://message/jon%40example.com/a%00b",
+            "mailroom://message/jon%40example.com/%C3%A9",
+        ] {
+            assert_eq!(parse_mailroom(bad).kind, "badlink", "{bad}");
+        }
+        assert_eq!(from_args(&args(&["mailroom", "mailroom://nonsense"])).unwrap().kind, "badlink");
+        assert_eq!(from_args(&args(&["mailroom", "MAILROOM:x"])).unwrap().kind, "badlink");
+    }
+
+    #[test]
+    fn oversized_links_are_refused() {
+        assert_eq!(parse_mailroom(&link("jon@example.com", &"A".repeat(MAX_MESSAGE_ID))).kind, "open");
+        assert_eq!(parse_mailroom(&link("jon@example.com", &"A".repeat(MAX_MESSAGE_ID + 1))).kind, "badlink");
+        assert_eq!(parse_mailroom(&link(&format!("{}@example.com", "a".repeat(65)), "abc")).kind, "badlink");
+        let huge = format!("mailroom://message/jon%40example.com/{}", "A".repeat(MAX_LINK));
+        assert_eq!(parse_mailroom(&huge).kind, "badlink");
+    }
+
+    #[test]
+    fn an_injection_in_the_link_stays_inert_data() {
+        // Script characters are not in an id, so this never reaches the page.
+        let got = parse_mailroom(&link("jon@example.com", "\");alert(1);(\""));
+        assert_eq!(got.kind, "badlink");
+        assert!(got.id.is_empty() && got.account.is_empty());
+        let got = parse_mailroom(&link("jon\"<script>@example.com", "abc"));
+        assert_eq!(got.kind, "badlink");
+        // What does reach the page is JSON data, never code.
+        let request = Request { kind: "open".into(), account: "jon@example.com".into(), id: "\");alert(1);(\"</script>".into(), ..Default::default() };
+        let script = page_script(&request);
+        assert!(script.starts_with("window.openLaunchRequest && window.openLaunchRequest({"));
+        assert!(script.contains(r#""id":"\");alert(1);(\"</script>""#), "{script}");
+        assert!(script.ends_with("});"));
     }
 
     #[test]

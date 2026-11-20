@@ -369,6 +369,12 @@
           "markdownDescription": "Enables the inline_images command without any pre-configured scope."
         },
         {
+          "description": "Enables the link_message command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-link-message",
+          "markdownDescription": "Enables the link_message command without any pre-configured scope."
+        },
+        {
           "description": "Enables the list_search_folders command without any pre-configured scope.",
           "type": "string",
           "const": "allow-list-search-folders",
@@ -937,6 +943,12 @@
           "type": "string",
           "const": "deny-inline-images",
           "markdownDescription": "Denies the inline_images command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the link_message command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-link-message",
+          "markdownDescription": "Denies the link_message command without any pre-configured scope."
         },
         {
           "description": "Denies the list_search_folders command without any pre-configured scope.",

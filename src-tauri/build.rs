@@ -131,6 +131,7 @@ fn main() {
             "remove_bar_widget",
             "report_unread",
             "take_launch_request",
+            "link_message",
         ]),
     );
     tauri_build::try_build(attributes).expect("failed to run tauri-build");
