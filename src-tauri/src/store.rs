@@ -577,6 +577,31 @@ pub fn cached_inbox_id(email: &str) -> Result<Option<String>, String> {
     cached_inbox_id_on(&conn, email)
 }
 
+/// One cached message's header and the folder it is in, for a mailroom: link.
+pub fn find_message(email: &str, message_id: &str) -> Result<Option<(LiveMessage, String)>, String> {
+    let conn = open()?;
+    find_message_on(&conn, email, message_id)
+}
+
+fn find_message_on(conn: &Connection, email: &str, message_id: &str) -> Result<Option<(LiveMessage, String)>, String> {
+    let email = email.trim().to_lowercase();
+    let message_id = message_id.trim();
+    if email.is_empty() || message_id.is_empty() {
+        return Ok(None);
+    }
+    let mut stmt = conn
+        .prepare(
+            "select id, thread, subject, from_name, from_email, received, preview, '', unread, flagged, attached, files, to_json, cc_json, bcc_json, cats, extra, folder_id
+             from folder_messages where email = ?1 and id = ?2 limit 1",
+        )
+        .map_err(|err| err.to_string())?;
+    let mut rows = stmt.query(params![email, message_id]).map_err(|err| err.to_string())?;
+    let Some(row) = rows.next().map_err(|err| err.to_string())? else { return Ok(None) };
+    let message = message_row(row).map_err(|err| err.to_string())?;
+    let folder: String = row.get(17).map_err(|err| err.to_string())?;
+    Ok(Some((message, folder)))
+}
+
 pub fn folder_sync_state(email: &str, folder_id: &str) -> Result<FolderSyncState, String> {
     let conn = open()?;
     folder_sync_state_on(&conn, email, folder_id)
@@ -1824,6 +1849,20 @@ mod tests {
         };
         assert_eq!(left("jon@example.com"), vec!["keep".to_string()]);
         assert_eq!(left("other@example.com"), vec!["invite".to_string()]);
+    }
+
+    #[test]
+    fn a_linked_message_is_found_in_its_own_account_with_its_folder() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        ensure_schema(&conn).unwrap();
+        replace_folders_on(&mut conn, "jon@example.com", &[folder("in", "root", "inbox"), folder("jobs", "root", "jobs")]).unwrap();
+        replace_folder_messages_on(&mut conn, "jon@example.com", "jobs", &[message("AAMk+x/y==")]).unwrap();
+        let (found, folder_id) = find_message_on(&conn, "Jon@Example.com", "AAMk+x/y==").unwrap().unwrap();
+        assert_eq!((found.id.as_str(), folder_id.as_str()), ("AAMk+x/y==", "jobs"));
+        assert!(found.body_html.is_empty(), "a header only; the body loads when it opens");
+        assert!(find_message_on(&conn, "other@example.com", "AAMk+x/y==").unwrap().is_none());
+        assert!(find_message_on(&conn, "jon@example.com", "nope").unwrap().is_none());
+        assert!(find_message_on(&conn, "jon@example.com", " ").unwrap().is_none());
     }
 
     #[test]

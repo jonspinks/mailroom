@@ -176,6 +176,9 @@
     remove_bar_widget: () => (window.__mailApp = Object.assign({ omarchy: true, mailto: false, keys: false }, window.__mailApp, { barWidget: false })),
     report_unread: () => null,
     take_launch_request: () => { const r = window.__launch || null; window.__launch = null; return r; },
+    // A message by id, as the server has it (__server: id -> message with
+    // parentFolderId). Anything else is a 404: null.
+    link_message: (a) => { const m = (window.__server || {})[a.messageId]; return m ? Object.assign({}, m) : null; },
     "plugin:app|version": () => "0.13.2"
   };
   window.__TAURI_INTERNALS__ = {

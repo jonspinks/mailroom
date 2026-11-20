@@ -2988,6 +2988,54 @@ test("a mailto: link opens a filled-in message; --check-mail checks", { fake: tr
   same((await calls("sync_inbox")).length, 1, "checks for mail");
 });
 
+test("a mailroom: link opens a cached message, at start and while running, and marks nothing read", { fake: true, setup: () => {
+  window.__launch = { kind: "open", account: "jon@example.com", id: "m1" };
+} }, async ({ p, calls, clear }) => {
+  const state = () => p.evaluate(() => ({ view, box, selected, unread: messages.find(m => m.id === selected)?.unread, reading: document.querySelector("#reading").textContent.includes("Kiln schedule") }));
+  let got = await state();
+  same([got.view, got.box, got.selected, got.unread, got.reading], ["mail", "inbox", "m1", true, true], "cold start: the linked message is open and still unread");
+  same((await calls("link_message")).length, 0, "a cached message needs no server call");
+  // Already running: somewhere else, then the link arrives.
+  await p.evaluate(() => { setView("calendar"); });
+  await wait(200);
+  await clear();
+  await p.evaluate(() => openLaunchRequest({ kind: "open", account: "JON@example.com", id: "m2" })); await wait(500);
+  got = await state();
+  same([got.view, got.box, got.selected, got.unread], ["mail", "inbox", "m2", true], "running: the second link opens its message");
+  expect(await p.evaluate(() => document.querySelector("#reading").textContent.includes("Pipeline review")), "its conversation shows");
+  expect(await p.evaluate(() => [...document.querySelectorAll("#reading [data-pick]")].some(c => c.dataset.pick === "m2")), "the message is expanded");
+  same((await calls("apply_mail")).length, 0, "nothing is sent to the server: no read, move or flag");
+  same((await calls("forget_mail")).length + (await calls("send_mail")).length, 0, "nothing deleted or sent");
+});
+
+test("a mailroom: link finds a moved message on the server, or lands in Inbox with a notice", { fake: true, setup: () => {
+  const at = new Date(Date.now() - 3 * 86400000).toISOString().replace(/\.\d+Z$/, "Z");
+  window.__server = {
+    "AAMk+moved/x==": { id: "AAMk+moved/x==", thread: "conv-moved", subject: "Filed quote", fromName: "Ada Lovelace", fromEmail: "ada@example.org", received: at, preview: "Filed", bodyHtml: "", unread: true, flagged: false, hasAttachments: false, files: [], to: [], cc: [], bcc: [], parentFolderId: "f-jobs" }
+  };
+} }, async ({ p, calls, clear }) => {
+  await p.evaluate(() => { box = "sent"; render(); });
+  await p.evaluate(() => openLaunchRequest({ kind: "open", account: "jon@example.com", id: "AAMk+moved/x==" })); await wait(600);
+  same(await p.evaluate(() => [box, selected, messages.find(m => m.id === selected)?.unread]), ["f-jobs", "AAMk+moved/x==", true], "opened in the folder the server says, still unread");
+  same((await calls("link_message")).map(a => a.messageId), ["AAMk+moved/x=="], "asked the server for it by id");
+  expect(await p.evaluate(() => document.querySelector("#reading").textContent.includes("Filed quote")), "its conversation shows");
+
+  await p.evaluate(() => { box = "sent"; selected = null; render(); });
+  await clear();
+  await p.evaluate(() => openLaunchRequest({ kind: "open", account: "jon@example.com", id: "AAMkGone=" })); await wait(600);
+  same(await p.evaluate(() => [view, box]), ["mail", "inbox"], "not found: that account's Inbox");
+  same(await p.$eval("#toast", t => t.textContent).catch(() => ""), "That message couldn't be found. It may have been deleted or moved.", "and a notice says why");
+  same((await calls("apply_mail")).length, 0, "nothing changed on the server");
+
+  await p.evaluate(() => openLaunchRequest({ kind: "badlink", account: "", id: "" })); await wait(200);
+  same(await p.$eval("#toast", t => t.textContent).catch(() => ""), "That Mailroom link isn't one Mailroom can open.", "a malformed link is a notice");
+  await p.evaluate(() => openLaunchRequest({ kind: "open", account: "someone@else.example", id: "m1" })); await wait(200);
+  same(await p.$eval("#toast", t => t.textContent).catch(() => ""), "That link is for an account that isn't in Mailroom.", "another account's link is a notice");
+  await p.evaluate(() => openLaunchRequest({ kind: "open", account: "jon@example.com", id: "\");alert(1);(\"<img src=x onerror=window.__pwned=1>" })); await wait(200);
+  same(await p.evaluate(() => window.__pwned || null), null, "an id with markup is refused, never run");
+  same((await calls("link_message")).length, 1, "and never sent on");
+});
+
 // ---------------------------------------------------------------- runner
 
 const { server, url } = await serve();

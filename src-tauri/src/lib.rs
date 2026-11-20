@@ -697,6 +697,33 @@ async fn conversation_mail(email: Option<String>, conversation_id: Option<String
     .await
 }
 
+/// The message a mailroom: link names, with the folder it is in: from the
+/// cache, or else from the server by id. Only reads; nothing is stored or
+/// changed. `None` when it isn't there (deleted, moved out of reach, or
+/// another account's).
+#[tauri::command]
+async fn link_message(email: Option<String>, message_id: Option<String>) -> Result<Option<graph::MailSearchHit>, String> {
+    in_background(move || {
+        let email = email.unwrap_or_default().trim().to_string();
+        let id = message_id.unwrap_or_default();
+        if email.is_empty() {
+            return Err("Accounts are not signed in.".into());
+        }
+        if !graph::linkable_id(&id) {
+            return Ok(None);
+        }
+        if let Ok(Some((message, parent_folder_id))) = store::find_message(&email, &id) {
+            return Ok(Some(graph::MailSearchHit { message, parent_folder_id }));
+        }
+        if auth::is_google(&email) {
+            google::message_by_id(&email, &id)
+        } else {
+            graph::message_by_id(&email, &id)
+        }
+    })
+    .await
+}
+
 #[tauri::command]
 async fn search_mail(
     email: Option<String>,
@@ -2164,7 +2191,10 @@ pub fn run() {
                 }
             }
             omarchy::watch(app.handle().clone());
-            std::thread::spawn(omarchy::migrate_from_nowtlook);
+            std::thread::spawn(|| {
+                omarchy::migrate_from_nowtlook();
+                omarchy::refresh_desktop_entry();
+            });
             if let Err(err) = tray::install(app.handle()) {
                 eprintln!("mailroom: no tray icon ({err}); closing the window will quit");
             }
@@ -2296,7 +2326,8 @@ pub fn run() {
             add_bar_widget,
             remove_bar_widget,
             report_unread,
-            take_launch_request
+            take_launch_request,
+            link_message
         ])
         .build(tauri::generate_context!())
         .expect("error while running tauri application")

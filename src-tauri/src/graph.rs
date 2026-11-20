@@ -1539,6 +1539,68 @@ pub fn conversation_mail(email: &str, conversation_id: &str) -> Result<MailSearc
     Ok(page)
 }
 
+/// A message id as a mailroom: link carries it: base64 (Graph) or hex
+/// (Gmail), nothing else.
+pub fn linkable_id(id: &str) -> bool {
+    !id.is_empty() && id.len() <= 512 && id.chars().all(|c| c.is_ascii_alphanumeric() || "-_=+/".contains(c))
+}
+
+/// One message, as a list row, with the folder it is in.
+pub fn message_by_id_url(id: &str) -> Result<String, String> {
+    if !linkable_id(id) {
+        return Err("That message is not there.".into());
+    }
+    Ok(format!(
+        "https://graph.microsoft.com/v1.0/me/messages/{}?$select={LIST_SELECT},parentFolderId&$expand=attachments($select={ATTACHMENT_SELECT})",
+        path_segment(id)
+    ))
+}
+
+/// Graph says it has no such message: 404, or 400 for an id it can't read.
+fn id_not_found(err: &str) -> bool {
+    err.starts_with("Graph refused the request (404") || err.starts_with("Graph refused the request (400")
+}
+
+fn hit_from(value: serde_json::Value) -> Option<MailSearchHit> {
+    let parent_folder_id = value["parentFolderId"].as_str().unwrap_or("").to_string();
+    Some(MailSearchHit { message: parse_message(value)?, parent_folder_id })
+}
+
+/// translateExchangeIds reads an id in one form and answers it in another;
+/// it changes nothing. A link may carry the immutable id, which outlives a
+/// move, where Mailroom keeps the ordinary (REST) one.
+fn translate_body(id: &str) -> serde_json::Value {
+    serde_json::json!({ "inputIds": [id], "sourceIdType": "restImmutableEntryId", "targetIdType": "restId" })
+}
+
+fn translated_from(value: &serde_json::Value, id: &str) -> Option<String> {
+    let target = value["value"].as_array()?.first()?["targetId"].as_str()?.trim();
+    (linkable_id(target) && target != id).then(|| target.to_string())
+}
+
+/// One message by id, for a mailroom: link. Only reads. When Graph has no
+/// message with that id, the id is translated from its immutable form and
+/// tried once more. `None` when it still isn't there.
+pub fn message_by_id(email: &str, id: &str) -> Result<Option<MailSearchHit>, String> {
+    let url = message_by_id_url(id)?;
+    let token = auth::access_token_for(email)?;
+    let client = http_client()?;
+    match graph_get(&client, &token, &url) {
+        Ok(value) => return Ok(hit_from(value)),
+        Err(err) if !id_not_found(&err) => return Err(err),
+        Err(_) => {}
+    }
+    let translated = graph_post(&client, &token, "https://graph.microsoft.com/v1.0/me/translateExchangeIds", &translate_body(id))
+        .ok()
+        .and_then(|value| translated_from(&value, id));
+    let Some(current) = translated else { return Ok(None) };
+    match graph_get(&client, &token, &message_by_id_url(&current)?) {
+        Ok(value) => Ok(hit_from(value)),
+        Err(err) if id_not_found(&err) => Ok(None),
+        Err(err) => Err(err),
+    }
+}
+
 pub(crate) fn text_to_html(text: &str) -> String {
     let escaped = text.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;");
     format!("<p>{}</p>", escaped.replace('\n', "<br>"))
@@ -3348,6 +3410,46 @@ mod tests {
         assert!(url.contains("$filter=conversationId%20eq%20%27AAQk%27%27x%3D%2F%2B%27"));
         assert!(conversation_url("  ").is_err());
         assert!(conversation_url("a\nb").is_err());
+    }
+
+    #[test]
+    fn a_linked_message_is_one_encoded_path_segment() {
+        let url = message_by_id_url("AAMk-x_y+z/w==").unwrap();
+        assert!(url.starts_with("https://graph.microsoft.com/v1.0/me/messages/AAMk-x_y%2Bz%2Fw%3D%3D?$select="), "{url}");
+        assert!(url.contains(",parentFolderId&$expand=attachments("));
+        for bad in ["", "a b", "a'b", "../x", "a?b", &"A".repeat(513)] {
+            assert!(message_by_id_url(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn a_missing_message_is_told_apart_from_other_refusals() {
+        assert!(id_not_found("Graph refused the request (404 Not Found). {}"));
+        assert!(id_not_found("Graph refused the request (400 Bad Request). {\"error\":{\"code\":\"ErrorInvalidIdMalformed\"}}"));
+        assert!(!id_not_found("Graph refused the request (401 Unauthorized). {}"));
+        assert!(!id_not_found("Graph refused the request (503 Service Unavailable). {}"));
+        assert!(!id_not_found("Could not reach Microsoft Graph: dns error"));
+    }
+
+    #[test]
+    fn an_immutable_id_is_translated_to_the_rest_id() {
+        let body = translate_body("AAkALg=");
+        assert_eq!(body["inputIds"], serde_json::json!(["AAkALg="]));
+        assert_eq!(body["sourceIdType"], "restImmutableEntryId");
+        assert_eq!(body["targetIdType"], "restId");
+        let reply = serde_json::json!({ "value": [{ "sourceId": "AAkALg=", "targetId": "AAMkNew=" }] });
+        assert_eq!(translated_from(&reply, "AAkALg="), Some("AAMkNew=".into()));
+        let same = serde_json::json!({ "value": [{ "targetId": "AAkALg=" }] });
+        assert_eq!(translated_from(&same, "AAkALg="), None, "the same id is not worth a second try");
+        assert_eq!(translated_from(&serde_json::json!({ "value": [] }), "x"), None);
+        assert_eq!(translated_from(&serde_json::json!({ "value": [{ "targetId": "<x>" }] }), "x"), None);
+    }
+
+    #[test]
+    fn a_linked_message_keeps_its_folder() {
+        let hit = hit_from(serde_json::json!({ "id": "AAMk1", "conversationId": "c1", "subject": "Hi", "isRead": false, "parentFolderId": "AAMkInbox" })).unwrap();
+        assert_eq!((hit.message.id.as_str(), hit.parent_folder_id.as_str(), hit.message.unread), ("AAMk1", "AAMkInbox", true));
+        assert!(hit_from(serde_json::json!({ "parentFolderId": "x" })).is_none());
     }
 
     #[test]

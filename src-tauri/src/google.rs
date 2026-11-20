@@ -1318,6 +1318,23 @@ pub fn conversation_mail(email: &str, thread_id: &str) -> Result<MailSearchPage,
     Ok(MailSearchPage { messages, next_link: String::new() })
 }
 
+/// One message by id, for a mailroom: link: its header and the folder its
+/// labels put it in. Only reads. `None` when Gmail has no such message (a
+/// 404, or a 400 for an id it can't read).
+pub fn message_by_id(email: &str, id: &str) -> Result<Option<MailSearchHit>, String> {
+    let id = id.trim();
+    if id.is_empty() || id.len() > 100 || !id.chars().all(|c| c.is_ascii_alphanumeric()) {
+        return Ok(None);
+    }
+    let token = auth::access_token_for(email)?;
+    let client = graph::http_client()?;
+    match fetch_listed(&client, &token, id) {
+        Ok((message, labels)) => Ok(Some(MailSearchHit { parent_folder_id: home_folder(&labels), message })),
+        Err((400 | 404, _)) => Ok(None),
+        Err(failure) => Err(refused(failure)),
+    }
+}
+
 // ---- Changing mail ---------------------------------------------------------
 
 fn valid_ids(ids: &[String]) -> Result<Vec<String>, String> {

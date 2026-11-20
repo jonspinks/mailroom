@@ -426,12 +426,27 @@ pub fn mail_app_status() -> MailAppStatus {
 }
 
 fn mailto_default() -> Option<String> {
+    scheme_default(MAILTO_SCHEME)
+}
+
+const MAILTO_SCHEME: &str = "x-scheme-handler/mailto";
+/// mailroom://message/<account>/<id> links (launch.rs) open in Mailroom.
+const MAILROOM_SCHEME: &str = "x-scheme-handler/mailroom";
+
+fn scheme_default(scheme: &str) -> Option<String> {
     let out = Command::new("xdg-mime")
-        .args(["query", "default", "x-scheme-handler/mailto"])
+        .args(["query", "default", scheme])
         .output()
         .ok()?;
     let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
     if text.is_empty() { None } else { Some(text) }
+}
+
+/// mailroom: links are Mailroom's own, so they always open here.
+fn claim_mailroom_links() {
+    if scheme_default(MAILROOM_SCHEME).as_deref() != Some(DESKTOP_ID) {
+        let _ = Command::new("xdg-mime").args(["default", DESKTOP_ID, MAILROOM_SCHEME]).status();
+    }
 }
 
 fn exe_path() -> Result<String, String> {
@@ -454,12 +469,13 @@ pub fn make_mail_app() -> Result<MailAppStatus, String> {
     let exe = exe_path()?;
     install_desktop_entry(&exe)?;
     let set = Command::new("xdg-mime")
-        .args(["default", DESKTOP_ID, "x-scheme-handler/mailto"])
+        .args(["default", DESKTOP_ID, MAILTO_SCHEME])
         .status()
         .map_err(|_| "xdg-mime is not installed.".to_string())?;
     if !set.success() {
         return Err("xdg-mime could not make Mailroom the mail app.".into());
     }
+    claim_mailroom_links();
     // Say so rather than look as if nothing happened.
     if let Some(other) = mailto_default().filter(|id| id != DESKTOP_ID) {
         return Err(format!("Email links still open {} after setting Mailroom as the mail app.", other.trim_end_matches(".desktop")));
@@ -649,7 +665,7 @@ fn desktop_entry(exe: &str) -> String {
          Icon=io.github.jonspinks.mailroom\n\
          Terminal=false\n\
          Categories=Network;Email;Office;\n\
-         MimeType=x-scheme-handler/mailto;\n\
+         MimeType=x-scheme-handler/mailto;x-scheme-handler/mailroom;\n\
          StartupWMClass=mailroom\n\
          Actions=compose;\n\
          X-Mailroom-Managed=true\n\
@@ -681,6 +697,53 @@ fn install_desktop_entry(exe: &str) -> Result<(), String> {
     fs::write(png.join(format!("{APP_ID}.png")), include_bytes!("../icons/128x128.png")).map_err(|err| err.to_string())?;
     let _ = Command::new("update-desktop-database").arg(&apps).output();
     Ok(())
+}
+
+/// A launcher entry Mailroom wrote before 1.4.2 named only mailto. Add the
+/// mailroom: scheme to it, leaving the rest (its Exec) as it is. `None` when
+/// the entry isn't Mailroom's or already has it.
+fn with_mailroom_scheme(entry: &str) -> Option<String> {
+    if !entry.contains("X-Mailroom-Managed=true") || entry.contains(MAILROOM_SCHEME) {
+        return None;
+    }
+    let mut out = String::new();
+    let mut section = String::new();
+    let mut added = false;
+    for line in entry.split_inclusive('\n') {
+        let bare = line.trim();
+        if bare.starts_with('[') {
+            section = bare.to_string();
+        }
+        match bare.strip_prefix("MimeType=") {
+            Some(types) if section == "[Desktop Entry]" && !added => {
+                let types = types.trim_end_matches(';');
+                let sep = if types.is_empty() { "" } else { ";" };
+                out.push_str(&format!("MimeType={types}{sep}{MAILROOM_SCHEME};\n"));
+                added = true;
+            }
+            _ => out.push_str(line),
+        }
+    }
+    added.then_some(out)
+}
+
+/// Mailroom's own launcher entry from an earlier version gains the mailroom:
+/// scheme, and the scheme is set to open here. Runs at start, beside the
+/// move from the old names; touches nothing that isn't marked as Mailroom's.
+pub fn refresh_desktop_entry() {
+    let apps = data_home().join("applications");
+    let path = apps.join(DESKTOP_ID);
+    let Ok(text) = fs::read_to_string(&path) else { return };
+    if !text.contains("X-Mailroom-Managed=true") {
+        return;
+    }
+    if let Some(updated) = with_mailroom_scheme(&text) {
+        if write_keeping_mode(&path, &updated).is_err() {
+            return;
+        }
+        let _ = Command::new("update-desktop-database").arg(&apps).output();
+    }
+    claim_mailroom_links();
 }
 
 /// Replace a file's contents, keeping its permissions. A symlinked dotfile
@@ -861,8 +924,9 @@ pub fn migrate_from_nowtlook() {
         let was_ours = fs::read_to_string(&old_entry).map(|text| text.contains(old_managed)).unwrap_or(false);
         if was_ours && install_desktop_entry(&exe).is_ok() {
             if mailto_default().as_deref() == Some(old_desktop.as_str()) {
-                let _ = Command::new("xdg-mime").args(["default", DESKTOP_ID, "x-scheme-handler/mailto"]).status();
+                let _ = Command::new("xdg-mime").args(["default", DESKTOP_ID, MAILTO_SCHEME]).status();
             }
+            claim_mailroom_links();
             let _ = fs::remove_file(&old_entry);
             let _ = fs::remove_file(apps.join(format!("{old_desktop}.bak")));
             let icons = data_home().join("icons").join("hicolor");
@@ -1000,7 +1064,21 @@ mod tests {
         assert!(entry.contains("Exec=/opt/mailroom %u\n"));
         assert!(entry.contains("Exec=/opt/mailroom --compose\n"));
         assert!(desktop_entry("/opt/now tlook").contains("Exec=\"/opt/now tlook\" %u\n"));
-        assert!(entry.contains("MimeType=x-scheme-handler/mailto;"));
+        assert!(entry.contains("MimeType=x-scheme-handler/mailto;x-scheme-handler/mailroom;\n"));
+    }
+
+    #[test]
+    fn an_older_entry_gains_the_mailroom_scheme_and_keeps_its_exec() {
+        let old = desktop_entry("/opt/old mailroom").replace("x-scheme-handler/mailroom;", "");
+        assert!(old.contains("MimeType=x-scheme-handler/mailto;\n"));
+        let new = with_mailroom_scheme(&old).unwrap();
+        assert_eq!(new, desktop_entry("/opt/old mailroom"), "the same entry as a fresh one, Exec untouched");
+        assert_eq!(with_mailroom_scheme(&new), None, "already there");
+        let by_hand = old.replace("X-Mailroom-Managed=true\n", "");
+        assert_eq!(with_mailroom_scheme(&by_hand), None, "an entry someone wrote is left alone");
+        let bare = "[Desktop Entry]\nMimeType=\nX-Mailroom-Managed=true\n";
+        assert_eq!(with_mailroom_scheme(bare).unwrap(), "[Desktop Entry]\nMimeType=x-scheme-handler/mailroom;\nX-Mailroom-Managed=true\n");
+        assert_eq!(with_mailroom_scheme("[Desktop Entry]\nX-Mailroom-Managed=true\n"), None, "no MimeType line to add to");
     }
 
     #[test]

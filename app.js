@@ -3890,7 +3890,7 @@ function cursorIsOlder(nextBefore, nextId, prevBefore, prevId) {
 
 // Messages past the loaded cursor stay in memory for search, and out of the list.
 function inLoadedWindow(m) {
-  if (!m || m.pendingSend || m.searchOnly) return true;
+  if (!m || m.pendingSend || m.searchOnly || m.linkOnly) return true;
   if (searchActive()) return true;
   const state = pageState(m.account, messageBox(m));
   if (!state || !state.before) return true;
@@ -9957,11 +9957,20 @@ function reportUnread(force) {
   }, 400);
 }
 
-// A mailto: link, --compose or --check-mail that Mailroom was started with.
+// A mailto: link, a mailroom: link, --compose or --check-mail that Mailroom
+// was started with.
 function openLaunchRequest(request) {
   if (!request || typeof request !== "object" || sideWindow) return;
   if (request.kind === "check") {
     checkMailNow();
+    return;
+  }
+  if (request.kind === "open") {
+    openFromLink(request.account, request.id);
+    return;
+  }
+  if (request.kind === "badlink") {
+    toast(LINK_BAD);
     return;
   }
   if (request.kind !== "compose") return;
@@ -9976,6 +9985,100 @@ async function takeLaunchRequest() {
   let request = null;
   try { request = await tauriInvoke("take_launch_request"); } catch (e) { request = null; }
   if (request) openLaunchRequest(request);
+}
+
+// ---- mailroom://message/<account>/<id> (launch.rs; SPEC.md). A link only
+// opens: it never marks read, moves, flags, deletes or sends anything.
+const LINK_BAD = "That Mailroom link isn't one Mailroom can open.";
+const LINK_NO_ACCOUNT = "That link is for an account that isn't in Mailroom.";
+const LINK_NOT_FOUND = "That message couldn't be found. It may have been deleted or moved.";
+const LINK_ID = /^[A-Za-z0-9\-_=+\/]{1,512}$/;
+let linkSerial = 0;
+
+async function openFromLink(address, id) {
+  if (sideWindow) return;
+  const serial = ++linkSerial;
+  const email = typeof address === "string" ? address.trim() : "";
+  const messageId = typeof id === "string" ? id : "";
+  if (!email || !LINK_ID.test(messageId)) return toast(LINK_BAD);
+  const match = accountByEmail(email);
+  if (!match) return toast(LINK_NO_ACCOUNT);
+  const [accountId, acct] = match;
+  let msg = messages.find(m => m.account === accountId && m.id === messageId && !m.pendingSend);
+  let notice = LINK_NOT_FOUND;
+  if (!msg && inDesktop() && acct.signedIn) {
+    let hit = null;
+    try {
+      hit = await tauriInvoke("link_message", { email: acct.email, messageId, message_id: messageId });
+    } catch (err) {
+      notice = String(err && err.message || err || LINK_NOT_FOUND);
+    }
+    if (serial !== linkSerial) return;
+    if (hit && typeof hit === "object" && typeof hit.id === "string" && LINK_ID.test(hit.id)) {
+      msg = messages.find(m => m.account === accountId && m.id === hit.id && !m.pendingSend) || placeLinkedMessage(accountId, hit);
+    }
+  }
+  if (!msg) {
+    showLinkedInbox(accountId);
+    toast(notice);
+    return;
+  }
+  showLinkedMessage(msg);
+}
+
+// A message the list hasn't loaded, in the folder the server says. It stays
+// listed until that folder's own copy replaces it.
+function placeLinkedMessage(accountId, hit) {
+  const parent = String(hit.parentFolderId || hit.parent_folder_id || "");
+  const folder = ((accounts[accountId] && accounts[accountId].liveFolders) || []).find(item => item.id === parent);
+  if (!folder || isSearchBox(folder.key)) return null;
+  const message = liveMessage(accountId, hit, folder.key);
+  message.linkOnly = true;
+  messages.push(message);
+  return message;
+}
+
+function showLinkedAccount(accountId, key) {
+  if (accounts[accountId] && !accountInProfile(accountId)) {
+    activeProfile = accountProfile(accountId);
+    rememberActiveProfile();
+  }
+  view = "mail";
+  account = accountId;
+  box = key;
+  folderPick = "folder";
+  picked.clear();
+}
+
+function showLinkedInbox(accountId) {
+  showLinkedAccount(accountId, "inbox");
+  selected = null;
+  render();
+}
+
+function showLinkedMessage(msg) {
+  showLinkedAccount(msg.account, messageBox(msg));
+  // A filter or the other Focused tab would hide it from the list.
+  if (mailFilter) {
+    mailFilter = "";
+    keptRead = null;
+    mailFilterEl.value = "";
+  }
+  if (box === "inbox") focusTab = focusOf(msg);
+  selected = msg.id;
+  expanded.clear();
+  folded.clear();
+  expanded.add(msg.id);
+  revealReading = true;
+  document.body.dataset.open = "1";
+  render();
+  requestAnimationFrame(() => {
+    const key = CSS.escape(msg.id);
+    const row = rows.querySelector(`.row[data-id="${key}"]`);
+    if (row) row.scrollIntoView({ block: "nearest" });
+    const card = reading.querySelector(`[data-pick="${key}"]`);
+    if (card) card.scrollIntoView({ block: "start" });
+  });
 }
 
 function renderOmarchySettings(body) {
@@ -17774,7 +17877,7 @@ const folderBusy = new Set();
 let syncNote = "";
 const folderRun = new Map();
 const bodyLoads = new Set();
-const APP_VERSION = "1.4.1";
+const APP_VERSION = "1.4.2";
 let appVersion = APP_VERSION;
 
 prepareDesktopAccounts();
@@ -18188,7 +18291,7 @@ function replaceFolderMessages(accountId, boxKey, items) {
     const message = messages[i];
     if (message.account !== accountId || messageBox(message) !== boxKey) continue;
     if (message.pendingSend && !incoming.has(message.id)) continue;
-    if ((message.searchOnly || message.threadOnly) && !incoming.has(message.id)) continue;
+    if ((message.searchOnly || message.threadOnly || message.linkOnly) && !incoming.has(message.id)) continue;
     messages.splice(i, 1);
   }
   (items || []).forEach(item => {

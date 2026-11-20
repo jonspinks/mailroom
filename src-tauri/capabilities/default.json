@@ -101,6 +101,7 @@
     "allow-add-bar-widget",
     "allow-remove-bar-widget",
     "allow-report-unread",
-    "allow-take-launch-request"
+    "allow-take-launch-request",
+    "allow-link-message"
   ]
 }

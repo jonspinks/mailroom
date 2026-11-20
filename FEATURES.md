@@ -111,6 +111,7 @@ compares them with this list, and opens an issue for anything new.
 | Works offline | ✅ local cache; Outbox survives a restart |
 | Keyboard shortcuts | ✅ Outlook's (Ctrl+R, Ctrl+Shift+R, Insert, Ctrl+Q…) |
 | Default mail app | ✅ mailto: links (Omarchy) |
+| Links to a message | ✅ mailroom://message/… opens one message, even after it was moved; it only opens, and marks nothing read (Omarchy) |
 | Follows the desktop theme | ✅ Omarchy colours, font and corners, live |
 | Unread count in the bar | ✅ Omarchy bar widget |
 | Global shortcut | ✅ Super+Shift+E (Omarchy) |

@@ -35,3 +35,13 @@ It reads each account’s mail folders from the server, including folders beyond
 The sample mock only has the five fixed folders. A real mailbox may have more, and those are listed. Search across all folders includes them. A favourite can pin any folder the server returned, and a category or a search folder too.
 
 Mail can be moved to any folder the server returned: Move to… in the toolbar and the right-click menu, or by dragging a message onto a folder. A move only takes the messages in the folder being viewed, so your replies in Sent stay where they are, and mail only moves within its own account. Rules that file mail are not part of this decision. Archive and delete still use the server’s Archive and Deleted Items folders.
+
+## Links to a message
+
+`mailroom://message/<account>/<id>` opens one message. `<account>` is the account's address as Mailroom shows it, and `<id>` is the message id Mailroom stores: Microsoft Graph's ordinary (REST, mutable) id for Microsoft 365 and Outlook.com, or Gmail's message id. Both parts are percent-encoded, so a Graph id's `/` is `%2F`; `+`, `=`, `-` and `_` may be left as they are. The scheme is case-insensitive. Anything else (another shape, a query or fragment, a bad `%` escape, an address that isn't one, an id with other characters, or a link over 2,048 characters) opens nothing and shows a notice.
+
+The link opens Mailroom, or brings the running one forward, and shows the message in its folder with its conversation open. A message not on this computer is fetched from the server by id. For Microsoft, an id Graph no longer knows is translated once from its immutable form (`translateExchangeIds`) and tried again, so a link made from an immutable id still finds a moved message. A message that still can't be found (deleted, moved out of reach, or in another account) leaves you in that account's Inbox, with a notice saying so. An account Mailroom doesn't have is a notice too.
+
+A link only opens. It never marks the message read, and never sends, deletes, moves, flags or changes anything, here or on the server.
+
+On Linux the desktop hands the link to Mailroom on its command line (the launcher's `Exec … %u` and `x-scheme-handler/mailroom`), and a second launch passes it to the running Mailroom. A macOS or Windows version would not get links that way; tauri-plugin-deep-link is the route there.
