@@ -5478,7 +5478,8 @@ function ruleFolders(accountId) {
 function ruleSummary(rule, accountId) {
   const when = [rule.from.length ? "from " + rule.from.join(", ") : "", rule.subject.length ? "subject has “" + rule.subject.join("”, “") + "”" : ""].filter(Boolean).join(" and ");
   const folder = ruleFolders(accountId).find(f => f.id === rule.moveTo);
-  const what = [rule.moveTo ? "move to " + (folder ? folder.name : "a folder") : "", rule.markRead ? "mark as read" : "", rule.delete ? "delete" : ""].filter(Boolean).join(", ");
+  const sendsOn = (rule.forwardsTo || []).length ? "forward to " + rule.forwardsTo.join(", ") : "";
+  const what = [rule.moveTo ? "move to " + (folder ? folder.name : "a folder") : "", rule.markRead ? "mark as read" : "", rule.delete ? "delete" : "", sendsOn].filter(Boolean).join(", ");
   return "When mail is " + (when || "anything") + ": " + (what || "nothing") + (rule.stop ? ". Then stop." : ".") + (rule.other ? " (Has more set in Outlook.)" : "");
 }
 
@@ -5493,7 +5494,7 @@ function renderRules(body) {
   ruleDraft = null;
   const chosen = draft && accounts[draft.account] ? draft.account : signed[0][0];
   body.innerHTML = `
-    <p class="field-hint">Rules run on Microsoft's servers as mail arrives, so they work with Mailroom closed, and Outlook shows the same rules.</p>
+    <p class="field-hint">Rules run on Microsoft's servers as mail arrives, so they work with Mailroom closed, and Outlook shows the same rules. Mailroom warns when a rule that is on forwards mail to someone; forwarding set for the whole mailbox in Outlook's settings can't be seen from here.</p>
     <label class="field"${signed.length > 1 ? "" : " hidden"}>Account
       <select id="rule-account">${signed.map(([id, a]) => `<option value="${esc(id)}"${id === chosen ? " selected" : ""}>${esc(a.name)} · ${esc(a.email)}</option>`).join("")}</select>
     </label>
@@ -5525,7 +5526,7 @@ function renderRules(body) {
     list.querySelectorAll("[data-rule-on]").forEach(box => {
       box.onchange = async () => {
         const rule = Object.assign({}, current[Number(box.dataset.ruleOn)], { enabled: box.checked });
-        try { current[Number(box.dataset.ruleOn)] = await tauriInvoke("save_rule", { email: email(), rule }); toast(rule.enabled ? "Rule on" : "Rule off"); }
+        try { current[Number(box.dataset.ruleOn)] = Object.assign({}, rule, await tauriInvoke("save_rule", { email: email(), rule })); noteForwardRules(accountSelect.value, current); toast(rule.enabled ? "Rule on" : "Rule off"); }
         catch (err) { box.checked = !box.checked; toast(String(err && err.message || err)); }
       };
     });
@@ -5534,7 +5535,7 @@ function renderRules(body) {
         const rule = current[Number(btn.dataset.ruleDelete)];
         const sure = await chooseDialog("Delete the rule " + rule.name + "?", "", [{ value: "yes", label: "Delete", danger: true }]);
         if (sure !== "yes") return;
-        try { await tauriInvoke("delete_rule", { email: email(), id: rule.id }); current = current.filter(r => r !== rule); paintList(); toast("Rule deleted"); }
+        try { await tauriInvoke("delete_rule", { email: email(), id: rule.id }); current = current.filter(r => r !== rule); noteForwardRules(accountSelect.value, current); paintList(); toast("Rule deleted"); }
         catch (err) { toast(String(err && err.message || err)); }
       };
     });
@@ -5542,7 +5543,7 @@ function renderRules(body) {
   const load = async () => {
     paintFolders();
     list.innerHTML = `<p class="field-hint">Loading…</p>`;
-    try { current = await tauriInvoke("mail_rules", { email: email() }); paintList(); }
+    try { current = await tauriInvoke("mail_rules", { email: email() }); noteForwardRules(accountSelect.value, current); paintList(); }
     catch (err) { list.innerHTML = `<p class="form-error">${esc(String(err && err.message || err))}</p>`; }
   };
   accountSelect.onchange = load;
@@ -5601,6 +5602,62 @@ function replyActive(reply) {
   if (reply.status !== "scheduled") return true;
   const now = Date.now();
   return Date.parse(reply.start + "Z") <= now && now < Date.parse(reply.end + "Z");
+}
+
+// ---- Forwarding rules ----
+// A rule that sends mail on to another address is a common sign that an
+// account was taken over, and a forgotten one quietly leaks mail; new Outlook
+// shows a banner while forwarding is on, and so does Mailroom (Microsoft
+// accounts, inbox rules only: mailbox-level forwarding isn't in Graph).
+const forwardRules = new Map(); // account id -> [{ id, name, to }]
+
+function forwardSignature(accountId, rule) {
+  return [accountId, rule.id, rule.to.map(a => a.toLowerCase()).sort().join(",")].join("|");
+}
+
+function dismissedForwards() {
+  try {
+    const rows = JSON.parse(localStorage.getItem("mailroom-forward-seen") || "[]");
+    return new Set(Array.isArray(rows) ? rows : []);
+  } catch (e) { return new Set(); }
+}
+
+function noteForwardRules(accountId, rules) {
+  const on = (rules || []).filter(r => r && r.enabled && Array.isArray(r.forwardsTo) && r.forwardsTo.length)
+    .map(r => ({ id: String(r.id || ""), name: String(r.name || ""), to: r.forwardsTo.map(String) }));
+  if (on.length) forwardRules.set(accountId, on); else forwardRules.delete(accountId);
+  paintForwardBanner();
+}
+
+async function checkForwardRules() {
+  for (const [id, acct] of Object.entries(accounts)) {
+    if (!acct.signedIn || !acct.email || isGoogleAccount(id)) continue;
+    try { noteForwardRules(id, await tauriInvoke("mail_rules", { email: acct.email })); } catch (err) {}
+  }
+}
+
+function paintForwardBanner() {
+  const seen = dismissedForwards();
+  const shown = [];
+  forwardRules.forEach((list, id) => list.forEach(rule => { if (accounts[id] && !seen.has(forwardSignature(id, rule))) shown.push({ id, rule }); }));
+  let banner = document.getElementById("forward-banner");
+  if (!shown.length) { if (banner) banner.remove(); return; }
+  if (!banner) {
+    banner = document.createElement("div");
+    banner.id = "forward-banner";
+    banner.className = "ooo-banner forward-banner";
+    banner.setAttribute("role", "alert");
+    rows.parentElement.insertBefore(banner, rows);
+  }
+  const { id, rule } = shown[0];
+  const more = shown.length > 1 ? ` <span class="forward-more">(${shown.length - 1} more)</span>` : "";
+  banner.innerHTML = `<span>Mail from ${esc(accounts[id].name)} is forwarded to ${esc(rule.to.join(", "))} by the rule “${esc(rule.name || "Untitled")}”.${more}</span><button type="button" class="linkish" id="forward-review">Review rule</button><button type="button" class="linkish" id="forward-dismiss">Dismiss</button>`;
+  banner.querySelector("#forward-review").onclick = () => { ruleDraft = { account: id }; showSettings("rules"); };
+  banner.querySelector("#forward-dismiss").onclick = () => {
+    seen.add(forwardSignature(id, rule));
+    try { localStorage.setItem("mailroom-forward-seen", JSON.stringify([...seen])); } catch (e) {}
+    paintForwardBanner();
+  };
 }
 
 async function checkAutoReplies() {
@@ -18090,7 +18147,7 @@ const folderBusy = new Set();
 let syncNote = "";
 const folderRun = new Map();
 const bodyLoads = new Set();
-const APP_VERSION = "1.4.7";
+const APP_VERSION = "1.4.8";
 let appVersion = APP_VERSION;
 
 prepareDesktopAccounts();
@@ -19688,6 +19745,7 @@ function startMailPolling() {
     loadSearchFolders(id).then(() => { if (view === "mail") render(); });
   });
   checkAutoReplies();
+  checkForwardRules();
   loadDirectory();
   setTimeout(() => checkForUpdate(true), 30 * 1000);
   setInterval(() => checkForUpdate(true), 6 * 3600 * 1000);

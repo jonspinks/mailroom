@@ -72,6 +72,7 @@ compares them with this list, and opens an issue for anything new.
 | Flags | ✅ (Gmail: star) |
 | Categories | **M** |
 | Rules | **M** create from a message, turn off, delete |
+| Forwarding warning | **M** a banner while a rule that is on forwards mail elsewhere; Review rule or Dismiss |
 | Automatic replies | **M** |
 | Favourites | ✅ any folder, category or search folder |
 | Search | ✅ mail, people and calendar in one box; dates in plain words; top results first |
