@@ -2988,6 +2988,44 @@ test("a mailto: link opens a filled-in message; --check-mail checks", { fake: tr
   same((await calls("sync_inbox")).length, 1, "checks for mail");
 });
 
+test("Mark as read: when opened is still the default", { fake: true }, async ({ p, calls }) => {
+  await p.click('.row[data-id="m2"]'); await wait(400);
+  same(await p.evaluate(() => messages.find(m => m.id === "m2").unread), false, "opening it marks it read straight away");
+  expect((await calls("apply_mail")).some(a => a.kind === "read" && a.messageIds.includes("m2")), "and on the server");
+});
+
+test("Mark as read after 5 seconds: skimming past leaves mail unread", { fake: true, setup: () => { localStorage.setItem("mailroom-mark-read", "delay"); } }, async ({ p }) => {
+  const unread = id => p.evaluate(id => messages.find(m => m.id === id).unread, id);
+  await p.click('.row[data-id="m1"]'); await wait(1500);
+  same(await unread("m1"), true, "not yet read after a second and a half");
+  await p.click('.row[data-id="m2"]'); await wait(4500);
+  same(await unread("m1"), true, "moving on before 5 seconds leaves it unread");
+  await wait(1500);
+  same(await unread("m2"), false, "the one left open for 5 seconds is read");
+});
+
+test("Mark as read when I move to another message, or never", { fake: true, setup: () => { localStorage.setItem("mailroom-mark-read", "leave"); } }, async ({ p, calls }) => {
+  const unread = id => p.evaluate(id => messages.find(m => m.id === id).unread, id);
+  await p.click('.row[data-id="m1"]'); await wait(600);
+  same(await unread("m1"), true, "still unread while it is open");
+  await p.click('.row[data-id="m2"]'); await wait(400);
+  same(await unread("m1"), false, "read once the selection moves on");
+  same(await unread("m2"), true, "and the new one waits its turn");
+  await p.evaluate(() => { markReadWhen = "never"; pendingRead = null; }); // as the Settings choice does
+  await p.click('.row[data-id="m3"]'); await wait(400);
+  await p.click('.row[data-id="m2"]'); await wait(400);
+  same([await unread("m2"), await unread("m3")], [true, true], "never: opening and leaving marks nothing");
+  await p.keyboard.down("Control"); await p.keyboard.press("q"); await p.keyboard.up("Control"); await wait(300);
+  same(await unread("m2"), false, "Ctrl+Q still marks it read");
+});
+
+test("Settings > Mail has the Mark as read choice, and it is kept", { fake: true }, async ({ p }) => {
+  await p.evaluate(() => showSettings("mail")); await wait(300);
+  expect(await p.$("#mark-read-when"), "the choice is on the Mail page");
+  await p.select("#mark-read-when", "leave"); await wait(100);
+  same(await p.evaluate(() => [markReadWhen, localStorage.getItem("mailroom-mark-read")]), ["leave", "leave"], "picked and stored");
+});
+
 test("a mailroom: link opens a cached message, at start and while running, and marks nothing read", { fake: true, setup: () => {
   window.__launch = { kind: "open", account: "jon@example.com", id: "m1" };
 } }, async ({ p, calls, clear }) => {

@@ -24,6 +24,7 @@ compares them with this list, and opens an issue for anything new.
 | Conversation view | ✅ newest first, with your replies from Sent |
 | Focused Inbox | ✅ Focused and Other, Always move for a sender (Gmail: its inbox tabs) |
 | Filters: unread, flagged, mentions… | ✅ Unread, Read, Flagged, Events |
+| Choose when mail is marked as read | ✅ when opened, after 5 seconds, when you move on, or never (Settings > Mail) |
 | Group by date | ✅ Today, Yesterday, weekdays, Last week… |
 | Dark mode for designed mail | ✅ recoloured colour by colour, sun button for the original |
 | Quoted text folded | ✅ Outlook, Gmail and Apple replies; legal footers too |
