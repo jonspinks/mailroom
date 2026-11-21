@@ -66,6 +66,9 @@ pub struct LiveMessage {
     pub cc: Vec<LivePerson>,
     #[serde(default)]
     pub bcc: Vec<LivePerson>,
+    /// Reply-To, when the sender set one.
+    #[serde(default)]
+    pub reply_to: Vec<LivePerson>,
     /// Outlook category names on the message.
     #[serde(default)]
     pub categories: Vec<String>,
@@ -574,6 +577,7 @@ fn parse_message(value: serde_json::Value) -> Option<LiveMessage> {
         to: people_from(&value, "toRecipients"),
         cc: people_from(&value, "ccRecipients"),
         bcc: people_from(&value, "bccRecipients"),
+        reply_to: Vec::new(),
         categories: value["categories"]
             .as_array()
             .map(|list| list.iter().filter_map(|c| c.as_str()).take(25).map(String::from).collect())

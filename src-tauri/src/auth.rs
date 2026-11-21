@@ -7,7 +7,8 @@ use std::fs;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 pub const LEGACY_SCOPES: &str = "offline_access User.Read Mail.Read Mail.ReadWrite Calendars.Read Contacts.Read Contacts.ReadWrite";
 pub const SCOPES: &str = "offline_access User.Read Mail.Read Mail.ReadWrite Mail.Send Calendars.ReadWrite Contacts.Read Contacts.ReadWrite MailboxSettings.ReadWrite People.Read";
@@ -16,11 +17,29 @@ const AUTH: &str = "https://login.microsoftonline.com/common/oauth2/v2.0/authori
 /// Every account's tokens live in one saved store. A change reads the whole
 /// store and writes it back, so changes take turns: two accounts refreshing
 /// at once, or a refresh during a sign-in, must not undo each other.
-static STORE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+///
+/// The lock also holds the store as last read or written, so a command asks
+/// the keyring once, not every time. Nothing slow happens under it: a token
+/// refresh talks to the network outside, behind its own account's guard.
+static STORE: Mutex<Option<TokenFile>> = Mutex::new(None);
 
-fn store_turn() -> std::sync::MutexGuard<'static, ()> {
-    STORE_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+type Turn = std::sync::MutexGuard<'static, Option<TokenFile>>;
+
+fn store_turn() -> Turn {
+    STORE.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
+
+/// One guard per account, held while its tokens are refreshed, so two
+/// commands don't both spend the same refresh token. Other accounts go on.
+static REFRESHING: Mutex<BTreeMap<String, Arc<Mutex<()>>>> = Mutex::new(BTreeMap::new());
+
+fn refresh_guard(key: &str) -> Arc<Mutex<()>> {
+    let mut guards = REFRESHING.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    guards.entry(key.to_string()).or_default().clone()
+}
+
+/// How long sign-in waits for the browser to come back.
+const SIGN_IN_WAIT: Duration = Duration::from_secs(300);
 const TOKEN: &str = "https://login.microsoftonline.com/common/oauth2/v2.0/token";
 
 /// Google accounts: Gmail (read, label, send; never permanent deletion) and
@@ -99,9 +118,17 @@ struct TokenFile {
     accounts: BTreeMap<String, Tokens>,
 }
 
+/// The signed-in accounts. Sign-ins that are saved but can't be read just
+/// now (a keyring still locked after login) show as signed out here.
 pub fn account_status() -> AccountStatus {
-    let store = load_store().unwrap_or_default();
-    status_from(&store, "", "")
+    account_status_checked().unwrap_or_else(|_| status_from(&TokenFile::default(), "", ""))
+}
+
+/// The same, with saved sign-ins that could not be read told apart from
+/// there being none: the first is an error, to be asked again later.
+pub fn account_status_checked() -> Result<AccountStatus, String> {
+    let store = stored(&mut store_turn())?;
+    Ok(status_from(&store, "", ""))
 }
 
 fn status_from(store: &TokenFile, preferred_email: &str, preferred_name: &str) -> AccountStatus {
@@ -165,11 +192,7 @@ pub fn sign_in(login_hint: Option<String>, provider: Provider) -> Result<Account
         .arg(&url)
         .spawn()
         .map_err(|_| "Could not open a browser. xdg-open failed.".to_string())?;
-    let (mut stream, code, returned_state) = wait_for_code(&listener)?;
-    if returned_state != state {
-        finish_browser(&mut stream, "Sign-in was interrupted. You can close this window.");
-        return Err("Sign-in was interrupted. Try again.".into());
-    }
+    let (mut stream, code) = wait_for_code(&listener, &state, SIGN_IN_WAIT)?;
     let tokens = match exchange_code(&client_id, &redirect, &verifier, &code) {
         Ok(tokens) => tokens,
         Err(err) => {
@@ -177,8 +200,8 @@ pub fn sign_in(login_hint: Option<String>, provider: Provider) -> Result<Account
             return Err(err);
         }
     };
-    let turn = store_turn();
-    let mut store = load_store().unwrap_or_default();
+    let mut turn = store_turn();
+    let mut store = stored(&mut turn).unwrap_or_default();
     let saved_email = match upsert_account(&mut store, tokens) {
         Ok(email) => email,
         Err(err) => {
@@ -186,7 +209,7 @@ pub fn sign_in(login_hint: Option<String>, provider: Provider) -> Result<Account
             return Err(err);
         }
     };
-    if let Err(err) = save_store(&store) {
+    if let Err(err) = keep(&mut turn, &store) {
         finish_browser(&mut stream, "Sign-in did not finish. You can close this window.");
         return Err(err);
     }
@@ -202,45 +225,76 @@ pub fn sign_in(login_hint: Option<String>, provider: Provider) -> Result<Account
 }
 
 pub fn sign_out() -> Result<(), String> {
-    let _turn = store_turn();
-    forget_store()
+    let mut turn = store_turn();
+    keep(&mut turn, &TokenFile::default())
 }
 
 pub fn sign_out_account(email: &str) -> Result<(), String> {
-    let _turn = store_turn();
-    let mut store = load_store().unwrap_or_default();
+    let mut turn = store_turn();
+    let mut store = stored(&mut turn).unwrap_or_default();
     drop_account(&mut store, email);
-    if store.accounts.is_empty() {
-        return forget_store();
-    }
-    save_store(&store)
+    keep(&mut turn, &store)
+}
+
+/// An access token is used until a minute before it runs out.
+fn fresh(tokens: &Tokens, now: u64) -> bool {
+    tokens.expires_at > now + 60
 }
 
 pub fn access_token_for(email: &str) -> Result<String, String> {
-    let _turn = store_turn();
-    let mut store = load_store()?;
+    let not_signed_in = || "That account is not signed in.".to_string();
+    let store = load_store()?;
     let key = resolve_key(&store, email)?;
-    let now = unix_now();
-    let current = store.accounts.get(&key).cloned().ok_or_else(|| "That account is not signed in.".to_string())?;
-    if current.expires_at <= now + 60 {
-        let mut refreshed = match current.provider() {
-            Provider::Google => refresh_google(&google_client()?, &current)?,
-            Provider::Microsoft => refresh(&client_id()?, &current)?,
-        };
-        if refreshed.refresh_token.is_empty() {
-            refreshed.refresh_token = current.refresh_token.clone();
-        }
-        refreshed.provider = current.provider.clone();
-        refreshed.email = current.email.clone();
-        refreshed.name = current.name.clone();
-        store.accounts.insert(key.clone(), refreshed);
-        save_store(&store)?;
+    let current = store.accounts.get(&key).ok_or_else(not_signed_in)?;
+    if fresh(current, unix_now()) {
+        return Ok(current.access_token.clone());
     }
-    store
-        .accounts
-        .get(&key)
-        .map(|item| item.access_token.clone())
-        .ok_or_else(|| "That account is not signed in.".to_string())
+    // One refresh per account at a time. Whoever waited here reads the store
+    // again and usually finds the token the other command just fetched.
+    let guard = refresh_guard(&key);
+    let _refreshing = guard.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let current = load_store()?.accounts.get(&key).cloned().ok_or_else(not_signed_in)?;
+    if fresh(&current, unix_now()) {
+        return Ok(current.access_token);
+    }
+    // The network call holds no store lock, so other accounts carry on.
+    let refreshed = match current.provider() {
+        Provider::Google => refresh_google(&google_client()?, &current)?,
+        Provider::Microsoft => refresh(&client_id()?, &current)?,
+    };
+    let mut turn = store_turn();
+    let mut store = stored(&mut turn)?;
+    if settle_refresh(&mut store, &key, &current, refreshed)? {
+        if let Err(err) = keep(&mut turn, &store) {
+            // The service may have replaced the refresh token; the new one
+            // is the only good one, so it stays in memory for the next save.
+            *turn = Some(store);
+            return Err(err);
+        }
+    }
+    store.accounts.get(&key).map(|item| item.access_token.clone()).ok_or_else(not_signed_in)
+}
+
+/// Put refreshed tokens into the store, which may have changed while the
+/// refresh was away. An account signed out meanwhile stays out, and one
+/// signed in again keeps its newer tokens. Says whether the store changed.
+fn settle_refresh(store: &mut TokenFile, key: &str, used: &Tokens, mut refreshed: Tokens) -> Result<bool, String> {
+    let Some(saved) = store.accounts.get(key) else {
+        return Err("That account is not signed in.".into());
+    };
+    if saved.refresh_token != used.refresh_token || saved.access_token != used.access_token {
+        return Ok(false);
+    }
+    // A service that rotates refresh tokens sends the next one; otherwise
+    // the one in use stays.
+    if refreshed.refresh_token.is_empty() {
+        refreshed.refresh_token = used.refresh_token.clone();
+    }
+    refreshed.provider = used.provider.clone();
+    refreshed.email = used.email.clone();
+    refreshed.name = used.name.clone();
+    store.accounts.insert(key.to_string(), refreshed);
+    Ok(true)
 }
 
 fn exchange_code(client_id: &str, redirect: &str, verifier: &str, code: &str) -> Result<Tokens, String> {
@@ -409,11 +463,7 @@ fn sign_in_google(login_hint: Option<String>) -> Result<AccountStatus, String> {
         .arg(&url)
         .spawn()
         .map_err(|_| "Could not open a browser. xdg-open failed.".to_string())?;
-    let (mut stream, code, returned_state) = wait_for_code(&listener)?;
-    if returned_state != state {
-        finish_browser(&mut stream, "Sign-in was interrupted. You can close this window.");
-        return Err("Sign-in was interrupted. Try again.".into());
-    }
+    let (mut stream, code) = wait_for_code(&listener, &state, SIGN_IN_WAIT)?;
     let body = format!(
         "client_id={}&client_secret={}&grant_type=authorization_code&code={}&redirect_uri={}&code_verifier={}",
         form_encode(&client.client_id),
@@ -433,9 +483,9 @@ fn sign_in_google(login_hint: Option<String>) -> Result<AccountStatus, String> {
         finish_browser(&mut stream, "Mailroom needs every permission on that page. Sign in again and leave them all ticked.");
         return Err("Google did not grant mail and calendar access. Sign in again and leave every box ticked.".into());
     }
-    let turn = store_turn();
-    let mut store = load_store().unwrap_or_default();
-    let saved = upsert_account(&mut store, tokens).and_then(|key| save_store(&store).map(|_| key));
+    let mut turn = store_turn();
+    let mut store = stored(&mut turn).unwrap_or_default();
+    let saved = upsert_account(&mut store, tokens).and_then(|key| keep(&mut turn, &store).map(|_| key));
     drop(turn);
     let key = match saved {
         Ok(key) => key,
@@ -512,7 +562,7 @@ fn refresh_google(client: &GoogleClient, current: &Tokens) -> Result<Tokens, Str
 /// Which service an account signs in to. An unknown account is Microsoft,
 /// as every account was before Google.
 pub fn provider_of(email: &str) -> Provider {
-    let Ok(store) = load_store() else { return Provider::Microsoft };
+    let Ok(store) = stored(&mut store_turn()) else { return Provider::Microsoft };
     resolve_key(&store, email)
         .ok()
         .and_then(|key| store.accounts.get(&key).map(Tokens::provider))
@@ -525,7 +575,7 @@ pub fn is_google(email: &str) -> bool {
 
 /// The account's name as it signed in, for the From line.
 pub fn account_name(email: &str) -> String {
-    let Ok(store) = load_store() else { return String::new() };
+    let Ok(store) = stored(&mut store_turn()) else { return String::new() };
     let Ok(key) = resolve_key(&store, email) else { return String::new() };
     store
         .accounts
@@ -534,36 +584,20 @@ pub fn account_name(email: &str) -> String {
         .unwrap_or_default()
 }
 
-fn wait_for_code(listener: &TcpListener) -> Result<(TcpStream, String, String), String> {
-    listener
-        .set_nonblocking(false)
-        .map_err(|err| err.to_string())?;
-    let (mut stream, _) = listener
-        .accept()
-        .map_err(|_| "Sign-in timed out before the browser came back.".to_string())?;
-    // The browser sends its one request at once. A whole-request deadline,
-    // not just a per-read timeout, so nothing that connects here can hold
-    // sign-in open by sending a byte at a time.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-    let mut buf = Vec::new();
-    let mut tmp = [0u8; 4096];
-    while buf.len() < 65536 {
-        let left = deadline.saturating_duration_since(std::time::Instant::now());
-        if left.is_zero() {
-            break;
-        }
-        stream.set_read_timeout(Some(left)).map_err(|err| err.to_string())?;
-        let n = match stream.read(&mut tmp) {
-            Ok(0) => break,
-            Ok(n) => n,
-            Err(_) => break,
-        };
-        buf.extend_from_slice(&tmp[..n]);
-        if buf.windows(4).any(|mark| mark == b"\r\n\r\n") {
-            break;
-        }
-    }
-    let request = String::from_utf8_lossy(&buf);
+/// What a request to the sign-in port turned out to be.
+#[derive(Debug, PartialEq)]
+enum Callback {
+    /// The browser coming back from this sign-in, with its code.
+    Code(String),
+    /// The browser coming back from this sign-in without one, and why.
+    Refused(String),
+    /// Anything else: another program, or a page from some other sign-in.
+    Stray,
+}
+
+/// Only a request carrying this sign-in's `state` is the browser coming
+/// back; the port is open to every program on the computer.
+fn read_callback(request: &str, expected_state: &str) -> Callback {
     let line = request.lines().next().unwrap_or("");
     let path = line.split_whitespace().nth(1).unwrap_or("");
     let query = path.split_once('?').map(|(_, q)| q).unwrap_or("");
@@ -581,16 +615,81 @@ fn wait_for_code(listener: &TcpListener) -> Result<(TcpStream, String, String), 
             _ => {}
         }
     }
-    if code.is_empty() {
-        let message = if error.is_empty() {
-            "Microsoft did not return a sign-in code.".to_string()
-        } else {
-            clip(&error.replace('+', " "))
-        };
-        finish_browser(&mut stream, "Sign-in did not finish. You can close this window.");
-        return Err(message);
+    if expected_state.is_empty() || state != expected_state {
+        return Callback::Stray;
     }
-    Ok((stream, code, state))
+    if !code.is_empty() {
+        return Callback::Code(code);
+    }
+    Callback::Refused(if error.is_empty() {
+        "Microsoft did not return a sign-in code.".to_string()
+    } else {
+        clip(&error.replace('+', " "))
+    })
+}
+
+/// One request's head from a connection, as far as it came in time.
+fn read_request(stream: &mut TcpStream, wait: Duration) -> String {
+    // The browser sends its one request at once. A whole-request deadline,
+    // not just a per-read timeout, so nothing that connects here can hold
+    // sign-in open by sending a byte at a time.
+    let deadline = Instant::now() + wait;
+    let mut buf = Vec::new();
+    let mut tmp = [0u8; 4096];
+    while buf.len() < 65536 {
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() || stream.set_read_timeout(Some(left)).is_err() {
+            break;
+        }
+        let n = match stream.read(&mut tmp) {
+            Ok(0) => break,
+            Ok(n) => n,
+            Err(_) => break,
+        };
+        buf.extend_from_slice(&tmp[..n]);
+        if buf.windows(4).any(|mark| mark == b"\r\n\r\n") {
+            break;
+        }
+    }
+    String::from_utf8_lossy(&buf).into_owned()
+}
+
+/// Wait for the browser to come back with this sign-in's code. Anything else
+/// that connects is turned away and the wait goes on, until `wait` is up:
+/// a closed browser tab must not leave sign-in waiting for ever.
+fn wait_for_code(listener: &TcpListener, state: &str, wait: Duration) -> Result<(TcpStream, String), String> {
+    listener.set_nonblocking(true).map_err(|err| err.to_string())?;
+    let deadline = Instant::now() + wait;
+    loop {
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return Err("Sign-in timed out before the browser came back.".into());
+        }
+        // Nothing waiting, or a connection that went away again.
+        let Ok((mut stream, _)) = listener.accept() else {
+            std::thread::sleep(Duration::from_millis(100).min(left));
+            continue;
+        };
+        if stream.set_nonblocking(false).is_err() {
+            continue;
+        }
+        // Short, so a connection that says nothing (browsers open spare
+        // ones) does not keep the real one waiting long.
+        let request = read_request(&mut stream, Duration::from_secs(5).min(left));
+        match read_callback(&request, state) {
+            Callback::Code(code) => return Ok((stream, code)),
+            Callback::Refused(why) => {
+                finish_browser(&mut stream, "Sign-in did not finish. You can close this window.");
+                return Err(why);
+            }
+            Callback::Stray => turn_away(&mut stream),
+        }
+    }
+}
+
+fn turn_away(stream: &mut TcpStream) {
+    let html = "HTTP/1.1 400 Bad Request\r\nContent-Type: text/html; charset=utf-8\r\nConnection: close\r\nCache-Control: no-store\r\n\r\n<!doctype html><title>Mailroom</title><p>This is not the sign-in Mailroom is waiting for. You can close this window.</p>";
+    let _ = stream.write_all(html.as_bytes());
 }
 
 fn finish_browser(stream: &mut TcpStream, page: &str) {
@@ -725,22 +824,91 @@ fn keyring_stores(json: &str) -> bool {
     }
 }
 
-fn load_store() -> Result<TokenFile, String> {
-    if let Ok(entry) = keyring::Entry::new("mailroom", "microsoft-tokens") {
-        if let Ok(json) = entry.get_password() {
-            if let Ok(store) = parse_store(&json) {
-                if !store.accounts.is_empty() {
-                    return Ok(store);
-                }
-            }
-        }
-    }
+/// What reading the saved store found.
+enum Saved {
+    Store(TokenFile),
+    /// The keyring answered that it holds nothing, and there is no file.
+    Nothing,
+    /// No keyring to ask and no file: signed out, as far as can be told now.
+    Unreachable,
+    /// There may be sign-ins, but they can't be read, with why.
+    Unreadable(String),
+}
+
+fn read_saved() -> Saved {
+    let from_keyring = match keyring::Entry::new("mailroom", "microsoft-tokens").and_then(|entry| entry.get_password()) {
+        Ok(json) => match parse_store(&json) {
+            Ok(store) if !store.accounts.is_empty() => return Saved::Store(store),
+            Ok(_) => Saved::Nothing,
+            Err(err) => Saved::Unreadable(err),
+        },
+        Err(keyring::Error::NoEntry) => Saved::Nothing,
+        // A keyring that is there but locked, as it can be just after login.
+        Err(keyring::Error::NoStorageAccess(_)) => Saved::Unreadable("The keyring is locked, so the saved sign-in can't be read. Unlock it and try again.".into()),
+        Err(_) => Saved::Unreachable,
+    };
     let path = token_file();
     if !path.exists() {
+        return from_keyring;
+    }
+    match fs::read_to_string(path).map_err(|err| err.to_string()).and_then(|json| parse_store(&json)) {
+        Ok(store) if !store.accounts.is_empty() => Saved::Store(store),
+        Ok(_) => from_keyring,
+        Err(err) => Saved::Unreadable(err),
+    }
+}
+
+/// The store, from memory once it has been read. No accounts is an answer
+/// too. Only a real answer is remembered: when the saved store could not be
+/// read, or there was no keyring to ask, the next call asks again.
+fn stored(slot: &mut Option<TokenFile>) -> Result<TokenFile, String> {
+    stored_with(slot, read_saved)
+}
+
+fn stored_with(slot: &mut Option<TokenFile>, read: impl FnOnce() -> Saved) -> Result<TokenFile, String> {
+    if let Some(store) = slot.as_ref() {
+        return Ok(store.clone());
+    }
+    match read() {
+        Saved::Store(store) => {
+            *slot = Some(store.clone());
+            Ok(store)
+        }
+        Saved::Nothing => {
+            *slot = Some(TokenFile::default());
+            Ok(TokenFile::default())
+        }
+        Saved::Unreachable => Ok(TokenFile::default()),
+        Saved::Unreadable(why) => Err(why),
+    }
+}
+
+/// Save the store and remember it. After a failed save what is on disk is
+/// anyone's guess, so it is read again next time.
+fn keep(slot: &mut Option<TokenFile>, store: &TokenFile) -> Result<(), String> {
+    keep_with(slot, store, save_store)
+}
+
+fn keep_with(slot: &mut Option<TokenFile>, store: &TokenFile, save: impl FnOnce(&TokenFile) -> Result<(), String>) -> Result<(), String> {
+    match save(store) {
+        Ok(()) => {
+            *slot = Some(store.clone());
+            Ok(())
+        }
+        Err(err) => {
+            *slot = None;
+            Err(err)
+        }
+    }
+}
+
+/// The store of a signed-in person; with no accounts there is nothing to use.
+fn load_store() -> Result<TokenFile, String> {
+    let store = stored(&mut store_turn())?;
+    if store.accounts.is_empty() {
         return Err("Sign in first.".into());
     }
-    let json = fs::read_to_string(path).map_err(|err| err.to_string())?;
-    parse_store(&json)
+    Ok(store)
 }
 
 fn parse_store(json: &str) -> Result<TokenFile, String> {
@@ -1021,6 +1189,118 @@ mod tests {
         assert_eq!(loaded.accounts.len(), 1);
         assert!(resolve_key(&loaded, "").is_ok());
         assert!(resolve_key(&TokenFile::default(), "").is_err());
+    }
+
+    #[test]
+    fn the_store_is_read_once_and_a_failed_read_is_asked_again() {
+        let mut one = TokenFile::default();
+        upsert_account(&mut one, token_for("one@example.com", "One")).unwrap();
+
+        // A locked keyring is an error, and is not remembered as signed out.
+        let mut slot = None;
+        assert!(stored_with(&mut slot, || Saved::Unreadable("locked".into())).is_err());
+        assert!(slot.is_none());
+        // No keyring at all reads as signed out, and is asked again too.
+        assert!(stored_with(&mut slot, || Saved::Unreachable).unwrap().accounts.is_empty());
+        assert!(slot.is_none());
+        // Once it answers, the answer is kept and nothing is read again.
+        let saved = one.clone();
+        assert_eq!(stored_with(&mut slot, move || Saved::Store(saved)).unwrap().accounts.len(), 1);
+        assert_eq!(stored_with(&mut slot, || panic!("read twice")).unwrap().accounts.len(), 1);
+
+        // "No accounts" from a keyring that answered is kept as well.
+        let mut slot = None;
+        assert!(stored_with(&mut slot, || Saved::Nothing).unwrap().accounts.is_empty());
+        assert!(stored_with(&mut slot, || panic!("read twice")).unwrap().accounts.is_empty());
+
+        // A save goes through to memory; a failed one is forgotten.
+        assert!(keep_with(&mut slot, &one, |_| Ok(())).is_ok());
+        assert!(slot.as_ref().unwrap().accounts.contains_key("one@example.com"));
+        assert!(keep_with(&mut slot, &TokenFile::default(), |_| Err("disk".into())).is_err());
+        assert!(slot.is_none());
+    }
+
+    #[test]
+    fn a_refresh_keeps_the_newest_refresh_token() {
+        let mut store = TokenFile::default();
+        let mut used = token_for("one@example.com", "One");
+        used.expires_at = 0;
+        used.scopes = SCOPES.into();
+        upsert_account(&mut store, used.clone()).unwrap();
+        let answer = |refresh: &str| Tokens { access_token: "new-access".into(), refresh_token: refresh.into(), expires_at: 5_000_000_000, ..token_for("x@example.com", "X") };
+
+        // A rotated refresh token replaces the old one.
+        let mut rotated = store.clone();
+        assert!(settle_refresh(&mut rotated, "one@example.com", &used, answer("rotated")).unwrap());
+        let saved = &rotated.accounts["one@example.com"];
+        assert_eq!((saved.access_token.as_str(), saved.refresh_token.as_str()), ("new-access", "rotated"));
+        assert!(fresh(saved, unix_now()));
+
+        // No new refresh token: the one in use stays.
+        let mut same = store.clone();
+        assert!(settle_refresh(&mut same, "one@example.com", &used, answer("")).unwrap());
+        assert_eq!(same.accounts["one@example.com"].refresh_token, "refresh-one@example.com");
+
+        // Signed in again while the refresh was away: the newer sign-in wins.
+        let mut again = store.clone();
+        let mut newer = token_for("one@example.com", "One");
+        newer.refresh_token = "from-sign-in".into();
+        upsert_account(&mut again, newer).unwrap();
+        assert!(!settle_refresh(&mut again, "one@example.com", &used, answer("rotated")).unwrap());
+        assert_eq!(again.accounts["one@example.com"].refresh_token, "from-sign-in");
+
+        // Signed out while the refresh was away: it stays signed out.
+        let mut gone = TokenFile::default();
+        assert!(settle_refresh(&mut gone, "one@example.com", &used, answer("rotated")).is_err());
+        assert!(gone.accounts.is_empty());
+    }
+
+    #[test]
+    fn only_a_request_with_this_sign_ins_state_counts() {
+        assert_eq!(read_callback("GET /?code=abc&state=s1 HTTP/1.1\r\n\r\n", "s1"), Callback::Code("abc".into()));
+        assert_eq!(read_callback("GET /?code=abc&state=other HTTP/1.1\r\n\r\n", "s1"), Callback::Stray);
+        assert_eq!(read_callback("GET /?code=abc HTTP/1.1\r\n\r\n", "s1"), Callback::Stray);
+        assert_eq!(read_callback("GET /favicon.ico HTTP/1.1\r\n\r\n", "s1"), Callback::Stray);
+        assert_eq!(read_callback("", "s1"), Callback::Stray);
+        assert_eq!(read_callback("GET /?code=abc&state= HTTP/1.1\r\n\r\n", ""), Callback::Stray);
+        assert_eq!(
+            read_callback("GET /?error=access_denied&error_description=You+said+no&state=s1 HTTP/1.1\r\n\r\n", "s1"),
+            Callback::Refused("You said no".into())
+        );
+        // A refusal without the state is not this sign-in's either.
+        assert_eq!(read_callback("GET /?error=access_denied HTTP/1.1\r\n\r\n", "s1"), Callback::Stray);
+    }
+
+    #[test]
+    fn sign_in_waits_past_strangers_for_its_own_browser() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let browser = std::thread::spawn(move || {
+            let mut answers = Vec::new();
+            for request in ["GET /?code=stolen&state=guess HTTP/1.1\r\n\r\n", "GET /?code=real&state=mine HTTP/1.1\r\n\r\n"] {
+                let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
+                stream.write_all(request.as_bytes()).unwrap();
+                if request.contains("guess") {
+                    let mut answer = String::new();
+                    let _ = stream.read_to_string(&mut answer);
+                    answers.push(answer);
+                }
+            }
+            answers
+        });
+        let (_stream, code) = wait_for_code(&listener, "mine", Duration::from_secs(20)).unwrap();
+        assert_eq!(code, "real");
+        let answers = browser.join().unwrap();
+        assert!(answers[0].starts_with("HTTP/1.1 400"), "{answers:?}");
+    }
+
+    #[test]
+    fn sign_in_gives_up_when_the_browser_never_comes_back() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let started = Instant::now();
+        let err = wait_for_code(&listener, "mine", Duration::from_millis(300)).unwrap_err();
+        assert!(err.contains("timed out"), "{err}");
+        assert!(started.elapsed() < Duration::from_secs(5));
     }
 
     #[test]
