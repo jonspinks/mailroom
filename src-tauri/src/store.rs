@@ -773,7 +773,6 @@ fn forget_messages_on(conn: &mut Connection, email: &str, ids: &[String]) -> Res
 /// this account also holds. The search index follows through its triggers.
 /// The file does not shrink (see add_search_index on VACUUM); the freed
 /// pages are used again.
-#[allow(dead_code)]
 pub fn forget_account(email: &str) -> Result<(), String> {
     let email = email.trim().to_lowercase();
     if email.is_empty() {
@@ -1049,7 +1048,7 @@ pub fn refresh_folder_counts(email: &str, folder_id: &str) -> Result<(), String>
 /// Put the server's own counts on a folder. The rows cached for it are only
 /// the sync window, so counting those can run low.
 pub fn set_folder_counts(email: &str, folder_id: &str, unread: i64, total: i64) -> Result<(), String> {
-    let conn = open()?;
+    let conn = writing()?;
     conn.execute(
         "update folders set unread = ?3, total = ?4 where email = ?1 and id = ?2",
         params![email.trim().to_lowercase(), folder_id.trim(), unread, total],

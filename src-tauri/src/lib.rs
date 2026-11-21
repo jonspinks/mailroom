@@ -112,7 +112,9 @@ async fn in_background<T: Send + 'static>(
 
 #[tauri::command]
 async fn account_status() -> Result<AccountStatus, String> {
-    in_background(|| Ok(auth::account_status())).await
+    // A keyring that can't be read yet (locked at login) is an error to ask
+    // again about, not "nobody is signed in".
+    in_background(auth::account_status_checked).await
 }
 
 #[tauri::command]
@@ -149,9 +151,18 @@ fn not_for_google(what: &str) -> String {
 #[tauri::command]
 async fn sign_out(email: Option<String>) -> Result<AccountStatus, String> {
     in_background(move || {
+        let leaving = match email.as_deref().map(str::trim).filter(|value| !value.is_empty()) {
+            Some(email) => vec![email.to_string()],
+            None => signed_in_emails(),
+        };
         match email.as_deref().map(str::trim).filter(|value| !value.is_empty()) {
             Some(email) => auth::sign_out_account(email)?,
             None => auth::sign_out()?,
+        }
+        // Signing out takes the account's mail off this computer too. The
+        // sign-out stands even if the cache can't be cleared.
+        for address in leaving {
+            let _ = store::forget_account(&address);
         }
         Ok(auth::account_status())
     })

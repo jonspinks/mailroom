@@ -7161,7 +7161,9 @@ function recipientBits(email) {
 function replyRecipients(msg, all) {
   const own = ownAddresses();
   const fromSelf = own.has((msg.email || "").toLowerCase());
-  const sender = fromSelf ? "" : (msg.email || "");
+  // A sender who names a Reply-To (a list, a ticket desk, someone writing
+  // on another's behalf) is answered there, not at the From address.
+  const sender = fromSelf ? "" : (msg.replyAddr || msg.email || "");
   const list = all ? addressList(sender, msg.to) : addressList(sender || msg.to);
   return list.join("; ");
 }
@@ -18618,6 +18620,7 @@ function liveMessage(accountId, item, boxKey) {
     to: toPeople.map(person => person.email).join("; "),
     cc: ccPeople.map(person => person.email).join("; "),
     bcc: bccPeople.map(person => person.email).join("; "),
+    replyAddr: recipientRows(item.replyTo).map(person => person.email).join("; "),
     toPeople,
     ccPeople,
     bccPeople,
@@ -19761,8 +19764,9 @@ async function pollMail() {
   lastMailPoll = Date.now();
   let missed = "";
   try {
-    for (const [id, acct] of Object.entries(accounts)) {
-      if (!acct.signedIn || !acct.email || accountNeedsSignIn(id)) continue;
+    // Every account is asked at once, so a slow one holds up nobody else.
+    await Promise.all(Object.entries(accounts).map(async ([id, acct]) => {
+      if (!acct.signedIn || !acct.email || accountNeedsSignIn(id)) return;
       try {
         const inbox = await tauriInvoke("sync_inbox", { email: acct.email, since: syncSinceIso() });
         fillAccountMail(id, inbox);
@@ -19772,7 +19776,7 @@ async function pollMail() {
         // tried again shortly. Sign-in problems show in the banner.
         if (couldNotReach(err)) missed = String(err && err.message || err);
       }
-    }
+    }));
     // Leave the reading pane alone, so a reply being typed is not touched.
     // An open search is asked again, without clearing the rows already shown.
     if (searchActive()) searchCacheStale = true;
@@ -19815,9 +19819,8 @@ function startMailPolling() {
   // New meetings need to be on hand to be reminded about.
   setInterval(() => { syncCalendars(null, false).then(() => { if (view === "calendar") render(); }); }, 15 * 60 * 1000);
   Object.keys(accounts).forEach(id => {
-    loadCategories(id).then(() => { if (view === "mail") render(); });
-    loadAliases(id).then(() => { if (view === "mail") render(); });
-    loadSearchFolders(id).then(() => { if (view === "mail") render(); });
+    // One repaint for the three, not one each.
+    Promise.allSettled([loadCategories(id), loadAliases(id), loadSearchFolders(id)]).then(() => { if (view === "mail") render(); });
   });
   checkAutoReplies();
   loadDirectory();
