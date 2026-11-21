@@ -1340,6 +1340,27 @@ function accountProfile(id) {
   return "work";
 }
 
+// Show one folder (or a favorite, a category, a search folder) and fetch it.
+function openFolder(acct, folder, folderId, pick) {
+  account = acct;
+  box = folder;
+  folderPick = pick || "folder";
+  selected = conversations()[0]?.latest.id || null;
+  expanded.clear();
+  folded.clear();
+  const picked = messages.find(m => m.id === selected);
+  if (picked && picked.draft) focusReply = true;
+  const categoryView = isCategoryBox(box);
+  if (!categoryView) {
+    if (account === "all") profileAccountIds().forEach(id => rememberFolderBusy(id, box));
+    else rememberFolderBusy(account, box);
+  }
+  render();
+  if (categoryView) return;
+  if (account === "all") ensureUnifiedFolder(box);
+  else ensureFolderMessages(account, box, folderId || "");
+}
+
 function accountInProfile(id, profile) {
   return !!accounts[id] && accountProfile(id) === (profile || activeProfile);
 }
@@ -3502,23 +3523,7 @@ function renderFolders() {
         suppressFolderClick = false;
         return;
       }
-      account = btn.dataset.acct;
-      box = btn.dataset.box;
-      folderPick = btn.classList.contains("fav") ? "fav" : "folder";
-      selected = conversations()[0]?.latest.id || null;
-      expanded.clear();
-      folded.clear();
-      const picked = messages.find(m => m.id === selected);
-      if (picked && picked.draft) focusReply = true;
-      const categoryView = isCategoryBox(box);
-      if (!categoryView) {
-        if (account === "all") profileAccountIds().forEach(id => rememberFolderBusy(id, box));
-        else rememberFolderBusy(account, box);
-      }
-      render();
-      if (categoryView) return;
-      if (account === "all") ensureUnifiedFolder(box);
-      else ensureFolderMessages(account, box, btn.dataset.folderId || "");
+      openFolder(btn.dataset.acct, btn.dataset.box, btn.dataset.folderId || "", btn.classList.contains("fav") ? "fav" : "folder");
     };
   });
   folders.querySelectorAll(".folder-row, .fav").forEach(el => {
@@ -6235,7 +6240,7 @@ const SHORTCUTS = [
   ["Ctrl+R", "Reply"], ["Ctrl+Shift+R", "Reply all"], ["Ctrl+Shift+F", "Forward"],
   ["Ctrl+P", "Print the message"],
   ["Ctrl+Enter", "Send, while writing"],
-  ["Delete", "Delete"], ["E", "Archive"], ["V", "Move to a folder"],
+  ["Delete", "Delete"], ["E", "Archive"], ["V", "Move to a folder"], ["Ctrl+Y", "Go to a folder"],
   ["Ctrl+Q", "Mark as read"], ["Ctrl+U", "Mark as unread"], ["Insert", "Flag or unflag"],
   ["↓ or J", "Next conversation"], ["↑ or K", "Previous conversation"],
   ["Ctrl+A", "Select every conversation in the list"], ["Ctrl+Z", "Undo the last move"],
@@ -6483,6 +6488,7 @@ document.addEventListener("keydown", (ev) => {
     if (btn) { ev.preventDefault(); btn.click(); }
     return;
   }
+  if (ctrl && (key === "y" || key === "Y")) { ev.preventDefault(); showGoToFolder(); return; }
   if (view !== "mail") return;
   const conv = currentConversation();
   const several = picked.size > 1;
@@ -8378,6 +8384,101 @@ function showMoveDialog(targets) {
   });
   popRoot.querySelector("#backdrop").onclick = closePop;
   popRoot.querySelector("#move-cancel").onclick = closePop;
+  paint();
+  filter.focus();
+}
+
+// Go to Folder (Ctrl+Y), as in new Outlook: every folder of the accounts in
+// this profile, Favorites first, filtered as you type. Enter opens the
+// highlighted one, the arrow keys move the highlight, Escape closes.
+function goToFolderChoices() {
+  const out = [];
+  favorites.filter(item => accountInProfile(item.account)).forEach(item => {
+    let label = boxLabel(item.box, item.account);
+    if (label === "Folder" && item.name) label = item.name;
+    out.push({ group: "Favorites", acct: item.account, key: item.box, label, depth: 0, fav: true, meta: accounts[item.account].name || "" });
+  });
+  profileAccountIds().forEach(id => {
+    const acct = accounts[id];
+    const live = acct.liveFolders || [];
+    accountFolderKeys(id).forEach(key => {
+      const found = live.find(item => item.key === key);
+      out.push({ group: acct.name || acct.email || "", acct: id, key, label: boxLabel(key, id), depth: found ? Number(found.depth) || 0 : 0, meta: "" });
+    });
+    (acct.searchFolders || []).forEach(item => out.push({ group: acct.name || acct.email || "", acct: id, key: item.key, label: item.name || boxLabel(item.key, id), depth: 0, meta: "" }));
+  });
+  return out;
+}
+
+function folderIdFor(acct, key) {
+  const search = searchFolderOf(acct, key);
+  if (search) return search.id;
+  const live = ((accounts[acct] && accounts[acct].liveFolders) || []).find(item => item.key === key);
+  return (live && live.id) || "";
+}
+
+function showGoToFolder() {
+  const choices = goToFolderChoices();
+  if (!choices.length) return;
+  popRoot.innerHTML = `<div class="backdrop" id="backdrop"></div>
+    <div class="dialog move-dialog goto-dialog" role="dialog" aria-modal="true" aria-labelledby="goto-title">
+      <h2 id="goto-title">Go to folder</h2>
+      <input id="goto-filter" placeholder="Find a folder" autocomplete="off" spellcheck="false" aria-label="Find a folder" role="combobox" aria-controls="goto-list" aria-expanded="true">
+      <div class="move-list" id="goto-list" role="listbox" aria-label="Folders"></div>
+      <div class="dialog-actions"><button class="ghost" type="button" id="goto-cancel">Cancel</button></div>
+    </div>`;
+  const list = popRoot.querySelector("#goto-list");
+  const filter = popRoot.querySelector("#goto-filter");
+  let shown = [];
+  let at = 0;
+  function highlight() {
+    list.querySelectorAll("[data-goto]").forEach(el => {
+      const on = Number(el.dataset.goto) === at;
+      el.setAttribute("aria-selected", on ? "true" : "false");
+      if (on) el.scrollIntoView({ block: "nearest" });
+    });
+  }
+  function paint() {
+    const q = filter.value.trim().toLowerCase();
+    shown = choices.filter(item => !q || item.label.toLowerCase().includes(q) || (item.group !== "Favorites" && item.group.toLowerCase().includes(q)));
+    at = 0;
+    if (!shown.length) {
+      list.innerHTML = `<p class="field-hint">No folder matches.</p>`;
+      return;
+    }
+    let group = null;
+    list.innerHTML = shown.map((item, i) => {
+      const head = item.group !== group ? `<p class="move-group">${esc(item.group)}</p>` : "";
+      group = item.group;
+      const meta = item.meta ? `<span class="meta">${esc(item.meta)}</span>` : "";
+      return head + `<button type="button" role="option" class="move-choice" data-goto="${i}" style="padding-left:${12 + (q ? 0 : item.depth * 16)}px">${folderIcon(item.key, item.acct)}<span class="goto-name">${esc(item.label)}</span>${meta}</button>`;
+    }).join("");
+    highlight();
+  }
+  const choose = i => {
+    const item = shown[i];
+    if (!item) return;
+    closePop();
+    if (view !== "mail") setView("mail");
+    openFolder(item.acct, item.key, folderIdFor(item.acct, item.key), item.fav ? "fav" : "folder");
+  };
+  list.addEventListener("click", ev => {
+    const btn = ev.target.closest("[data-goto]");
+    if (btn) choose(Number(btn.dataset.goto));
+  });
+  filter.addEventListener("input", paint);
+  filter.addEventListener("keydown", ev => {
+    if (ev.key === "ArrowDown" || ev.key === "ArrowUp") {
+      ev.preventDefault();
+      if (!shown.length) return;
+      at = (at + (ev.key === "ArrowDown" ? 1 : -1) + shown.length) % shown.length;
+      highlight();
+    }
+    if (ev.key === "Enter") { ev.preventDefault(); choose(at); }
+    if (ev.key === "Escape") closePop();
+  });
+  popRoot.querySelector("#backdrop").onclick = closePop;
+  popRoot.querySelector("#goto-cancel").onclick = closePop;
   paint();
   filter.focus();
 }
@@ -17950,7 +18051,7 @@ const folderBusy = new Set();
 let syncNote = "";
 const folderRun = new Map();
 const bodyLoads = new Set();
-const APP_VERSION = "1.4.3";
+const APP_VERSION = "1.4.4";
 let appVersion = APP_VERSION;
 
 prepareDesktopAccounts();
