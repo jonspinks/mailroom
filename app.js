@@ -18086,7 +18086,7 @@ const folderBusy = new Set();
 let syncNote = "";
 const folderRun = new Map();
 const bodyLoads = new Set();
-const APP_VERSION = "1.4.5";
+const APP_VERSION = "1.4.6";
 let appVersion = APP_VERSION;
 
 prepareDesktopAccounts();
@@ -19553,10 +19553,25 @@ function noteNewMail(accountId) {
     if (call && call.catch) call.catch(() => {});
   });
   if (!shown.length) {
-    const names = [...new Set(fresh.map(m => m.from || m.email))].slice(0, 4).join(", ");
-    const call = tauriInvoke("notify_mail", { title: fresh.length + " new messages", body: names, messageId: fresh[0].id });
+    // A burst (back online, a busy list) is one alert, as in new Outlook:
+    // how many, for which account, from whom; a click opens that Inbox.
+    const call = tauriInvoke("notify_mail", { title: burstTitle(fresh.length, accountId), body: burstSenders(fresh), messageId: "inbox:" + accountId });
     if (call && call.catch) call.catch(() => {});
   }
+}
+
+function burstTitle(count, accountId) {
+  const name = accounts[accountId] && accounts[accountId].name;
+  return count + " new messages" + (name ? " · " + name : "");
+}
+
+// Newest first, each sender once: "Ada, Maya, Bob and 2 others".
+function burstSenders(fresh) {
+  const names = [...new Set(fresh.map(m => m.from || m.email).filter(Boolean))];
+  const head = names.slice(0, 3);
+  const rest = names.length - head.length;
+  if (!rest) return head.length > 1 ? head.slice(0, -1).join(", ") + " and " + head[head.length - 1] : head.join("");
+  return head.join(", ") + " and " + rest + (rest === 1 ? " other" : " others");
 }
 
 // A click on a notification opens the message, or the meeting.
@@ -19574,6 +19589,18 @@ function openFromNotification(id) {
     calFocus = calView === "month" ? new Date(shown.getFullYear(), shown.getMonth(), 1) : shown;
     setView("calendar");
     openEventEditor(ev.id, "timed");
+    return;
+  }
+  if (String(id).startsWith("inbox:")) {
+    const acct = String(id).slice(6);
+    if (!accounts[acct]) return;
+    if (!accountInProfile(acct)) {
+      activeProfile = accountProfile(acct);
+      rememberActiveProfile();
+    }
+    if (view !== "mail") setView("mail");
+    if (focusedInbox) focusTab = "focused";
+    openFolder(acct, "inbox", folderIdFor(acct, "inbox"), "folder");
     return;
   }
   const msg = messages.find(m => m.id === id);

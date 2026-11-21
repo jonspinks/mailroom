@@ -1285,6 +1285,37 @@ test("new mail notifies once, escaped", { fake: true }, async ({ p, calls, clear
   same((await calls("notify_mail")).map(a => a.title), ["Eve"], "one notification");
 });
 
+test("a burst of new mail is one notification naming the account; a click opens its Inbox", { fake: true }, async ({ p, calls, clear }) => {
+  await clear();
+  await p.evaluate(() => {
+    const now = Date.now();
+    ["Eve", "Finn", "Gus", "Eve", "Hal", "Ivy"].forEach((name, i) => window.__inbox.push({ id: "burst-" + i, thread: "conv-burst-" + i, subject: "Note " + i, fromName: name, fromEmail: name.toLowerCase() + "@example.org", received: new Date(now - i * 1000).toISOString().replace(/\.\d+Z$/, "Z"), preview: "x", bodyHtml: "<p>x</p>", unread: true, flagged: false, hasAttachments: false, files: [], to: [], cc: [], bcc: [], categories: [] }));
+    document.hasFocus = () => false;
+  });
+  await p.evaluate(() => pollMail()); await wait(400);
+  const sent = await calls("notify_mail");
+  same(sent.length, 1, "six new messages make one notification", sent.map(n => n.title));
+  const acct = await p.evaluate(() => messages.find(m => m.id === "burst-0").account);
+  const name = await p.evaluate(a => accounts[a].name, acct);
+  same(sent[0].title, "6 new messages · " + name, "saying how many, and for which account");
+  same(sent[0].body, "Eve, Finn, Gus and 2 others", "newest senders first, each once");
+  same(sent[0].messageId, "inbox:" + acct, "pointing at that account's Inbox");
+  await p.evaluate(() => { setView("calendar"); box = "sent"; }); await wait(200);
+  await p.evaluate(id => openFromNotification(id), sent[0].messageId); await wait(300);
+  same(await p.evaluate(() => [view, account, box]), ["mail", acct, "inbox"], "a click opens that Inbox");
+});
+
+test("two or three new messages still notify one by one", { fake: true }, async ({ p, calls, clear }) => {
+  await clear();
+  await p.evaluate(() => {
+    const now = Date.now();
+    ["Eve", "Finn"].forEach((name, i) => window.__inbox.push({ id: "pair-" + i, thread: "conv-pair-" + i, subject: "Note " + i, fromName: name, fromEmail: name.toLowerCase() + "@example.org", received: new Date(now - i * 1000).toISOString().replace(/\.\d+Z$/, "Z"), preview: "x", bodyHtml: "<p>x</p>", unread: true, flagged: false, hasAttachments: false, files: [], to: [], cc: [], bcc: [], categories: [] }));
+    document.hasFocus = () => false;
+  });
+  await p.evaluate(() => pollMail()); await wait(400);
+  same((await calls("notify_mail")).map(n => [n.title, n.messageId]), [["Eve", "pair-0"], ["Finn", "pair-1"]], "one each, opening the message");
+});
+
 // ---------------------------------------------------------------- calendar
 
 test("calendar: new repeating event, edit sends only changes, series and invites", { fake: true, tz: true }, async ({ p, calls, clear }) => {
