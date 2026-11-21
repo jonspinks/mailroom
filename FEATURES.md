@@ -88,7 +88,7 @@ compares them with this list, and opens an issue for anything new.
 | Several calendars, colours, show and hide | ✅ |
 | Recurring events and exceptions | ✅ this event, this and following, or all |
 | Drag to move | ✅ |
-| Answer invites | ✅ Accept, Tentative, Decline |
+| Answer invites | ✅ Accept, Tentative, Decline, in the message or from its right-click menu in the list |
 | Join online meetings | ✅ Teams, Zoom, Google Meet and Webex |
 | New Teams meeting | **M** |
 | Scheduling assistant | **M** each person's day and times that suit everyone |
