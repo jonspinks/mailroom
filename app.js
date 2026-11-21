@@ -4203,12 +4203,43 @@ function conversationFor(id) {
   return { id: latest.thread, messages: ordered, latest, topic: cleanSubject(latest.subject) };
 }
 
+// Painting the list asks the same questions of every conversation: which
+// replies sit in Sent, which draft belongs to it. Asked one at a time, each
+// answer reads every message, and sorting asks twice per comparison. While
+// the list paints, the answers come from one pass instead.
+let listMemo = null;
+
+function withListMemo(run) {
+  if (listMemo) return run();
+  listMemo = { byThread: null, shadowed: null, summaries: new Map() };
+  try {
+    return run();
+  } finally {
+    listMemo = null;
+  }
+}
+
+// Every message of a thread, in the order `messages` holds them.
+function threadMessages(thread) {
+  if (!listMemo) return messages;
+  if (!listMemo.byThread) {
+    const byThread = new Map();
+    messages.forEach(m => {
+      const list = byThread.get(m.thread);
+      if (list) list.push(m);
+      else byThread.set(m.thread, [m]);
+    });
+    listMemo.byThread = byThread;
+  }
+  return listMemo.byThread.get(thread) || [];
+}
+
 function sameThreadDraft(conv) {
   if (!conv) return null;
   const accountsInThread = new Set(conv.messages.map(m => m.account));
   let best = null;
-  const shadowed = shadowedServerDrafts();
-  messages.forEach(m => {
+  const shadowed = listMemo ? (listMemo.shadowed || (listMemo.shadowed = shadowedServerDrafts())) : shadowedServerDrafts();
+  threadMessages(conv.id).forEach(m => {
     if (!m.draft || messageBox(m) !== "drafts") return;
     if (m.live && shadowed.has(m.id)) return;
     if (m.thread !== conv.id || !accountsInThread.has(m.account)) return;
@@ -4224,7 +4255,7 @@ function threadSent(conv) {
   if (!conv || !conv.latest || messageBox(conv.latest) === "sent") return [];
   const accountsInThread = new Set(conv.messages.map(m => m.account));
   const own = new Set(conv.messages.map(m => m.id));
-  return messages.filter(m => m.thread === conv.id && messageBox(m) === "sent" && accountsInThread.has(m.account) && !own.has(m.id) && !m.pendingSend);
+  return threadMessages(conv.id).filter(m => m.thread === conv.id && messageBox(m) === "sent" && accountsInThread.has(m.account) && !own.has(m.id) && !m.pendingSend);
 }
 
 // When each conversation last asked Microsoft for its Sent Items. Opened
@@ -4280,10 +4311,14 @@ function threadHead(conv) {
 }
 
 function listSummary(conv) {
+  const kept = listMemo && listMemo.summaries.get(conv);
+  if (kept) return kept;
   const shown = threadShown(conv);
   const own = new Set(conv.messages.map(m => m.id));
   const summary = [...shown].reverse().find(m => own.has(m.id)) || shown[shown.length - 1];
-  return { shown, summary };
+  const listed = { shown, summary };
+  if (listMemo) listMemo.summaries.set(conv, listed);
+  return listed;
 }
 
 function draftState(draft) {
@@ -4875,6 +4910,10 @@ function topResultIds(items) {
 }
 
 function renderList() {
+  withListMemo(paintList);
+}
+
+function paintList() {
   const listEl = document.querySelector(".list");
   const keepScroll = listEl ? listEl.scrollTop : 0;
   ensureSearchCache();
@@ -4977,23 +5016,22 @@ function renderList() {
     </div>`;
   };
   const top = topResultIds(items);
-  const orderedItems = items.slice().sort((a, b) => {
-    const ap = isPinned(a.id);
-    const bp = isPinned(b.id);
+  // Each conversation's place is worked out once, not once per comparison.
+  const orderedItems = items.map(conv => {
+    const head = listSummary(conv).summary;
+    return { conv, pin: pinnedOrder.indexOf(conv.id), top: top.indexOf(conv.id), day: +messageDay(head), seq: head.seq || 0 };
+  }).sort((a, b) => {
+    const ap = a.pin >= 0;
+    const bp = b.pin >= 0;
     if (ap !== bp) return ap ? -1 : 1;
-    if (ap && bp) return pinnedOrder.indexOf(a.id) - pinnedOrder.indexOf(b.id);
-    const at = top.indexOf(a.id);
-    const bt = top.indexOf(b.id);
-    if ((at < 0) !== (bt < 0)) return at >= 0 ? -1 : 1;
-    if (at >= 0) return at - bt;
-    const aHead = listSummary(a).summary;
-    const bHead = listSummary(b).summary;
-    const byDay = messageDay(bHead) - messageDay(aHead);
-    if (byDay) return byDay;
-    return (bHead.seq || 0) - (aHead.seq || 0);
-  });
+    if (ap && bp) return a.pin - b.pin;
+    if ((a.top < 0) !== (b.top < 0)) return a.top >= 0 ? -1 : 1;
+    if (a.top >= 0) return a.top - b.top;
+    return (b.day - a.day) || (b.seq - a.seq);
+  }).map(item => item.conv);
   let lastGroup = "";
-  rows.innerHTML = orderedItems.map(c => {
+  const parts = [];
+  orderedItems.forEach(c => {
     const listed = listSummary(c);
     const shown = listed.shown;
     const head = listed.summary;
@@ -5003,7 +5041,8 @@ function renderList() {
     const hidden = collapsedMailGroups.has(group.id);
     const heading = group.id === lastGroup ? "" : `<button class="date-group" type="button" data-mail-group="${esc(group.id)}" aria-expanded="${hidden ? "false" : "true"}" aria-label="${esc((hidden ? "Expand " : "Collapse ") + group.label)}">${sectionChevron()}${esc(group.label)}</button>`;
     lastGroup = group.id;
-    if (hidden) return heading;
+    if (heading) parts.push({ key: "group\n" + group.id, html: heading });
+    if (hidden) return;
     const twist = many
       ? `<button class="twist" type="button" data-twist="${c.id}" aria-expanded="${open}" aria-label="${open ? "Collapse" : "Expand"} conversation"><svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path d="M4.2 2.2L8 6 4.2 9.8" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg></button>`
       : `<span class="twist-gap"></span>`;
@@ -5022,7 +5061,7 @@ function renderList() {
     const title = open
       ? `<button class="conv-title${shown.some(m => m.unread) ? " unread" : ""}${picked.has(c.id) ? " picked" : ""}" type="button" data-thread="${c.id}" data-id="${head.id}"><span class="conv-subject">${esc(c.topic || "(No subject)")}</span><span class="conv-count">${shown.length}</span></button>`
       : "";
-    return heading + `<div class="conv${open ? " open" : ""}">
+    parts.push({ key: "conv\n" + c.id, html: `<div class="conv${open ? " open" : ""}">
       <div class="conv-line">
         ${twist}
         ${open ? title : rowHtml(head, {
@@ -5037,32 +5076,71 @@ function renderList() {
         })}
       </div>
       ${kids}
-    </div>`;
-  }).join("") + (moreListMail() ? `<button class="list-more" type="button" id="list-older">Older mail</button>` : "");
+    </div>` });
+  });
+  if (moreListMail()) parts.push({ key: "older", html: `<button class="list-more" type="button" id="list-older">Older mail</button>` });
+  placeListParts(parts);
   if (listEl && keepScroll) listEl.scrollTop = keepScroll;
-  bindListOlder();
-  rows.querySelectorAll("[data-row-flag]").forEach(btn => {
+}
+
+// Selecting a message, flagging one or a sync landing changes a line or two
+// of the list. A line whose markup is the same as last time keeps its
+// element, so only the lines that changed are built, bound and laid out.
+function placeListParts(parts) {
+  const kept = new Map();
+  [...rows.children].forEach(node => {
+    if (node._listKey) kept.set(node._listKey, node);
+  });
+  const maker = document.createElement("template");
+  const wanted = parts.map(part => {
+    const old = kept.get(part.key);
+    if (old && old._listHtml === part.html) {
+      kept.delete(part.key);
+      return old;
+    }
+    maker.innerHTML = part.html;
+    const node = maker.content.firstElementChild;
+    node._listKey = part.key;
+    node._listHtml = part.html;
+    bindListPart(node);
+    return node;
+  });
+  wanted.forEach((node, at) => {
+    if (rows.children[at] !== node) rows.insertBefore(node, rows.children[at] || null);
+  });
+  while (rows.children.length > wanted.length) rows.lastElementChild.remove();
+}
+
+function bindListPart(part) {
+  const all = (selector) => (part.matches(selector) ? [part] : []).concat([...part.querySelectorAll(selector)]);
+  if (part.id === "list-older") {
+    part.onclick = () => {
+      if (searchActive()) loadOlderSearch();
+      else loadOlderPages();
+    };
+  }
+  all("[data-row-flag]").forEach(btn => {
     btn.onclick = (ev) => {
       ev.stopPropagation();
       ev.preventDefault();
       toggleFlag(btn.dataset.rowFlag);
     };
   });
-  rows.querySelectorAll("[data-row-pin]").forEach(btn => {
+  all("[data-row-pin]").forEach(btn => {
     btn.onclick = (ev) => {
       ev.stopPropagation();
       ev.preventDefault();
       togglePin(btn.dataset.rowPin);
     };
   });
-  rows.querySelectorAll("[data-row-delete]").forEach(btn => {
+  all("[data-row-delete]").forEach(btn => {
     btn.onclick = (ev) => {
       ev.stopPropagation();
       ev.preventDefault();
       deleteListed(btn.dataset.rowDelete, btn.dataset.rowOnly === "1");
     };
   });
-  rows.querySelectorAll("[data-mail-group]").forEach(btn => {
+  all("[data-mail-group]").forEach(btn => {
     btn.onclick = () => {
       const id = btn.dataset.mailGroup;
       const opening = collapsedMailGroups.has(id);
@@ -5075,7 +5153,7 @@ function renderList() {
       }
     };
   });
-  rows.querySelectorAll(".twist").forEach(btn => {
+  all(".twist").forEach(btn => {
     btn.onclick = (ev) => {
       ev.preventDefault();
       ev.stopPropagation();
@@ -5085,7 +5163,7 @@ function renderList() {
       renderList();
     };
   });
-  rows.querySelectorAll("[data-open-mail-file]").forEach(btn => {
+  all("[data-open-mail-file]").forEach(btn => {
     btn.onclick = (ev) => {
       ev.preventDefault();
       ev.stopPropagation();
@@ -5097,14 +5175,14 @@ function renderList() {
       if (msg) openAttachment(msg, { id: btn.dataset.fileId || "", name: btn.dataset.fileName || "" });
     };
   });
-  rows.querySelectorAll("[data-file-more]").forEach(btn => {
+  all("[data-file-more]").forEach(btn => {
     btn.onclick = (ev) => {
       ev.preventDefault();
       ev.stopPropagation();
       selectListedMessage(btn.dataset.fileMsg);
     };
   });
-  rows.querySelectorAll(".conv-title[data-id]").forEach(btn => {
+  all(".conv-title[data-id]").forEach(btn => {
     btn.addEventListener("contextmenu", (ev) => {
       ev.preventDefault();
       showRowMenu(ev.clientX, ev.clientY, btn.dataset.id, false);
@@ -5116,7 +5194,7 @@ function renderList() {
       selectListedMessage(btn.dataset.id);
     };
   });
-  rows.querySelectorAll(".row[data-id]").forEach(btn => {
+  all(".row[data-id]").forEach(btn => {
     btn.draggable = true;
     btn.addEventListener("dragstart", (ev) => {
       draggedMail = { id: btn.dataset.id, child: btn.classList.contains("child") };
