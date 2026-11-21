@@ -1338,6 +1338,37 @@ test("two or three new messages still notify one by one", { fake: true }, async 
   same((await calls("notify_mail")).map(n => [n.title, n.messageId]), [["Eve", "pair-0"], ["Finn", "pair-1"]], "one each, opening the message");
 });
 
+test("a rule that forwards mail elsewhere shows a warning until it is off or dismissed", { fake: true, setup: () => {
+  window.__rules = [
+    { id: "r-tidy", name: "Tidy", enabled: true, from: ["news@example.org"], subject: [], moveTo: "", markRead: true, delete: false, stop: true, other: false, forwardsTo: [] },
+    { id: "r-out", name: "Copy out", enabled: true, from: [], subject: ["invoice"], moveTo: "", markRead: false, delete: false, stop: false, other: true, forwardsTo: ["drop@elsewhere.example"] },
+    { id: "r-old", name: "Old forward", enabled: false, from: [], subject: ["x"], moveTo: "", markRead: false, delete: false, stop: false, other: true, forwardsTo: ["old@elsewhere.example"] }
+  ];
+} }, async ({ p, calls }) => {
+  await wait(600);
+  const banner = () => p.evaluate(() => { const b = document.getElementById("forward-banner"); return b ? b.textContent : ""; });
+  const text = await banner();
+  expect(/is forwarded to drop@elsewhere\.example by the rule “Copy out”/.test(text), "the banner names the address and the rule", text);
+  expect(!text.includes("old@elsewhere"), "a rule that is off is not warned about", text);
+  await p.click("#forward-review"); await wait(600);
+  same(await p.evaluate(() => [view, settingsPage]), ["settings", "rules"], "Review rule opens the rules");
+  const summary = await p.$$eval(".rule-item small", e => e.map(x => x.textContent));
+  expect(summary.some(t => t.includes("forward to drop@elsewhere.example")), "and the rule says where it forwards", summary);
+  // Turning it off there clears the warning.
+  await p.click('[data-rule-on="1"]'); await wait(400);
+  same(await banner(), "", "turned off, the warning goes");
+  await p.click('[data-rule-on="1"]'); await wait(400);
+  expect((await banner()).includes("Copy out"), "turned back on, it returns");
+  await p.evaluate(() => setView("mail")); await wait(300);
+  await p.click("#forward-dismiss"); await wait(200);
+  same(await banner(), "", "Dismiss hides it");
+  await p.reload(); await wait(1500);
+  same(await banner(), "", "and it stays dismissed after a restart");
+  // The same rule sending somewhere new warns again.
+  await p.evaluate(() => { window.__rules[1].forwardsTo = ["new@elsewhere.example"]; checkForwardRules(); }); await wait(400);
+  expect((await banner()).includes("new@elsewhere.example"), "a changed address warns again", await banner());
+});
+
 // ---------------------------------------------------------------- calendar
 
 test("calendar: new repeating event, edit sends only changes, series and invites", { fake: true, tz: true }, async ({ p, calls, clear }) => {

@@ -281,6 +281,11 @@ pub struct Rule {
     /// The rule also has conditions or actions Mailroom does not show.
     #[serde(default)]
     pub other: bool,
+    /// Where the rule sends mail on to: forwardTo, redirectTo and
+    /// forwardAsAttachmentTo together. Read only: Mailroom never writes it,
+    /// and it stays counted in `other`, so the rule is edited in Outlook.
+    #[serde(default)]
+    pub forwards_to: Vec<String>,
 }
 
 const SHOWN_CONDITIONS: [&str; 2] = ["fromAddresses", "subjectContains"];
@@ -302,7 +307,23 @@ pub fn parse_rule(item: &Value) -> Rule {
         delete: actions["delete"].as_bool().unwrap_or(false),
         stop: actions["stopProcessingRules"].as_bool().unwrap_or(false),
         other,
+        forwards_to: forward_addresses(actions),
     }
+}
+
+/// Every address a rule's actions send mail on to, once each, in order.
+fn forward_addresses(actions: &Value) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for key in ["forwardTo", "redirectTo", "forwardAsAttachmentTo"] {
+        for person in actions[key].as_array().into_iter().flatten() {
+            let Some(address) = person["emailAddress"]["address"].as_str() else { continue };
+            let address = address.trim();
+            if !address.is_empty() && !out.iter().any(|a| a.eq_ignore_ascii_case(address)) {
+                out.push(address.to_string());
+            }
+        }
+    }
+    out
 }
 
 /// The whole change sent when an existing rule is turned on or off.
@@ -443,6 +464,26 @@ mod tests {
         assert!(rule_body(&Rule { name: "x".into(), from: vec!["a@b.c".into()], ..Default::default() }, 1).is_err());
         let fancy = parse_rule(&json!({ "conditions": { "importance": "high" }, "actions": { "forwardTo": [{}] } }));
         assert!(fancy.other);
+    }
+
+    #[test]
+    fn forwarding_rules_name_where_mail_goes_and_are_never_written() {
+        let item = json!({ "id": "r2", "displayName": "Copy out", "isEnabled": true,
+            "conditions": { "fromAddresses": [{ "emailAddress": { "address": "a@x.example" } }] },
+            "actions": {
+                "forwardTo": [{ "emailAddress": { "name": "Out", "address": " out@elsewhere.example " } }],
+                "redirectTo": [{ "emailAddress": { "address": "OUT@elsewhere.example" } }, { "emailAddress": {} }],
+                "forwardAsAttachmentTo": [{ "emailAddress": { "address": "box@other.example" } }]
+            } });
+        let rule = parse_rule(&item);
+        assert_eq!(rule.forwards_to, vec!["out@elsewhere.example", "box@other.example"]);
+        assert!(rule.other, "still edited in Outlook, so Mailroom cannot drop the forward");
+        let plain = parse_rule(&json!({ "displayName": "Tidy", "actions": { "markAsRead": true } }));
+        assert!(plain.forwards_to.is_empty());
+        // A rule sent from the page can't add a forward.
+        let sneaky = Rule { name: "x".into(), from: vec!["a@b.example".into()], mark_read: true, forwards_to: vec!["evil@x.example".into()], ..Default::default() };
+        let body = rule_body(&sneaky, 1).unwrap();
+        assert!(!body.to_string().contains("evil@x.example"));
     }
 
     #[test]

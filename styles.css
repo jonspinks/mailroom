@@ -2034,6 +2034,8 @@
   #row-menu [data-cat][aria-checked="true"]::after { content: "✓"; margin-left: auto; }
   .menu-note { margin: 6px 10px; font-size: 12px; color: var(--muted); max-width: 220px; }
   .ooo-banner { display: flex; align-items: center; gap: 10px; padding: 7px 14px; background: var(--amber-soft); color: var(--amber-ink); font-size: 13px; border-bottom: 1px solid var(--line); }
+  .forward-banner { background: var(--clay-soft); color: var(--clay-ink); }
+  .forward-banner > span { flex: 1; min-width: 0; }
   .auto-reply { display: grid; gap: 12px; max-width: 560px; }
   .auto-status { display: flex; gap: 16px; border: 0; padding: 0; margin: 0; }
   .auto-when { display: flex; gap: 12px; }
