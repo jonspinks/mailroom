@@ -9055,15 +9055,7 @@ function renderReading() {
       const msg = group ? messages.find(m => m.id === group.dataset.rsvpMsg) : null;
       if (msg && msg.liveInvite) {
         btn.closest(".rsvp").querySelectorAll("button").forEach(b => { b.disabled = true; });
-        const title = msg.liveInvite.subject || msg.subject;
-        const answer = btn.dataset.rsvp;
-        answerLiveMeeting(msg.account, msg.liveInvite.eventId, answer, title).then(done => {
-          // As in Outlook: the meeting is on the calendar now, so the invite
-          // goes to Deleted Items (with Undo).
-          if (!done || !tidyInvites || messageBox(msg) === "trash") return;
-          moveConversation({ messages: [msg] }, "trash");
-          toastMove(label(answer) + " · " + title + ". The invite is in Deleted Items.");
-        }).finally(() => { if (view === "mail") renderReading(); });
+        answerInviteMessage(msg, btn.dataset.rsvp).finally(() => { if (view === "mail") renderReading(); });
         return;
       }
       const ev = events.find(e => e.id === "pipeline");
@@ -9687,6 +9679,38 @@ async function ensureInvite(m) {
   m.invite = true;
   m.meeting = { title: invite.subject || m.subject, when: inviteWhen(invite), where: invite.location || "" };
   if (view === "mail") renderReading();
+}
+
+// Answer the invite in one message, from the reading pane or the message
+// list's right-click menu. As in Outlook, the meeting is on the calendar
+// afterwards, so the invite goes to Deleted Items (with Undo).
+async function answerInviteMessage(msg, answer) {
+  if (!msg.liveInvite) {
+    inviteChecked.delete(msg.id);
+    await ensureInvite(msg);
+  }
+  const invite = msg.liveInvite;
+  if (!invite) { toast("That invite can't be answered from here. Open it to see why."); return false; }
+  if (invite.cancelled) { toast("This meeting was cancelled."); return false; }
+  if (invite.organizer) { toast("You organise this meeting."); return false; }
+  const title = invite.subject || msg.subject;
+  const done = await answerLiveMeeting(msg.account, invite.eventId, answer, title);
+  if (!done || !tidyInvites || messageBox(msg) === "trash") return done;
+  moveConversation({ messages: [msg] }, "trash");
+  toastMove(label(answer) + " · " + title + ". The invite is in Deleted Items.");
+  return done;
+}
+
+// The invite a row's menu answers: the newest meeting request in it that
+// someone else sent. None for cancellations or meetings you organise.
+function rowInvite(targets) {
+  const own = ownAddresses();
+  const found = (targets || []).filter(m => isInviteMessage(m) && serverMessage(m)
+    && messageBox(m) !== "sent" && folderKind(messageBox(m), m.account) !== "junk"
+    && !own.has(String(m.email || "").toLowerCase())
+    && !(m.liveInvite && (m.liveInvite.cancelled || m.liveInvite.organizer)));
+  if (!found.length) return null;
+  return found.reduce((a, b) => (messageInstant(b) > messageInstant(a) ? b : a));
 }
 
 // Answer a meeting on the server, then show the answer everywhere it appears.
@@ -10406,9 +10430,14 @@ function showRowMenu(x, y, id, child) {
   const back = !junked && targets.some(canMoveToInbox);
   const reportable = !junked && targets.some(canReportJunk);
   const google = targets.some(m => isGoogleAccount(m.account));
+  const invite = rowInvite(targets);
+  const answered = invite && invite.liveInvite ? invite.liveInvite.response : "";
+  const rsvpItem = key => `<button type="button" role="menuitemradio" data-act="rsvp-${key}" data-invite="${esc(invite.id)}" aria-checked="${answered === key ? "true" : "false"}">${label(key)}</button>`;
   menu.innerHTML = `
     <button type="button" role="menuitem" data-act="open-window">Open in new window</button>
-    <div class="menu-rule"></div>
+    <div class="menu-rule"></div>${invite ? `
+    ${["accepted", "tentative", "declined"].map(rsvpItem).join("")}
+    <div class="menu-rule"></div>` : ""}
     <button type="button" role="menuitem" data-act="unread">Mark as unread</button>
     <button type="button" role="menuitem" data-act="read">Mark as read</button>
     <button type="button" role="menuitem" data-act="move">Move to…</button>
@@ -10517,6 +10546,12 @@ document.getElementById("row-menu").onclick = (ev) => {
       toast(word + " · " + meeting.title);
       render();
     }
+    return;
+  }
+  const rsvpAct = /^rsvp-(accepted|tentative|declined)$/.exec(btn.dataset.act || "");
+  if (rsvpAct) {
+    const msg = messages.find(m => m.id === btn.dataset.invite);
+    if (msg) answerInviteMessage(msg, rsvpAct[1]).finally(() => { if (view === "mail") render(); });
     return;
   }
   const focusAct = /^focus-(always-)?(focused|other)$/.exec(btn.dataset.act || "");
@@ -18051,7 +18086,7 @@ const folderBusy = new Set();
 let syncNote = "";
 const folderRun = new Map();
 const bodyLoads = new Set();
-const APP_VERSION = "1.4.4";
+const APP_VERSION = "1.4.5";
 let appVersion = APP_VERSION;
 
 prepareDesktopAccounts();

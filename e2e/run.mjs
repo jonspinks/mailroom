@@ -1248,6 +1248,32 @@ test("invites stay put when the setting is off", { fake: true, setup: () => { lo
   same(await p.evaluate(() => messages.find(m => m.id === "m2").box), "inbox", "invite stays in the Inbox");
 });
 
+test("an invite is answered from the message list's right-click menu", { fake: true }, async ({ p, calls, clear, rightClick, menu }) => {
+  await clear();
+  await p.evaluate(() => { messages.find(m => m.id === "m2").invite = true; render(); }); await wait(200);
+  await rightClick('.row[data-id="m1"]');
+  expect(!(await menu()).includes("Accept"), "an ordinary message offers no answers", await menu());
+  await p.keyboard.press("Escape"); await p.evaluate(() => hideRowMenu());
+  await rightClick('.row[data-id="m2"]');
+  const items = await menu();
+  same(items.slice(0, 4), ["Open in new window", "Accept", "Tentative", "Decline"], "the invite row offers the three answers, after Open in new window");
+  await p.click('#row-menu [data-act="rsvp-tentative"]'); await wait(800);
+  same((await calls("message_invite")).map(a => a.messageId)[0], "m2", "the invite is looked up first, unopened");
+  same((await calls("respond_invite")).map(a => [a.eventId, a.response]), [["ev-1", "tentative"]], "the answer goes to the organiser");
+  same(await p.evaluate(() => messages.find(m => m.id === "m2").box), "trash", "and the invite goes to Deleted Items, as from the reading pane");
+  expect((await p.$eval("#toast", e => e.textContent)).includes("Undo"), "with Undo");
+});
+
+test("a cancelled meeting's row offers no answers", { fake: true, setup: () => {
+  window.__invite = { eventId: "ev-1", subject: "Pipeline review", start: "2026-10-22T15:00:00Z", end: "2026-10-22T15:30:00Z", allDay: false, location: "", response: "", cancelled: true, organizer: false };
+} }, async ({ p, calls, clear, rightClick, menu }) => {
+  await p.click('.row[data-id="m2"]'); await wait(800);
+  await clear();
+  await rightClick('.row[data-id="m2"]');
+  expect(!(await menu()).includes("Accept"), "once known to be cancelled, nothing to answer", await menu());
+  same(await calls("respond_invite"), [], "and nothing is sent");
+});
+
 test("new mail notifies once, escaped", { fake: true }, async ({ p, calls, clear }) => {
   await clear();
   await p.evaluate(() => {
