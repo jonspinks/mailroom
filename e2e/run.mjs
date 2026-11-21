@@ -3174,6 +3174,24 @@ test("mail can't plant the reading pane's buttons, pin itself with a disguised s
   expect(!/fixed|sticky/.test(out), "a commented or escaped position is still removed", out);
 });
 
+test("editing a multi-day event keeps its length", { fake: true }, async ({ p }) => {
+  const r = await p.evaluate(() => {
+    const allDay = { id: "e1@2026-11-03", day: dayFromIso("2026-11-03"), spanStart: "2026-11-02", spanEnd: "2026-11-05" };
+    const night = { id: "e2@2026-11-03", day: dayFromIso("2026-11-03"), start: 0, end: 300, spanStart: "2026-11-02T22:00:00", spanEnd: "2026-11-03T05:00:00" };
+    return {
+      same: spanStamps(allDay, allDay.day, true, null, null),
+      moved: spanStamps(allDay, allDay.day + 7, true, null, null),
+      overnight: spanStamps(night, night.day, false, 0, 300),
+      retimed: spanStamps(night, night.day, false, 60, 300),
+      toTimed: spanStamps(allDay, allDay.day, false, 540, 600)
+    };
+  });
+  same(r.same, { start: "2026-11-02", end: "2026-11-05" }, "a title change leaves all three days");
+  same(r.moved, { start: "2026-11-09", end: "2026-11-12" }, "a new date moves the whole event");
+  same(r.overnight, { start: "2026-11-02T22:00:00", end: "2026-11-03T05:00:00" }, "an overnight event keeps both ends");
+  same([r.retimed, r.toTimed], [null, null], "changed times are saved as typed");
+});
+
 // ---------------------------------------------------------------- runner
 
 const { server, url } = await serve();

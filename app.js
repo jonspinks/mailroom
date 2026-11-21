@@ -11690,6 +11690,28 @@ function localFromUtc(stamp, allDay) {
   return { iso, minutes: when.getHours() * 60 + when.getMinutes() };
 }
 
+function spanStamps(seed, dayNum, whole, begin, finish) {
+  const seedWhole = seed.start == null;
+  if (whole !== seedWhole) return null;
+  if (!whole && (begin !== seed.start || finish !== seed.end)) return null;
+  const shift = dayNum - seed.day;
+  if (whole) {
+    const first = dayFromIso(String(seed.spanStart).slice(0, 10));
+    const last = dayFromIso(String(seed.spanEnd).slice(0, 10));
+    if (first == null || last == null) return null;
+    return { start: isoFromDay(first + shift), end: isoFromDay(last + shift) };
+  }
+  const stamp = (raw) => {
+    const at = new Date(raw);
+    if (Number.isNaN(at.getTime())) return null;
+    const moved = new Date(at.getFullYear(), at.getMonth(), at.getDate() + shift, at.getHours(), at.getMinutes());
+    return localStamp(isoFromDay(dayFromDate(moved)), moved.getHours() * 60 + moved.getMinutes());
+  };
+  const start = stamp(seed.spanStart);
+  const end = stamp(seed.spanEnd);
+  return start && end ? { start, end } : null;
+}
+
 async function saveLiveEvent(job) {
   const { form, seed, owner, calId, title, dayNum, whole, begin, finish, people, reply, invite, fail } = job;
   const acct = accounts[owner];
@@ -11705,8 +11727,14 @@ async function saveLiveEvent(job) {
     allDay: whole,
     showAs: showAsOf({ showAs: data.get("showas") })
   };
-  const notes = String(data.get("notes") || "").trim();
   const editing = !!seed.id;
+  // An event over several days is shown a day at a time, and the form holds
+  // one day of it. Saved as that, a title change would cut a three-day event
+  // down to the day that was opened. With its times left alone it keeps its
+  // whole length, moved by as many days as the date was.
+  const spanned = editing && seed.spanStart && seed.spanEnd && !seed.seriesMasterId ? spanStamps(seed, dayNum, whole, begin, finish) : null;
+  if (spanned) Object.assign(fields, spanned);
+  const notes = String(data.get("notes") || "").trim();
   if (!editing || notes !== String(seed.notes || "").trim()) fields.notes = notes;
   const emails = list => list.map(p => String(p.email).toLowerCase()).sort().join(",");
   if (!editing ? people.length : emails(people) !== emails(seed.attendees || [])) {
@@ -16382,8 +16410,14 @@ function bindCompose(root, ctx) {
     helpButton.setAttribute("aria-expanded", document.body.dataset.assist === "open" ? "true" : "false");
     helpButton.onclick = () => openAssist();
   }
+  // The assistant reads the draft when it is asked something, not on every
+  // key: gathering the conversation and writing it out waits for a pause.
+  let assistPublish = null;
   form.addEventListener("input", () => {
-    if (document.body.dataset.assist === "open" || assistPopped()) publishAssistContext();
+    clearTimeout(assistPublish);
+    assistPublish = setTimeout(() => {
+      if (document.body.dataset.assist === "open" || assistPopped()) publishAssistContext();
+    }, 200);
   });
   bindColourButtons(form, body, () => { if (ctx.draft) ctx.draft.bodyHtml = body.innerHTML; });
   markDarkInks(body);
@@ -18177,6 +18211,9 @@ function openEventForm(seed) {
     const whole = form.querySelector("[name=allday]").checked;
     let begin = parseClock(data.get("start"));
     let finish = parseClock(data.get("end"));
+    // A day in the middle of a longer event runs to midnight, which the
+    // field shows as 00:00.
+    if (!whole && seed && seed.spanEnd && finish === 0 && seed.end === 24 * 60) finish = 24 * 60;
     if (!whole) {
       if (begin == null) begin = 13 * 60;
       if (finish == null || finish <= begin) return fail("End must be after the start.");
@@ -19234,7 +19271,8 @@ function installLiveEvents(accountId, items) {
       if (start == null || end == null || end <= start) return;
       for (let day = start; day < end; day++) {
         const id = end - start > 1 ? item.id + "@" + isoFromDay(day) : item.id;
-        allday.push(Object.assign({}, shared, { id, day }));
+        const span = end - start > 1 ? { spanStart: item.start, spanEnd: item.end } : {};
+        allday.push(Object.assign({}, shared, span, { id, day }));
       }
       return;
     }
@@ -19253,7 +19291,8 @@ function installLiveEvents(accountId, items) {
     }
     slices.forEach(slice => {
       const id = slices.length > 1 ? item.id + "@" + isoFromDay(slice.day) : item.id;
-      events.push(Object.assign({}, shared, slice, { id }));
+      const span = slices.length > 1 ? { spanStart: item.start, spanEnd: item.end } : {};
+      events.push(Object.assign({}, shared, span, slice, { id }));
     });
   });
 }
