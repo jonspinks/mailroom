@@ -3126,6 +3126,54 @@ test("a mailroom: link finds a moved message on the server, or lands in Inbox wi
   same((await calls("link_message")).length, 1, "and never sent on");
 });
 
+test("a snooze that can't be woken is kept and tried again; one that is gone is dropped", { fake: true }, async ({ p, calls, clear }) => {
+  await p.evaluate(() => saveSnoozes([{ email: "jon@example.com", ids: ["m1"], until: 1 }]));
+  await p.evaluate(() => { window.__applyFail = "Could not reach Microsoft."; return checkSnoozes(); }); await wait(200);
+  same(await p.evaluate(() => loadSnoozes().length), 1, "offline: the snooze is still there");
+  await p.evaluate(() => { window.__applyFail = "That item is no longer on the server. It may have been moved or deleted."; return checkSnoozes(); }); await wait(200);
+  same(await p.evaluate(() => loadSnoozes().length), 0, "moved or deleted elsewhere: nothing left to wake");
+  await p.evaluate(() => { window.__applyFail = ""; saveSnoozes([{ email: "jon@example.com", ids: ["m1"], until: 1 }]); });
+  await clear();
+  await p.evaluate(() => checkSnoozes()); await wait(200);
+  same((await calls("apply_mail")).map(a => a.kind), ["inbox", "unread"], "back online it returns, unread");
+  same(await p.evaluate(() => loadSnoozes().length), 0, "and is forgotten once back");
+});
+
+test("replies answer Reply-To and leave out your own aliases", { fake: true, setup: () => {
+  window.__aliases = ["jon.alias@example.com"];
+} }, async ({ p }) => {
+  await wait(300);
+  const r = await p.evaluate(async () => {
+    await loadAliases(Object.keys(accounts)[0]);
+    const m = messages.find(x => x.id === "m1");
+    const plain = replyRecipients(m, false);
+    m.replyAddr = "desk@example.org";
+    m.to = "jon.alias@example.com; kim@example.org";
+    return { plain, one: replyRecipients(m, false), all: replyRecipients(m, true) };
+  });
+  same(r.plain, "ada@example.org", "no Reply-To: the sender");
+  same(r.one, "desk@example.org", "Reply-To wins over From");
+  same(r.all, "desk@example.org; kim@example.org", "reply all drops the alias the mail was sent to");
+});
+
+test("a large selection goes to the server forty at a time", { fake: true }, async ({ p, calls, clear }) => {
+  await clear();
+  await p.evaluate(() => {
+    const base = messages.find(x => x.id === "m1");
+    const many = Array.from({ length: 95 }, (_, i) => Object.assign({}, base, { id: "bulk" + i, thread: "bulk-conv" + i }));
+    messages.push(...many);
+    return pushMailAction(many, "read");
+  }); await wait(200);
+  same((await calls("apply_mail")).map(a => a.messageIds.length), [40, 40, 15], "three calls, none over forty");
+});
+
+test("mail can't plant the reading pane's buttons, pin itself with a disguised style, or keep stray data- attributes", { fake: true }, async ({ p }) => {
+  const out = await p.evaluate(() => htmlFor('<p data-show-remote="m1" data-rsvp="accepted" data-quote-start data-sig="1">x</p><div style="position:/**/fixed;top:0">y</div><div style="pos\\69tion:sticky">z</div>'));
+  expect(!/data-show-remote|data-rsvp/.test(out), "the app's button markers are stripped", out);
+  expect(/data-quote-start/.test(out) && /data-sig/.test(out), "Mailroom's own body markers stay", out);
+  expect(!/fixed|sticky/.test(out), "a commented or escaped position is still removed", out);
+});
+
 // ---------------------------------------------------------------- runner
 
 const { server, url } = await serve();
