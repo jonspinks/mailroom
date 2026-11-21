@@ -69,6 +69,67 @@ fn utc(stamp: &str) -> Option<String> {
     google::secs_from_iso(stamp).map(google::iso_from_secs)
 }
 
+// ---- Time zones ------------------------------------------------------------
+
+/// Ask the system's time zone database, through `date`, about a moment in a
+/// zone. `date` reads a name it doesn't know as UTC without a word, so only
+/// zones the database has a file for are asked about.
+fn date_in(zone: &str, when: &str, format: &str) -> Option<String> {
+    let zone = zone.trim();
+    let known = calendar::zone_ok(zone)
+        && !zone.starts_with('/')
+        && !zone.contains("..")
+        && std::path::Path::new("/usr/share/zoneinfo").join(zone).is_file();
+    if !known {
+        return None;
+    }
+    let out = std::process::Command::new("date").env("TZ", zone).env("LC_ALL", "C").args(["-d", when, format]).output().ok()?;
+    let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (out.status.success() && !text.is_empty()).then_some(text)
+}
+
+/// Seconds since 1970 of a clock time ("YYYY-MM-DDTHH:MM:SS") in a zone.
+fn zone_secs(zone: &str, local: &str) -> Option<i64> {
+    date_in(zone, &local.replace('T', " "), "+%s")?.parse().ok()
+}
+
+/// The date in a zone at a moment.
+fn zone_date(zone: &str, secs: i64) -> Option<String> {
+    date_in(zone, &format!("@{secs}"), "+%Y-%m-%d").filter(|date| date.len() == 10)
+}
+
+/// How far east of UTC a stamp says it is, when it says: "...-04:00" or "Z".
+fn stamp_offset(stamp: &str) -> Option<i64> {
+    let stamp = stamp.trim();
+    let local = stamp.get(..19)?;
+    if stamp.len() == 19 {
+        return None;
+    }
+    Some(google::secs_from_iso(local)? - google::secs_from_iso(stamp)?)
+}
+
+/// The last second of a day where an event is: by its zone, or failing that
+/// by the offset its own start carries. None when neither is known.
+fn day_end(zone: &str, start: &str, date: &str) -> Option<i64> {
+    let last = format!("{date}T23:59:59");
+    zone_secs(zone, &last).or_else(|| Some(google::secs_from_iso(&last)? - stamp_offset(start)?))
+}
+
+/// The day it is where an event is, at a moment.
+fn day_at(zone: &str, start: &str, secs: i64) -> Option<String> {
+    zone_date(zone, secs).or_else(|| Some(google::iso_from_secs(secs + stamp_offset(start)?)[..10].to_string()))
+}
+
+/// An RRULE's UNTIL when it is a UTC date-time, as seconds since 1970.
+fn until_secs(until: &str) -> Option<i64> {
+    if until.len() != 16 || !until.ends_with('Z') || until.as_bytes()[8] != b'T' {
+        return None;
+    }
+    let part = |range: std::ops::Range<usize>| until.get(range).filter(|p| p.bytes().all(|b| b.is_ascii_digit()));
+    let stamp = format!("{}-{}-{}T{}:{}:{}Z", part(0..4)?, part(4..6)?, part(6..8)?, part(9..11)?, part(11..13)?, part(13..15)?);
+    google::secs_from_iso(&stamp)
+}
+
 // ---- Reading ---------------------------------------------------------------
 
 fn calendar_from(value: &Value) -> Option<LiveCalendar> {
@@ -283,8 +344,9 @@ fn byday(name: &str) -> Option<&'static str> {
 }
 
 /// A Graph patternedRecurrence, already checked by calendar::clean_recurrence,
-/// as Google's RRULE.
-pub fn rrule_from(recurrence: &Value) -> Result<String, String> {
+/// as Google's RRULE. `day_end` gives the last second of a date where a
+/// timed event is; an all-day event has none.
+pub fn rrule_from(recurrence: &Value, day_end: &dyn Fn(&str) -> Option<i64>) -> Result<String, String> {
     let bad = || "That repeat setting is not valid.".to_string();
     let pattern = &recurrence["pattern"];
     let range = &recurrence["range"];
@@ -318,7 +380,16 @@ pub fn rrule_from(recurrence: &Value) -> Result<String, String> {
     match range["type"].as_str().unwrap_or("noEnd") {
         "endDate" => {
             let end = range["endDate"].as_str().filter(|d| d.len() == 10).ok_or_else(bad)?;
-            rule.push_str(&format!(";UNTIL={}", end.replace('-', "")));
+            // A timed series ends at a moment, in UTC (RFC 5545): the end of
+            // its last day there, or Google may drop the last occurrence.
+            // An all-day series ends on a date.
+            match day_end(end) {
+                Some(secs) => {
+                    let stamp = google::iso_from_secs(secs).replace(['-', ':'], "");
+                    rule.push_str(&format!(";UNTIL={stamp}"));
+                }
+                None => rule.push_str(&format!(";UNTIL={}", end.replace('-', ""))),
+            }
         }
         "numbered" => rule.push_str(&format!(";COUNT={}", range["numberOfOccurrences"].as_u64().ok_or_else(bad)?)),
         _ => {}
@@ -333,8 +404,9 @@ fn weekday_of(date: &str) -> &'static str {
 }
 
 /// Google's RRULE back as a Graph patternedRecurrence, starting on the
-/// series' first (local) date.
-pub fn recurrence_from(rules: &[Value], start_date: &str) -> Value {
+/// series' first (local) date. `day_at` gives the date it is where the
+/// event is at a moment, for a series that ends at one.
+pub fn recurrence_from(rules: &[Value], start_date: &str, day_at: &dyn Fn(i64) -> Option<String>) -> Value {
     let Some(rule) = rules.iter().filter_map(|r| r.as_str()).find_map(|r| r.strip_prefix("RRULE:")) else {
         return Value::Null;
     };
@@ -383,10 +455,16 @@ pub fn recurrence_from(rules: &[Value], start_date: &str) -> Value {
     };
     let start = start_date.get(..10).unwrap_or(start_date);
     let until = get("UNTIL");
+    // A UTC moment falls on the day it is where the event is, which is not
+    // always the day its digits spell.
+    let until_day = until_secs(&until).and_then(day_at).or_else(|| match (until.get(0..4), until.get(4..6), until.get(6..8)) {
+        (Some(y), Some(m), Some(d)) => Some(format!("{y}-{m}-{d}")),
+        _ => None,
+    });
     let range = if let Ok(count) = get("COUNT").parse::<u64>() {
         json!({ "type": "numbered", "startDate": start, "numberOfOccurrences": count })
-    } else if let (Some(y), Some(m), Some(d)) = (until.get(0..4), until.get(4..6), until.get(6..8)) {
-        json!({ "type": "endDate", "startDate": start, "endDate": format!("{y}-{m}-{d}") })
+    } else if let Some(end) = until_day {
+        json!({ "type": "endDate", "startDate": start, "endDate": end })
     } else {
         json!({ "type": "noEnd", "startDate": start })
     };
@@ -417,6 +495,8 @@ pub fn event_body(fields: &EventFields) -> Result<Value, String> {
     if let Some(notes) = &fields.notes {
         body["description"] = json!(notes.chars().take(30_000).collect::<String>());
     }
+    // On a change, save_event gives the guests already there back what
+    // Google holds for them.
     if let Some(people) = &fields.attendees {
         body["attendees"] = Value::Array(
             people
@@ -442,15 +522,44 @@ pub fn event_body(fields: &EventFields) -> Result<Value, String> {
     if fields.recurrence.is_some() {
         body["recurrence"] = match &graph_body["recurrence"] {
             Value::Null => json!([]),
-            cleaned => json!([rrule_from(cleaned)?]),
+            cleaned => {
+                let day_end = |date: &str| if fields.all_day { None } else { day_end(&fields.time_zone, "", date) };
+                json!([rrule_from(cleaned, &day_end)?])
+            }
         };
     }
     Ok(body)
 }
 
+/// The guest list for a change to an event. A bare address and name would
+/// reset a guest's answer, so everyone already on the event goes back as
+/// Google has them: their answer, and whether they organise or are optional.
+/// Rooms, which the page never lists, stay on.
+fn merged_attendees(wanted: &Value, existing: &Value) -> Value {
+    let address = |item: &Value| item["email"].as_str().unwrap_or("").trim().to_ascii_lowercase();
+    let current: Vec<&Value> = existing.as_array().into_iter().flatten().collect();
+    let mut out: Vec<Value> = Vec::new();
+    for item in wanted.as_array().into_iter().flatten() {
+        let email = address(item);
+        if out.iter().any(|kept| address(kept) == email) {
+            continue;
+        }
+        match current.iter().find(|have| address(have) == email) {
+            Some(have) => out.push((*have).clone()),
+            None => out.push(item.clone()),
+        }
+    }
+    for have in current {
+        if have["resource"].as_bool().unwrap_or(false) && !out.iter().any(|kept| address(kept) == address(have)) {
+            out.push(have.clone());
+        }
+    }
+    Value::Array(out)
+}
+
 /// Create an event, or change one, and return the page's id for it.
 pub fn save_event(email: &str, event_id: &str, calendar_id: &str, fields: &EventFields) -> Result<String, String> {
-    let body = event_body(fields)?;
+    let mut body = event_body(fields)?;
     let token = auth::access_token_for(email)?;
     let client = graph::http_client()?;
     if event_id.trim().is_empty() {
@@ -461,8 +570,14 @@ pub fn save_event(email: &str, event_id: &str, calendar_id: &str, fields: &Event
         return Ok(event_key(&calendar, id));
     }
     let (calendar, id) = split_key(event_id)?;
-    let url = format!("{CAL}/calendars/{}/events/{}?sendUpdates=all", seg(&calendar), seg(&id));
-    call(&client, &token, "PATCH", &url, Some(&body)).map_err(refusal)?;
+    let event_url = format!("{CAL}/calendars/{}/events/{}", seg(&calendar), seg(&id));
+    if body.get("attendees").is_some() {
+        // Without the list as it is, the change is not sent: it would ask
+        // everyone to answer again.
+        let current = call(&client, &token, "GET", &format!("{event_url}?fields=attendees"), None).map_err(refusal)?;
+        body["attendees"] = merged_attendees(&body["attendees"], &current["attendees"]);
+    }
+    call(&client, &token, "PATCH", &format!("{event_url}?sendUpdates=all"), Some(&body)).map_err(refusal)?;
     Ok(event_key(&calendar, &id))
 }
 
@@ -1226,6 +1341,10 @@ fn series_value(email: &str, master_id: &str) -> Result<(String, String, Value),
 
 fn series_of(master_id: &str, value: &Value) -> Series {
     let all_day = value["start"]["date"].is_string();
+    let zone = value["start"]["timeZone"].as_str().unwrap_or("");
+    let first = value["start"]["dateTime"].as_str().unwrap_or("");
+    // An all-day series has no zone; a moment is read as its UTC date.
+    let day_at = |secs: i64| if all_day { Some(google::iso_from_secs(secs)[..10].to_string()) } else { day_at(zone, first, secs) };
     let (start, end, local_start) = if all_day {
         let start = value["start"]["date"].as_str().unwrap_or("").to_string();
         let end = value["end"]["date"].as_str().unwrap_or("").to_string();
@@ -1241,7 +1360,7 @@ fn series_of(master_id: &str, value: &Value) -> Series {
         start,
         end,
         all_day,
-        recurrence: recurrence_from(value["recurrence"].as_array().map(Vec::as_slice).unwrap_or(&[]), &local_start),
+        recurrence: recurrence_from(value["recurrence"].as_array().map(Vec::as_slice).unwrap_or(&[]), &local_start, &day_at),
     }
 }
 
@@ -1265,7 +1384,10 @@ pub fn end_series_before(email: &str, master_id: &str, date: &str) -> Result<boo
         .filter(|line| line.as_str().is_some_and(|l| !l.starts_with("RRULE:")))
         .cloned()
         .collect();
-    rules.insert(0, json!(rrule_from(&ended)?));
+    let zone = value["start"]["timeZone"].as_str().unwrap_or("");
+    let first = value["start"]["dateTime"].as_str().unwrap_or("");
+    let day_end = |date: &str| if current.all_day { None } else { day_end(zone, first, date) };
+    rules.insert(0, json!(rrule_from(&ended, &day_end)?));
     let token = auth::access_token_for(email)?;
     let client = graph::http_client()?;
     let url = format!("{CAL}/calendars/{}/events/{}?sendUpdates=all", seg(&calendar), seg(&id));
@@ -1354,25 +1476,122 @@ mod tests {
             json!({ "pattern": { "type": "absoluteYearly", "interval": 1, "dayOfMonth": 24, "month": 10 }, "range": { "type": "endDate", "startDate": "2026-10-24", "endDate": "2030-10-24" } }),
             json!({ "pattern": { "type": "relativeYearly", "interval": 1, "daysOfWeek": ["friday"], "index": "last", "month": 11 }, "range": { "type": "noEnd", "startDate": "2026-11-27" } }),
         ];
-        assert_eq!(rrule_from(&cases[0]).unwrap(), "RRULE:FREQ=WEEKLY;INTERVAL=2;BYDAY=MO,TH");
-        assert_eq!(rrule_from(&cases[1]).unwrap(), "RRULE:FREQ=MONTHLY;INTERVAL=1;BYDAY=TU;BYSETPOS=2;COUNT=6");
-        assert_eq!(rrule_from(&cases[2]).unwrap(), "RRULE:FREQ=YEARLY;INTERVAL=1;BYMONTH=10;BYMONTHDAY=24;UNTIL=20301024");
+        // All-day series: no moment, so the end stays a date.
+        let all_day = |_: &str| None;
+        let no_zone = |_: i64| None;
+        assert_eq!(rrule_from(&cases[0], &all_day).unwrap(), "RRULE:FREQ=WEEKLY;INTERVAL=2;BYDAY=MO,TH");
+        assert_eq!(rrule_from(&cases[1], &all_day).unwrap(), "RRULE:FREQ=MONTHLY;INTERVAL=1;BYDAY=TU;BYSETPOS=2;COUNT=6");
+        assert_eq!(rrule_from(&cases[2], &all_day).unwrap(), "RRULE:FREQ=YEARLY;INTERVAL=1;BYMONTH=10;BYMONTHDAY=24;UNTIL=20301024");
         for case in &cases {
-            let rule = rrule_from(case).unwrap();
-            let back = recurrence_from(&[json!(rule)], case["range"]["startDate"].as_str().unwrap());
+            let rule = rrule_from(case, &all_day).unwrap();
+            let back = recurrence_from(&[json!(rule)], case["range"]["startDate"].as_str().unwrap(), &no_zone);
             assert_eq!(back["pattern"]["type"], case["pattern"]["type"]);
             assert_eq!(back["range"]["type"], case["range"]["type"]);
-            assert_eq!(rrule_from(&back).unwrap(), rule, "round trip");
+            assert_eq!(rrule_from(&back, &all_day).unwrap(), rule, "round trip");
         }
-        let google_style = recurrence_from(&[json!("RRULE:FREQ=MONTHLY;BYDAY=-1FR")], "2026-10-30");
+        let google_style = recurrence_from(&[json!("RRULE:FREQ=MONTHLY;BYDAY=-1FR")], "2026-10-30", &no_zone);
         assert_eq!(google_style["pattern"]["index"], "last");
         assert_eq!(google_style["pattern"]["daysOfWeek"], json!(["friday"]));
-        let weekly_bare = recurrence_from(&[json!("RRULE:FREQ=WEEKLY")], "2026-10-24");
+        let weekly_bare = recurrence_from(&[json!("RRULE:FREQ=WEEKLY")], "2026-10-24", &no_zone);
         assert_eq!(weekly_bare["pattern"]["daysOfWeek"], json!(["saturday"]));
         // Odd text from the server is skipped, not cut mid-character.
-        let odd = recurrence_from(&[json!("RRULE:FREQ=WEEKLY;BYDAY=éA,MO;UNTIL=202é1024")], "2026-10-24");
+        let odd = recurrence_from(&[json!("RRULE:FREQ=WEEKLY;BYDAY=éA,MO;UNTIL=202é1024")], "2026-10-24", &no_zone);
         assert_eq!(odd["pattern"]["daysOfWeek"], json!(["monday"]));
         assert_eq!(odd["range"]["type"], "noEnd");
+    }
+
+    #[test]
+    fn a_timed_series_ends_at_a_utc_moment_and_reads_back_as_the_same_day() {
+        let weekly = json!({ "pattern": { "type": "weekly", "interval": 1, "daysOfWeek": ["saturday"] }, "range": { "type": "endDate", "startDate": "2026-10-24", "endDate": "2030-10-26" } });
+        // Toronto in October is four hours behind UTC; Auckland is thirteen ahead.
+        for (start, offset, until) in [("2026-10-24T19:00:00-04:00", -4 * 3600, "20301027T035959Z"), ("2026-10-24T08:00:00+13:00", 13 * 3600, "20301026T105959Z")] {
+            // No zone name the system knows: the start's own offset is used.
+            let end = |date: &str| day_end("", start, date);
+            let at = |secs: i64| day_at("", start, secs);
+            assert_eq!(stamp_offset(start), Some(offset));
+            let rule = rrule_from(&weekly, &end).unwrap();
+            assert_eq!(rule, format!("RRULE:FREQ=WEEKLY;INTERVAL=1;BYDAY=SA;UNTIL={until}"));
+            let back = recurrence_from(&[json!(rule)], "2026-10-24", &at);
+            assert_eq!(back["range"], json!({ "type": "endDate", "startDate": "2026-10-24", "endDate": "2030-10-26" }), "the same last day");
+            assert_eq!(rrule_from(&back, &end).unwrap(), rule, "round trip");
+        }
+        // Google's own way of ending a series: the last occurrence, in UTC.
+        // An evening in Toronto is already the next day there.
+        let at = |secs: i64| day_at("", "2026-10-24T21:00:00-04:00", secs);
+        let theirs = recurrence_from(&[json!("RRULE:FREQ=WEEKLY;BYDAY=SA;UNTIL=20301027T010000Z")], "2026-10-24", &at);
+        assert_eq!(theirs["range"]["endDate"], "2030-10-26");
+        // A date, a floating time and nonsense are read by their digits.
+        for (until, day) in [("20301026", "2030-10-26"), ("20301026T235959", "2030-10-26"), ("20301026T2359Z", "2030-10-26")] {
+            let back = recurrence_from(&[json!(format!("RRULE:FREQ=DAILY;UNTIL={until}"))], "2026-10-24", &at);
+            assert_eq!(back["range"]["endDate"], day, "{until}");
+        }
+        assert_eq!(until_secs("20301027T035959Z"), google::secs_from_iso("2030-10-27T03:59:59Z"));
+        assert_eq!(until_secs("2030é027T03595Z"), None);
+        // A start with no offset and no known zone leaves the date form.
+        assert_eq!(day_end("Not/AZone", "2026-10-24T19:00:00", "2030-10-26"), None);
+        assert_eq!(day_end("../etc/passwd", "", "2030-10-26"), None);
+    }
+
+    #[test]
+    fn the_systems_zones_give_the_end_of_a_day() {
+        if !std::path::Path::new("/usr/share/zoneinfo/America/Toronto").is_file() {
+            eprintln!("skipped: no time zone database on this machine");
+            return;
+        }
+        // Summer and winter differ, which a single offset would get wrong.
+        assert_eq!(zone_secs("America/Toronto", "2030-07-01T23:59:59"), google::secs_from_iso("2030-07-02T03:59:59Z"));
+        assert_eq!(zone_secs("America/Toronto", "2030-12-01T23:59:59"), google::secs_from_iso("2030-12-02T04:59:59Z"));
+        let secs = google::secs_from_iso("2030-12-02T04:59:59Z").unwrap();
+        assert_eq!(zone_date("America/Toronto", secs).as_deref(), Some("2030-12-01"));
+        assert_eq!(zone_date("Pacific/Auckland", secs).as_deref(), Some("2030-12-02"));
+        // A winter start does not skew a summer end.
+        assert_eq!(day_end("America/Toronto", "2026-12-01T09:00:00-05:00", "2030-07-01"), google::secs_from_iso("2030-07-02T03:59:59Z"));
+        let fields = EventFields {
+            subject: "Kiln review".into(),
+            location: String::new(),
+            start: "2026-10-22T09:00:00".into(),
+            end: "2026-10-22T09:30:00".into(),
+            time_zone: "America/Toronto".into(),
+            all_day: false,
+            show_as: "busy".into(),
+            notes: None,
+            attendees: None,
+            recurrence: Some(json!({ "pattern": { "type": "daily", "interval": 1 }, "range": { "type": "endDate", "startDate": "2026-10-22", "endDate": "2026-10-30" } })),
+            reminder: None,
+            teams: None,
+        };
+        assert_eq!(event_body(&fields).unwrap()["recurrence"], json!(["RRULE:FREQ=DAILY;INTERVAL=1;UNTIL=20261031T035959Z"]));
+        let all_day = EventFields { start: "2026-10-22".into(), end: "2026-10-23".into(), all_day: true, ..fields };
+        assert_eq!(event_body(&all_day).unwrap()["recurrence"], json!(["RRULE:FREQ=DAILY;INTERVAL=1;UNTIL=20261030"]));
+    }
+
+    #[test]
+    fn changing_the_guest_list_keeps_everyones_answer() {
+        let existing = json!([
+            { "email": "me@gmail.com", "self": true, "organizer": true, "responseStatus": "accepted" },
+            { "email": "Bea@Example.org", "displayName": "Bea", "responseStatus": "declined", "optional": true, "comment": "Away" },
+            { "email": "gone@example.org", "responseStatus": "accepted" },
+            { "email": "room-1@resource.calendar.google.com", "resource": true, "responseStatus": "accepted" },
+        ]);
+        let wanted = json!([
+            { "email": "me@gmail.com" },
+            { "email": "bea@example.org", "displayName": "Bea Stone" },
+            { "email": "new@example.org", "displayName": "New Person" },
+            { "email": "NEW@example.org" },
+        ]);
+        let merged = merged_attendees(&wanted, &existing);
+        assert_eq!(
+            merged,
+            json!([
+                { "email": "me@gmail.com", "self": true, "organizer": true, "responseStatus": "accepted" },
+                { "email": "Bea@Example.org", "displayName": "Bea", "responseStatus": "declined", "optional": true, "comment": "Away" },
+                { "email": "new@example.org", "displayName": "New Person" },
+                { "email": "room-1@resource.calendar.google.com", "resource": true, "responseStatus": "accepted" },
+            ])
+        );
+        // An event with no guests yet, and a list emptied on purpose.
+        assert_eq!(merged_attendees(&wanted, &Value::Null).as_array().unwrap().len(), 3);
+        assert_eq!(merged_attendees(&json!([]), &json!([{ "email": "bea@example.org", "responseStatus": "accepted" }])), json!([]));
     }
 
     #[test]

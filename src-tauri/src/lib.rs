@@ -2575,6 +2575,7 @@ mod tests {
             to: vec![],
             cc: vec![],
             bcc: vec![],
+            reply_to: vec![],
             categories: vec![],
             importance: String::new(),
             invite: false,
