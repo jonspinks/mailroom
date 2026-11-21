@@ -3,6 +3,7 @@
 //! when the sender supports it. The headers are read here from Microsoft,
 //! never taken from the page.
 
+use crate::graph::SendGraph;
 use crate::{auth, graph};
 use serde::Serialize;
 
@@ -165,11 +166,12 @@ pub fn options(email: &str, message_id: &str) -> Result<Options, String> {
         "https://graph.microsoft.com/v1.0/me/messages/{}?$select=internetMessageHeaders",
         graph::path_segment(id)
     );
+    // Through the mailbox's request slots and Retry-After, like every Graph call.
     let response = client
         .get(&url)
         .bearer_auth(&token)
         .header("Accept", "application/json")
-        .send()
+        .send_graph(&token)
         .map_err(|err| format!("Could not reach Microsoft Graph: {err}"))?;
     if !response.status().is_success() {
         return Ok(Options::default());

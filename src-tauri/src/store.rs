@@ -235,6 +235,9 @@ fn extra_text(item: &LiveMessage) -> String {
     if !item.focus.is_empty() {
         extra.insert("focus".into(), item.focus.clone().into());
     }
+    if !item.reply_to.is_empty() {
+        extra.insert("replyTo".into(), serde_json::to_value(&item.reply_to).unwrap_or_default());
+    }
     serde_json::Value::Object(extra).to_string()
 }
 
@@ -246,6 +249,7 @@ fn apply_extra(item: &mut LiveMessage, text: &str) {
         _ => String::new(),
     };
     item.invite = extra["invite"].as_bool().unwrap_or(false);
+    item.reply_to = serde_json::from_value(extra["replyTo"].clone()).unwrap_or_default();
     item.focus = match extra["focus"].as_str() {
         Some("focused") => "focused".into(),
         Some("other") => "other".into(),
@@ -742,6 +746,18 @@ pub fn refresh_folder_counts(email: &str, folder_id: &str) -> Result<(), String>
     let tx = conn.transaction().map_err(|err| err.to_string())?;
     refresh_counts_tx(&tx, &email, folder_id)?;
     tx.commit().map_err(|err| err.to_string())?;
+    Ok(())
+}
+
+/// Put the server's own counts on a folder. The rows cached for it are only
+/// the sync window, so counting those can run low.
+pub fn set_folder_counts(email: &str, folder_id: &str, unread: i64, total: i64) -> Result<(), String> {
+    let conn = open()?;
+    conn.execute(
+        "update folders set unread = ?3, total = ?4 where email = ?1 and id = ?2",
+        params![email.trim().to_lowercase(), folder_id.trim(), unread, total],
+    )
+    .map_err(|err| err.to_string())?;
     Ok(())
 }
 
@@ -1405,6 +1421,7 @@ fn message_fields(row: &rusqlite::Row) -> rusqlite::Result<LiveMessage> {
         to: people_from_text(row.get::<_, Option<String>>(12)?.unwrap_or_default()),
         cc: people_from_text(row.get::<_, Option<String>>(13)?.unwrap_or_default()),
         bcc: people_from_text(row.get::<_, Option<String>>(14)?.unwrap_or_default()),
+        reply_to: Vec::new(),
         categories: cats_from_text(row.get::<_, Option<String>>(15).ok().flatten().unwrap_or_default()),
         importance: String::new(),
         invite: false,
@@ -1765,6 +1782,7 @@ mod tests {
             to: vec![crate::graph::LivePerson { name: "Bea".into(), email: "bea@example.com".into() }],
             cc: vec![],
             bcc: vec![],
+            reply_to: vec![],
             categories: vec![],
             importance: String::new(),
             invite: false,
@@ -1831,6 +1849,20 @@ mod tests {
         assert_eq!((back.importance.as_str(), back.invite), ("high", true));
         apply_extra(&mut back, "{}");
         assert_eq!((back.importance.as_str(), back.invite), ("", false));
+    }
+
+    #[test]
+    fn reply_to_survives_the_cache() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        ensure_schema(&conn).unwrap();
+        let mut item = message("r1");
+        item.reply_to = vec![crate::graph::LivePerson { name: "Help".into(), email: "help@shop.example".into() }];
+        replace_folder_messages_on(&mut conn, "jon@example.com", "in", &[item, message("r2")]).unwrap();
+        let mut back = load_folder_messages(&conn, "jon@example.com", "in", false).unwrap();
+        back.sort_by(|a, b| a.id.cmp(&b.id));
+        assert_eq!(back[0].reply_to.len(), 1);
+        assert_eq!((back[0].reply_to[0].name.as_str(), back[0].reply_to[0].email.as_str()), ("Help", "help@shop.example"));
+        assert!(back[1].reply_to.is_empty());
     }
 
     #[test]

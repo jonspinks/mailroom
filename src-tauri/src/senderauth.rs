@@ -51,7 +51,8 @@ fn without_comments(value: &str) -> String {
 }
 
 /// The authserv-id (empty when the header starts with a method, as
-/// Exchange's does for mail inside a tenant) and the methods.
+/// Exchange's does for mail inside a tenant, which is vouched for by its
+/// AuthAs stamp and not by this header) and the methods.
 fn parse(value: &str) -> (String, Vec<Method>) {
     let clean = without_comments(value);
     let mut parts = clean.split(';').map(str::trim).filter(|p| !p.is_empty()).peekable();
@@ -114,6 +115,9 @@ fn first<'a>(headers: &'a [(String, String)], name: &str) -> Option<&'a str> {
     headers.iter().find(|(n, _)| n.eq_ignore_ascii_case(name)).map(|(_, v)| v.as_str())
 }
 
+/// The authserv-id Exchange Online signs its results with.
+const MICROSOFT_AUTHSERV: &str = "mx.microsoft.com";
+
 /// A Microsoft 365 / Outlook.com message's headers, top first.
 fn microsoft_verdict(headers: &[(String, String)], from_email: &str) -> bool {
     let Some(from) = domain_of(from_email) else { return false };
@@ -122,10 +126,10 @@ fn microsoft_verdict(headers: &[(String, String)], from_email: &str) -> bool {
     }
     let Some(value) = first(headers, "Authentication-Results") else { return false };
     let (server, methods) = parse(value);
-    if !(server.is_empty() || server == "mx.microsoft.com") {
-        return false;
-    }
-    passes(&methods, &from, true)
+    // Only a header that names Exchange Online as its writer. One with no
+    // authserv-id says nothing about who wrote it, and a sender can write
+    // that as easily as anything else in the message.
+    server == MICROSOFT_AUTHSERV && passes(&methods, &from, true)
 }
 
 /// A Gmail message's headers, top first.
@@ -223,6 +227,22 @@ mod tests {
         assert!(!microsoft_verdict(&planted, "jon@plan2.example"));
         assert!(!gmail_verdict(&planted, "jon@plan2.example"));
         assert!(!microsoft_verdict(&[], "jon@plan2.example"), "no header, no proof");
+    }
+
+    #[test]
+    fn a_header_that_names_no_server_is_not_microsofts() {
+        // The same passing results Exchange would write, without its name on them.
+        let unnamed = "spf=pass smtp.mailfrom=plan2.example; dkim=pass header.d=plan2.example;dmarc=pass action=none header.from=plan2.example;compauth=pass reason=100";
+        let headers = h(&[("Authentication-Results", unnamed), ("X-MS-Exchange-Organization-AuthAs", "Anonymous")]);
+        assert!(!microsoft_verdict(&headers, "jon@plan2.example"));
+        // Named, they count; a look-alike name does not.
+        let named = format!("mx.microsoft.com 1; {unnamed}");
+        assert!(microsoft_verdict(&h(&[("Authentication-Results", &named)]), "jon@plan2.example"));
+        let alike = format!("mx.microsoft.com.evil.example 1; {unnamed}");
+        assert!(!microsoft_verdict(&h(&[("Authentication-Results", &alike)]), "jon@plan2.example"));
+        // Mail inside the tenant has no name on its header and needs none.
+        let inside = h(&[("Authentication-Results", MS_INTERNAL), ("X-MS-Exchange-Organization-AuthAs", "Internal")]);
+        assert!(microsoft_verdict(&inside, "colleague@company.example"));
     }
 
     #[test]

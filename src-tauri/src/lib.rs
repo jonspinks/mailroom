@@ -206,6 +206,32 @@ fn anchor_folder(email: &str, folder_id: &str, since: &str) {
 static ANCHOR_FAILED: std::sync::Mutex<Option<std::collections::HashMap<String, std::time::Instant>>> = std::sync::Mutex::new(None);
 const ANCHOR_RETRY: std::time::Duration = std::time::Duration::from_secs(6 * 60 * 60);
 
+/// Folders whose anchor walk is running now.
+static ANCHORING: Mutex<Option<std::collections::HashSet<String>>> = Mutex::new(None);
+
+/// The one walk a folder may have at a time, given back when dropped.
+struct AnchorClaim(String);
+
+impl AnchorClaim {
+    fn take(key: &str) -> Option<AnchorClaim> {
+        let mut running = ANCHORING.lock().unwrap_or_else(|e| e.into_inner());
+        running.get_or_insert_with(Default::default).insert(key.to_string()).then(|| AnchorClaim(key.to_string()))
+    }
+}
+
+impl Drop for AnchorClaim {
+    fn drop(&mut self) {
+        let mut running = ANCHORING.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(set) = running.as_mut() {
+            set.remove(&self.0);
+        }
+    }
+}
+
+/// The anchor walks the folder a second time, after the fill that is already
+/// stored, so it runs on its own thread and the folder shows without waiting
+/// for it. Until the link is saved a poll finds none and merges the last day
+/// again, as it always did; it does not start a second walk.
 fn anchor_graph(email: &str, folder_id: &str, since: &str, token: &str) {
     let key = format!("{email}\n{folder_id}");
     if let Ok(failed) = ANCHOR_FAILED.lock() {
@@ -213,22 +239,117 @@ fn anchor_graph(email: &str, folder_id: &str, since: &str, token: &str) {
             return;
         }
     }
-    match graph::anchor_mail_delta(token, folder_id, since) {
-        Ok(link) => {
-            let _ = store::save_delta_link(email, folder_id, &link);
-            if let Ok(mut failed) = ANCHOR_FAILED.lock() {
-                if let Some(map) = failed.as_mut() {
-                    map.remove(&key);
+    let Some(claim) = AnchorClaim::take(&key) else {
+        return;
+    };
+    let (email, folder_id, since, token) = (email.to_string(), folder_id.to_string(), since.to_string(), token.to_string());
+    std::thread::spawn(move || {
+        let claim = claim;
+        match graph::anchor_mail_delta(&token, &folder_id, &since) {
+            Ok(link) => {
+                let _ = store::save_delta_link(&email, &folder_id, &link);
+                if let Ok(mut failed) = ANCHOR_FAILED.lock() {
+                    if let Some(map) = failed.as_mut() {
+                        map.remove(&claim.0);
+                    }
+                }
+            }
+            Err(err) => {
+                google::log(&format!("mail sync point not saved for a folder of {email}: {err}"));
+                if let Ok(mut failed) = ANCHOR_FAILED.lock() {
+                    failed.get_or_insert_with(Default::default).insert(claim.0.clone(), std::time::Instant::now());
                 }
             }
         }
+    });
+}
+
+/// The folder tree is listed again this often, so folders made, renamed or
+/// removed in Outlook or on a phone show up (SPEC: "A folder the server
+/// removes disappears on the next sync"). A failed listing still counts, so
+/// it does not come round with every two-minute sync.
+const FOLDERS_EVERY: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+static FOLDERS_AT: Mutex<Option<std::collections::HashMap<String, std::time::Instant>>> = Mutex::new(None);
+/// The unread and total the server last gave for a folder ("email\nfolder").
+static SERVER_COUNTS: Mutex<Option<std::collections::HashMap<String, (i64, i64)>>> = Mutex::new(None);
+fn listing_is_due(last: Option<std::time::Instant>, now: std::time::Instant) -> bool {
+    match last {
+        None => true,
+        Some(then) => now.saturating_duration_since(then) >= FOLDERS_EVERY,
+    }
+}
+
+fn remember_counts(email: &str, folder_id: &str, counts: (i64, i64)) {
+    if let Ok(mut known) = SERVER_COUNTS.lock() {
+        known.get_or_insert_with(Default::default).insert(format!("{email}\n{folder_id}"), counts);
+    }
+}
+
+fn remembered_counts(email: &str, folder_id: &str) -> Option<(i64, i64)> {
+    SERVER_COUNTS.lock().ok()?.as_ref()?.get(&format!("{email}\n{folder_id}")).copied()
+}
+
+/// A listing is only trusted to replace the cached tree when it has the
+/// Inbox: replacing drops the cached mail of folders it does not name.
+fn usable_listing(folders: &[LiveFolder]) -> bool {
+    folders.iter().any(|folder| folder.key == "inbox")
+}
+
+/// List a Microsoft account's folders again when that is due. Cached messages
+/// of folders that are still there are not touched. Gmail's labels are not
+/// re-listed yet: google.rs lists them only together with the first Inbox.
+fn refresh_folders_if_due(email: &str) {
+    if email.is_empty() || auth::is_google(email) {
+        return;
+    }
+    let now = std::time::Instant::now();
+    let due = FOLDERS_AT
+        .lock()
+        .map(|clock| listing_is_due(clock.as_ref().and_then(|map| map.get(email).copied()), now))
+        .unwrap_or(true);
+    if !due {
+        return;
+    }
+    if let Ok(mut clock) = FOLDERS_AT.lock() {
+        clock.get_or_insert_with(Default::default).insert(email.to_string(), now);
+    }
+    let folders = match graph::fetch_folders(email) {
+        Ok(folders) if usable_listing(&folders) => folders,
+        Ok(_) => return,
         Err(err) => {
-            google::log(&format!("mail sync point not saved for a folder of {email}: {err}"));
-            if let Ok(mut failed) = ANCHOR_FAILED.lock() {
-                failed.get_or_insert_with(Default::default).insert(key, std::time::Instant::now());
-            }
+            google::log(&format!("folders of {email} not listed again: {err}"));
+            return;
+        }
+    };
+    if store::replace_folders(email, &folders).is_ok() {
+        for folder in &folders {
+            remember_counts(email, &folder.id, (folder.unread, folder.total));
         }
     }
+}
+
+/// Storing a catch-up recounts the folder from its cached rows, and the cache
+/// holds only the sync window: a mailbox with old unread mail showed too few.
+/// Put the server's counts back. They are asked for again when the catch-up
+/// changed something (a read, a move, new mail: the delta reports them all);
+/// after a quiet one the last ones heard still hold.
+fn keep_server_counts(email: &str, folder_id: &str, changed: bool) {
+    if email.is_empty() || auth::is_google(email) {
+        return;
+    }
+    let known = remembered_counts(email, folder_id);
+    let counts = match known {
+        Some(counts) if !changed => counts,
+        _ => match graph::fetch_folder_counts(email, folder_id) {
+            Ok(counts) => counts,
+            Err(_) => match known {
+                Some(counts) => counts,
+                None => return,
+            },
+        },
+    };
+    remember_counts(email, folder_id, counts);
+    let _ = store::set_folder_counts(email, folder_id, counts.0, counts.1);
 }
 
 /// A cached folder stays on disk. Pull its delta link when one is stored.
@@ -240,6 +361,13 @@ fn catch_up_folder(email: &str, folder_id: &str, full_since: &str) -> Result<Fol
     if auth::is_google(email) {
         return catch_up_gmail(email, folder_id, full_since);
     }
+    let caught = catch_up_graph(email, folder_id, full_since)?;
+    let changed = caught.replaced || !caught.removed.is_empty() || !caught.changed.is_empty();
+    keep_server_counts(email, folder_id, changed);
+    Ok(caught)
+}
+
+fn catch_up_graph(email: &str, folder_id: &str, full_since: &str) -> Result<FolderCatchUp, String> {
     let token = auth::access_token_for(email)?;
     if let Some(link) = store::load_delta_link(email, folder_id)? {
         if graph::trusted_delta_link(&link) {
@@ -273,8 +401,8 @@ fn catch_up_folder(email: &str, folder_id: &str, full_since: &str) -> Result<Fol
         store::upsert_folder_messages(email, folder_id, &changed)?;
     } else if state.messages == 0 {
         changed = graph::fetch_folder(email, folder_id, full_since)?;
+        // No recount from the cached rows: the folder keeps the server's counts.
         store::replace_folder_messages(email, folder_id, &changed)?;
-        store::refresh_folder_counts(email, folder_id)?;
         replaced = true;
     }
     let token = auth::access_token_for(email).unwrap_or(token);
@@ -404,6 +532,7 @@ async fn sync_inbox(email: Option<String>, since: Option<String>) -> Result<Inbo
         let key = requested.trim().to_lowercase();
         let shown = if requested.trim().is_empty() { key.clone() } else { requested.trim().to_string() };
         if let Some(inbox_id) = store::cached_inbox_id(&key)? {
+            refresh_folders_if_due(&key);
             let catchup = catch_up_folder(&key, &inbox_id, since.trim())?;
             let folders = store::load_folders(&key)?;
             let delta = list_delta(&key, &inbox_id, catchup)?;
@@ -1518,12 +1647,18 @@ async fn apply_mail(
         }
         let requested = email.unwrap_or_default();
         let destination = destination.unwrap_or_default();
-        let moved = if auth::is_google(requested.trim()) {
+        // Microsoft changes one message at a time and can stop part way. What
+        // it did change is recorded below before the refusal is reported, or
+        // the cache would keep ids the server no longer has.
+        let (done, moved, failed) = if auth::is_google(requested.trim()) {
             // A Gmail move takes the label of the folder the mail was in.
-            google::apply_mail(requested.trim(), &kind, &message_ids, &destination, source.as_deref().unwrap_or(""))?
+            let moved = google::apply_mail(requested.trim(), &kind, &message_ids, &destination, source.as_deref().unwrap_or(""))?;
+            (message_ids, moved, None)
         } else {
-            graph::apply_mail(requested.trim(), &kind, &message_ids, &destination)?
+            let applied = graph::apply_mail(requested.trim(), &kind, &message_ids, &destination)?;
+            (applied.done, applied.moved, applied.failed)
         };
+        let message_ids = done;
         let email = if requested.trim().is_empty() {
             status.email.trim().to_lowercase()
         } else {
@@ -1540,6 +1675,9 @@ async fn apply_mail(
                 _ => store::record_mail_action(&email, &kind, &message_ids)?,
             }
             store::rename_moved(&email, &moved)?;
+        }
+        if let Some(err) = failed {
+            return Err(err);
         }
         Ok(moved)
     })
@@ -2558,6 +2696,39 @@ mod tests {
     }
 
     #[test]
+    fn folders_are_listed_again_every_ten_minutes() {
+        let now = std::time::Instant::now();
+        assert!(super::listing_is_due(None, now));
+        assert!(!super::listing_is_due(Some(now), now));
+        assert!(!super::listing_is_due(Some(now), now + std::time::Duration::from_secs(9 * 60)));
+        assert!(super::listing_is_due(Some(now), now + std::time::Duration::from_secs(10 * 60)));
+        // A listing without the Inbox never replaces the cached tree.
+        let folder = |key: &str| super::LiveFolder { id: key.into(), parent_id: String::new(), name: key.into(), key: key.into(), unread: 0, total: 0, depth: 0 };
+        assert!(super::usable_listing(&[folder("drafts"), folder("inbox")]));
+        assert!(!super::usable_listing(&[folder("drafts")]));
+        assert!(!super::usable_listing(&[]));
+    }
+
+    #[test]
+    fn the_last_server_counts_are_kept_per_folder() {
+        assert_eq!(super::remembered_counts("counts@example.com", "in"), None);
+        super::remember_counts("counts@example.com", "in", (3412, 90211));
+        super::remember_counts("counts@example.com", "sent", (0, 12));
+        assert_eq!(super::remembered_counts("counts@example.com", "in"), Some((3412, 90211)));
+        assert_eq!(super::remembered_counts("other@example.com", "in"), None);
+    }
+
+    #[test]
+    fn a_folder_has_one_anchor_walk_at_a_time() {
+        let first = super::AnchorClaim::take("walk@example.com\nin").expect("the first claim");
+        assert!(super::AnchorClaim::take("walk@example.com\nin").is_none(), "a second walk of the same folder");
+        let other = super::AnchorClaim::take("walk@example.com\nsent");
+        assert!(other.is_some(), "another folder is its own walk");
+        drop(first);
+        assert!(super::AnchorClaim::take("walk@example.com\nin").is_some(), "free again once the walk ends");
+    }
+
+    #[test]
     fn folder_results_leave_the_message_body_behind() {
         let mut messages = vec![LiveMessage {
             id: "m".into(),
@@ -2575,6 +2746,7 @@ mod tests {
             to: vec![],
             cc: vec![],
             bcc: vec![],
+            reply_to: vec![],
             categories: vec![],
             importance: String::new(),
             invite: false,

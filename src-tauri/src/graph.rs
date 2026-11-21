@@ -3,10 +3,10 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::io::{Read, Write};
 
-const MESSAGE_SELECT: &str = "id,conversationId,subject,from,toRecipients,ccRecipients,bccRecipients,receivedDateTime,bodyPreview,isRead,flag,body,hasAttachments,categories,importance,inferenceClassification";
+const MESSAGE_SELECT: &str = "id,conversationId,subject,from,toRecipients,ccRecipients,bccRecipients,replyTo,receivedDateTime,bodyPreview,isRead,flag,body,hasAttachments,categories,importance,inferenceClassification";
 /// A folder fill. The letter is fetched when it is opened. `bodyPreview` is
 /// the list line, and the attachment expand still names the files.
-const LIST_SELECT: &str = "id,conversationId,subject,from,toRecipients,ccRecipients,bccRecipients,receivedDateTime,bodyPreview,isRead,flag,hasAttachments,categories,importance,inferenceClassification";
+const LIST_SELECT: &str = "id,conversationId,subject,from,toRecipients,ccRecipients,bccRecipients,replyTo,receivedDateTime,bodyPreview,isRead,flag,hasAttachments,categories,importance,inferenceClassification";
 /// The anchor walk only wants the delta link. Graph keeps `$select` on that
 /// link, but the pages themselves are thrown away, so they omit the body.
 const ANCHOR_SELECT: &str = LIST_SELECT;
@@ -66,6 +66,9 @@ pub struct LiveMessage {
     pub cc: Vec<LivePerson>,
     #[serde(default)]
     pub bcc: Vec<LivePerson>,
+    /// Reply-To, when the sender set one.
+    #[serde(default)]
+    pub reply_to: Vec<LivePerson>,
     /// Outlook category names on the message.
     #[serde(default)]
     pub categories: Vec<String>,
@@ -142,6 +145,40 @@ pub fn fetch_mailbox(email: &str, since: &str) -> Result<(String, String, Vec<Li
         .unwrap_or("inbox");
     let messages = messages_in(&client, &token, inbox_id, since)?;
     Ok((name, email, folders, messages))
+}
+
+/// The folder tree alone, for the periodic re-listing: folders made, renamed
+/// or removed elsewhere, with the server's counts.
+pub fn fetch_folders(email: &str) -> Result<Vec<LiveFolder>, String> {
+    let token = auth::access_token_for(email)?;
+    let client = http_client()?;
+    list_folders(&client, &token)
+}
+
+pub fn folder_counts_url(folder_id: &str) -> Result<String, String> {
+    let id = folder_id.trim();
+    if id.is_empty() {
+        return Err("Choose a folder.".into());
+    }
+    Ok(format!(
+        "https://graph.microsoft.com/v1.0/me/mailFolders/{}?$select=unreadItemCount,totalItemCount",
+        path_segment(id)
+    ))
+}
+
+fn folder_counts_from(value: &serde_json::Value) -> Option<(i64, i64)> {
+    let unread = value.get("unreadItemCount")?.as_i64()?;
+    let total = value.get("totalItemCount")?.as_i64()?;
+    Some((unread.max(0), total.max(0)))
+}
+
+/// One folder's unread and total, as the server counts them. The cache holds
+/// only the sync window, so its own row counts run low.
+pub fn fetch_folder_counts(email: &str, folder_id: &str) -> Result<(i64, i64), String> {
+    let url = folder_counts_url(folder_id)?;
+    let token = auth::access_token_for(email)?;
+    let client = http_client()?;
+    folder_counts_from(&graph_get(&client, &token, &url)?).ok_or_else(|| "Graph sent an unreadable response.".to_string())
 }
 
 pub fn fetch_folder(email: &str, folder_id: &str, since: &str) -> Result<Vec<LiveMessage>, String> {
@@ -247,11 +284,22 @@ fn retry_after(headers: &reqwest::header::HeaderMap) -> Option<u64> {
     headers.get(reqwest::header::RETRY_AFTER)?.to_str().ok()?.trim().parse().ok()
 }
 
+/// One client for the whole app, so calls share its open connections: a new
+/// client per call paid a TLS handshake every time. A clone is a handle to
+/// the same pool. Idle connections are dropped before the servers' own idle
+/// timeouts would close them under a request.
 pub(crate) fn http_client() -> Result<reqwest::blocking::Client, String> {
-    reqwest::blocking::Client::builder()
+    static CLIENT: std::sync::OnceLock<reqwest::blocking::Client> = std::sync::OnceLock::new();
+    if let Some(client) = CLIENT.get() {
+        return Ok(client.clone());
+    }
+    let built = reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_secs(45))
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .pool_idle_timeout(std::time::Duration::from_secs(90))
         .build()
-        .map_err(|err| err.to_string())
+        .map_err(|err| err.to_string())?;
+    Ok(CLIENT.get_or_init(|| built).clone())
 }
 
 fn list_folders(client: &reqwest::blocking::Client, token: &str) -> Result<Vec<LiveFolder>, String> {
@@ -518,11 +566,15 @@ fn graph_get(client: &reqwest::blocking::Client, token: &str, url: &str) -> Resu
     graph_get_paged(client, token, url, None)
 }
 
+fn page_size_header(page_size: Option<usize>) -> Option<String> {
+    page_size.map(|size| format!("odata.maxpagesize={size}"))
+}
+
 /// With a page size: Graph's delta pages are 10 messages unless asked.
 fn graph_get_paged(client: &reqwest::blocking::Client, token: &str, url: &str, page_size: Option<usize>) -> Result<serde_json::Value, String> {
     let mut request = client.get(url).bearer_auth(token).header("Accept", "application/json");
-    if let Some(size) = page_size {
-        request = request.header("Prefer", format!("odata.maxpagesize={size}"));
+    if let Some(prefer) = page_size_header(page_size) {
+        request = request.header("Prefer", prefer);
     }
     let response = request
         .send_graph(token)
@@ -574,6 +626,7 @@ fn parse_message(value: serde_json::Value) -> Option<LiveMessage> {
         to: people_from(&value, "toRecipients"),
         cc: people_from(&value, "ccRecipients"),
         bcc: people_from(&value, "bccRecipients"),
+        reply_to: people_from(&value, "replyTo"),
         categories: value["categories"]
             .as_array()
             .map(|list| list.iter().filter_map(|c| c.as_str()).take(25).map(String::from).collect())
@@ -849,6 +902,10 @@ fn delta_error(err: String) -> String {
     "Could not catch up on mail.".into()
 }
 
+/// Rows a catch-up page may carry. A day's changes then come in a page or
+/// two, not one request for every ten messages.
+const DELTA_PAGE_SIZE: usize = 100;
+
 pub fn pull_mail_delta(token: &str, start: &str) -> Result<MailDelta, String> {
     if !trusted_delta_link(start) {
         return Err("The mail sync link was not accepted.".into());
@@ -868,7 +925,8 @@ pub fn pull_mail_delta(token: &str, start: &str) -> Result<MailDelta, String> {
             return Ok(MailDelta { removed, changed, patched, link: String::new() });
         }
         pages += 1;
-        let page = graph_get(&client, token, &url).map_err(delta_error)?;
+        // Asked on every page: Graph's delta pages are 10 rows otherwise.
+        let page = graph_get_paged(&client, token, &url, Some(DELTA_PAGE_SIZE)).map_err(delta_error)?;
         let parsed = parse_delta_page(&page);
         removed.extend(parsed.removed);
         changed.extend(parsed.changed);
@@ -1111,6 +1169,15 @@ const LAUNCHABLE: &[&str] = &[
     "mjs", "cjs", "exe", "msi", "com", "bat", "cmd", "ps1", "vbs", "vbe", "wsf", "scr", "lnk", "reg",
     "html", "htm", "xhtml", "shtml", "svg", "hta", "url", "webloc", "service", "timer", "command",
     "elf", "so", "ko", "xht", "xhtm", "mht", "mhtml", "svgz", "xml", "xsl", "xslt", "shtm",
+    // Office files that carry macros, and add-ins, which are code.
+    "docm", "dotm", "xlsm", "xltm", "xlam", "xla", "xll", "pptm", "potm", "ppam", "ppsm", "sldm",
+    // PostScript is a program the viewer runs.
+    "ps", "eps", "epsf", "epsi",
+    // More launchers and scripts: Windows ones Wine may be the handler for,
+    // Java classes, Python zip apps, LibreOffice extensions and macros, and
+    // spreadsheet files that fetch or run what they name.
+    "pif", "cpl", "msc", "scf", "jse", "ws", "wsh", "wsc", "psm1", "chm", "class", "pyz", "pyzw", "oxt",
+    "bas", "iqy", "slk",
 ];
 
 pub fn launchable(name: &str) -> bool {
@@ -2022,7 +2089,24 @@ fn moved_id(from: &str, reply: &serde_json::Value) -> Option<MovedId> {
     Some(MovedId { from: from.to_string(), to: to.to_string() })
 }
 
-pub fn apply_mail(email: &str, kind: &str, message_ids: &[String], destination: &str) -> Result<Vec<MovedId>, String> {
+/// What a run of mail actions did. It stops at the first refusal, and the
+/// messages before that one were changed on the server all the same, so the
+/// caller records `done` and `moved` in the cache before it reports `failed`.
+#[derive(Debug, Default, PartialEq)]
+pub struct MailApplied {
+    /// The ids, as asked, whose action went through.
+    pub done: Vec<String>,
+    pub moved: Vec<MovedId>,
+    pub failed: Option<String>,
+}
+
+/// An error here is before anything was sent: nothing changed.
+///
+/// One request per message, in order. Graph's JSON $batch would cut the
+/// round trips, but it runs a mailbox's requests under the same limit of
+/// four at once and answers the rest 429 inside a 200, each to be read and
+/// retried on its own; that is not worth it for at most 40 messages.
+pub fn apply_mail(email: &str, kind: &str, message_ids: &[String], destination: &str) -> Result<MailApplied, String> {
     if message_ids.is_empty() {
         return Err("Choose a message.".into());
     }
@@ -2035,15 +2119,30 @@ pub fn apply_mail(email: &str, kind: &str, message_ids: &[String], destination: 
         .collect::<Result<Vec<_>, _>>()?;
     let token = auth::access_token_for(email)?;
     let client = http_client()?;
-    let mut moved = Vec::new();
-    for (id, request) in message_ids.iter().zip(&requests) {
-        let reply = graph_send(&client, &token, request)?;
+    Ok(apply_each(message_ids, &requests, |request| graph_send(&client, &token, request)))
+}
+
+fn apply_each(
+    message_ids: &[String],
+    requests: &[MailRequest],
+    mut send: impl FnMut(&MailRequest) -> Result<serde_json::Value, String>,
+) -> MailApplied {
+    let mut applied = MailApplied::default();
+    for (id, request) in message_ids.iter().zip(requests) {
+        let reply = match send(request) {
+            Ok(reply) => reply,
+            Err(err) => {
+                applied.failed = Some(err);
+                break;
+            }
+        };
+        applied.done.push(id.clone());
         // A move gives the message a new id; so do junk and not junk.
         if request.url.ends_with("/move") || (request.url.ends_with("/markAsJunk") || request.url.ends_with("/markAsNotJunk")) && request.body.get("moveToJunk").or(request.body.get("moveToInbox")) == Some(&serde_json::json!(true)) {
-            moved.extend(moved_id(id.trim(), &reply));
+            applied.moved.extend(moved_id(id.trim(), &reply));
         }
     }
-    Ok(moved)
+    applied
 }
 
 const EVENT_SELECT: &str = "id,subject,start,end,isAllDay,showAs,location,body,bodyPreview,organizer,attendees,isCancelled,responseStatus,isOrganizer,type,seriesMasterId,isReminderOn,reminderMinutesBeforeStart,onlineMeeting";
@@ -2167,16 +2266,36 @@ pub fn fetch_calendar(email: &str, start: &str, end: &str) -> Result<(Vec<LiveCa
     )?;
     let mut calendars = listed.iter().filter_map(|item| calendar_from_value(item, email)).collect::<Vec<_>>();
     calendars.sort_by(|left, right| right.is_default.cmp(&left.is_default).then(left.name.cmp(&right.name)));
-    let mut events = Vec::new();
+    let mut read = Vec::new();
     for calendar in calendars.iter().take(24) {
         let url = calendar_view_url(&calendar.id, start, end)?;
-        for item in graph_pages(&client, &token, &url, CALENDAR_EVENT_PAGES)? {
-            if let Some(event) = event_from_value(&item, &calendar.id) {
-                events.push(event);
+        read.push((calendar.id.as_str(), graph_pages(&client, &token, &url, CALENDAR_EVENT_PAGES)));
+    }
+    let events = events_of_readable(read)?;
+    Ok((calendars, events))
+}
+
+/// The events of the calendars that answered. A calendar shared with you can
+/// refuse its events (or time out); the others still show. When every one
+/// failed there is nothing to show, so the first error is the answer.
+fn events_of_readable(read: Vec<(&str, Result<Vec<serde_json::Value>, String>)>) -> Result<Vec<LiveEvent>, String> {
+    let asked = read.len();
+    let mut events = Vec::new();
+    let mut first_error = None;
+    let mut failed = 0usize;
+    for (calendar_id, items) in read {
+        match items {
+            Ok(items) => events.extend(items.iter().filter_map(|item| event_from_value(item, calendar_id))),
+            Err(err) => {
+                failed += 1;
+                first_error.get_or_insert(err);
             }
         }
     }
-    Ok((calendars, events))
+    match first_error {
+        Some(err) if failed == asked => Err(err),
+        _ => Ok(events),
+    }
 }
 
 pub fn fetch_contacts(email: &str) -> Result<Vec<LiveContact>, String> {
@@ -3116,12 +3235,132 @@ mod tests {
         assert!(launchable_bytes(b"<!-- x --><html><script>alert(1)</script>"));
         assert!(launchable_bytes(b"<script>alert(1)</script>"));
         assert!(launchable_bytes(b"Dear customer,\n<a href=x>statement</a>"));
+        // Macro-carrying Office files and PostScript are download-only too.
+        for name in ["budget.xlsm", "Letter.DOCM", "deck.pptm", "slides.ppsm", "addin.xlam", "form.dotm", "page.ps", "logo.EPS", "app.jnlp"] {
+            assert!(launchable(name), "{name}");
+        }
+        for name in ["budget.xlsx", "letter.docx", "deck.pptx", "old.doc", "notes.odt", "scan.tiff"] {
+            assert!(!launchable(name), "{name}");
+        }
         assert!(!has_extension("statement"));
         assert!(!has_extension(".bashrc"));
         assert!(has_extension("invoice.pdf"));
         assert!(plain_document_bytes(b"%PDF-1.7\n"));
         assert!(!plain_document_bytes(b"<b>hello</b>"));
         assert!(!plain_document_bytes(b"Plain notes"));
+    }
+
+    #[test]
+    fn one_failing_calendar_does_not_hide_the_others() {
+        let event = serde_json::json!({
+            "id": "e1", "subject": "Kiln", "showAs": "busy",
+            "start": { "dateTime": "2026-11-20T09:00:00.0000000", "timeZone": "UTC" },
+            "end": { "dateTime": "2026-11-20T10:00:00.0000000", "timeZone": "UTC" }
+        });
+        let events = events_of_readable(vec![
+            ("mine", Ok(vec![event.clone()])),
+            ("shared", Err("Graph refused the request (404 Not Found). ".to_string())),
+        ])
+        .unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].calendar_id, "mine");
+        // Every calendar failing is a failure, told as the first error.
+        let err = events_of_readable(vec![("a", Err("first".to_string())), ("b", Err("second".to_string()))]).unwrap_err();
+        assert_eq!(err, "first");
+        // No calendars at all is an empty calendar, not an error.
+        assert!(events_of_readable(Vec::new()).unwrap().is_empty());
+    }
+
+    #[test]
+    fn catch_up_pages_ask_for_more_than_ten_rows() {
+        assert_eq!(page_size_header(Some(DELTA_PAGE_SIZE)).as_deref(), Some("odata.maxpagesize=100"));
+        assert_eq!(page_size_header(None), None);
+    }
+
+    #[test]
+    fn the_http_client_is_shared() {
+        // Clones of one client share a pool; building twice would not.
+        let first = http_client().unwrap();
+        let second = http_client().unwrap();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            // One connection serves both requests when the pool is shared.
+            let (mut stream, _) = listener.accept().unwrap();
+            for _ in 0..2 {
+                let mut seen = Vec::new();
+                let mut buf = [0u8; 1024];
+                while !seen.windows(4).any(|w| w == b"\r\n\r\n") {
+                    let n = stream.read(&mut buf).unwrap();
+                    assert!(n > 0, "the second request came on a new connection");
+                    seen.extend_from_slice(&buf[..n]);
+                }
+                stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}").unwrap();
+            }
+        });
+        assert_eq!(first.get(&url).send().unwrap().text().unwrap(), "{}");
+        assert_eq!(second.get(&url).send().unwrap().text().unwrap(), "{}");
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn reply_to_is_read_from_the_message() {
+        assert!(LIST_SELECT.contains(",replyTo,") && MESSAGE_SELECT.contains(",replyTo,"));
+        let message = parse_message(serde_json::json!({
+            "id": "m1",
+            "from": { "emailAddress": { "name": "News", "address": "news@shop.example" } },
+            "replyTo": [
+                { "emailAddress": { "name": "Help", "address": "help@shop.example" } },
+                { "emailAddress": { "name": "No address", "address": "" } }
+            ]
+        }))
+        .unwrap();
+        assert_eq!(message.reply_to.len(), 1);
+        assert_eq!(message.reply_to[0].email, "help@shop.example");
+        let json = serde_json::to_value(&message).unwrap();
+        assert_eq!(json["replyTo"][0]["name"], "Help");
+        let plain = parse_message(serde_json::json!({ "id": "m2" })).unwrap();
+        assert!(plain.reply_to.is_empty());
+    }
+
+    #[test]
+    fn a_failed_move_keeps_the_ones_before_it() {
+        let ids: Vec<String> = ["a", "b", "c"].iter().map(|id| id.to_string()).collect();
+        let requests: Vec<MailRequest> = ids.iter().map(|id| move_request(id, "dest").unwrap()).collect();
+        let mut sent = 0;
+        let applied = apply_each(&ids, &requests, |request| {
+            sent += 1;
+            if request.url.contains("/messages/b/") {
+                return Err("Graph refused the request (404 Not Found). ".to_string());
+            }
+            Ok(serde_json::json!({ "id": "new-a" }))
+        });
+        // It stops at the refusal: "c" was never sent.
+        assert_eq!(sent, 2);
+        assert_eq!(applied.done, vec!["a".to_string()]);
+        assert_eq!(applied.moved, vec![MovedId { from: "a".into(), to: "new-a".into() }]);
+        assert!(applied.failed.as_deref().unwrap().contains("404"));
+
+        let all = apply_each(&ids, &requests, |_| Ok(serde_json::Value::Null));
+        assert_eq!(all.done, ids);
+        assert!(all.moved.is_empty() && all.failed.is_none());
+
+        // A read change is done without a new id.
+        let read = vec![mail_action_request("read", "a").unwrap()];
+        let marked = apply_each(&ids[..1], &read, |_| Ok(serde_json::json!({ "id": "a" })));
+        assert_eq!((marked.done.len(), marked.moved.len()), (1, 0));
+    }
+
+    #[test]
+    fn folder_counts_come_from_the_server() {
+        assert_eq!(
+            folder_counts_url(" in/box ").unwrap(),
+            "https://graph.microsoft.com/v1.0/me/mailFolders/in%2Fbox?$select=unreadItemCount,totalItemCount"
+        );
+        assert!(folder_counts_url(" ").is_err());
+        let value = serde_json::json!({ "id": "x", "unreadItemCount": 3412, "totalItemCount": 90211 });
+        assert_eq!(folder_counts_from(&value), Some((3412, 90211)));
+        assert_eq!(folder_counts_from(&serde_json::json!({ "unreadItemCount": 1 })), None);
     }
 
     #[test]
