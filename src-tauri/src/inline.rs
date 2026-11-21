@@ -76,32 +76,83 @@ pub fn inline_images(email: &str, message_id: &str) -> Result<Vec<InlineImage>, 
     let token = auth::access_token_for(email)?;
     let client = graph::http_client()?;
     let listed = graph::graph_get_pub(&client, &token, &graph::attachments_url(message_id)?)?;
+    let empty = Vec::new();
+    let items = listed["value"].as_array().unwrap_or(&empty);
     let mut out = Vec::new();
     let mut total = 0i64;
-    for item in listed["value"].as_array().into_iter().flatten() {
-        if out.len() >= MAX_IMAGES {
+    let mut from = 0usize;
+    // Normally one round. Another only when a picture could not be fetched
+    // or read and there are more listed to take its place.
+    loop {
+        let (picked, next) = pick_images(items, from, out.len(), total);
+        if picked.is_empty() {
+            break;
+        }
+        from = next;
+        let fetched = in_order(&picked, FETCHERS, |(id, _)| {
+            let url = format!(
+                "https://graph.microsoft.com/v1.0/me/messages/{}/attachments/{}",
+                graph::path_segment(message_id.trim()),
+                graph::path_segment(id)
+            );
+            image_from(&graph::graph_get_pub(&client, &token, &url).ok()?)
+        });
+        for ((_, size), image) in picked.iter().zip(fetched) {
+            if let Some(image) = image {
+                total += size;
+                out.push(image);
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Pictures fetched at once. Graph calls wait for one of the mailbox's three
+/// request slots anyway, so more threads would only queue.
+const FETCHERS: usize = 3;
+
+/// The next pictures to fetch, as (attachment id, listed size), from item
+/// `from` on, and where the round after it starts: as many as still fit the
+/// count and the size caps after `have` pictures of `total` bytes, in the
+/// listed order.
+fn pick_images(items: &[serde_json::Value], from: usize, have: usize, total: i64) -> (Vec<(String, i64)>, usize) {
+    let mut picked = Vec::new();
+    let mut planned = total;
+    let mut next = items.len();
+    for (index, item) in items.iter().enumerate().skip(from) {
+        if have + picked.len() >= MAX_IMAGES {
+            next = index;
             break;
         }
         if allowed_type(item["contentType"].as_str().unwrap_or("")).is_none() {
             continue;
         }
         let size = item["size"].as_i64().unwrap_or(0);
-        if size > MAX_IMAGE_BYTES * 2 || total + size > MAX_TOTAL_BYTES * 2 {
+        if size > MAX_IMAGE_BYTES * 2 || planned + size > MAX_TOTAL_BYTES * 2 {
             continue;
         }
         let Some(id) = item["id"].as_str() else { continue };
-        let url = format!(
-            "https://graph.microsoft.com/v1.0/me/messages/{}/attachments/{}",
-            graph::path_segment(message_id.trim()),
-            graph::path_segment(id)
-        );
-        let Ok(full) = graph::graph_get_pub(&client, &token, &url) else { continue };
-        if let Some(image) = image_from(&full) {
-            total += size;
-            out.push(image);
-        }
+        planned += size;
+        picked.push((id.to_string(), size));
     }
-    Ok(out)
+    (picked, next)
+}
+
+/// `work` on every job, a few at a time, with the answers in the jobs' order.
+fn in_order<J: Sync, R: Send>(jobs: &[J], workers: usize, work: impl Fn(&J) -> Option<R> + Sync) -> Vec<Option<R>> {
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let done = std::sync::Mutex::new((0..jobs.len()).map(|_| None).collect::<Vec<Option<R>>>());
+    std::thread::scope(|scope| {
+        for _ in 0..workers.min(jobs.len()) {
+            scope.spawn(|| loop {
+                let index = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let Some(job) = jobs.get(index) else { break };
+                let answer = work(job);
+                done.lock().unwrap_or_else(|e| e.into_inner())[index] = answer;
+            });
+        }
+    });
+    done.into_inner().unwrap_or_else(|e| e.into_inner())
 }
 
 /// An attachment for the in-app viewer (2026-10-23): a PDF or a picture,
@@ -153,6 +204,47 @@ pub fn preview_bytes(name: &str, content_type: &str, bytes: Vec<u8>) -> Result<P
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn pictures_fetched_together_keep_their_order() {
+        // The first job answers last; the answers still come in job order.
+        let jobs: Vec<u64> = vec![30, 0, 10, 0, 20, 0, 0];
+        let seen = std::sync::Mutex::new(Vec::new());
+        let got = in_order(&jobs, 3, |wait| {
+            std::thread::sleep(std::time::Duration::from_millis(*wait));
+            seen.lock().unwrap().push(*wait);
+            (*wait != 10).then_some(*wait)
+        });
+        assert_eq!(got, vec![Some(30), Some(0), None, Some(0), Some(20), Some(0), Some(0)]);
+        assert_eq!(seen.lock().unwrap().len(), jobs.len(), "every job ran once");
+        assert!(in_order(&Vec::<u64>::new(), 3, |n| Some(*n)).is_empty());
+    }
+
+    #[test]
+    fn the_caps_choose_which_pictures_are_fetched() {
+        let item = |id: &str, kind: &str, size: i64| json!({ "id": id, "contentType": kind, "size": size });
+        let items = vec![
+            item("a", "image/png", 1000),
+            item("doc", "application/pdf", 1000),
+            item("huge", "image/jpeg", MAX_IMAGE_BYTES * 2 + 1),
+            item("b", "image/jpeg", 2000),
+            json!({ "contentType": "image/png", "size": 5 }),
+        ];
+        let (picked, next) = pick_images(&items, 0, 0, 0);
+        assert_eq!(picked, vec![("a".to_string(), 1000), ("b".to_string(), 2000)]);
+        assert_eq!(next, items.len());
+        // What is already held counts against the total.
+        let (picked, _) = pick_images(&items, 0, 0, MAX_TOTAL_BYTES * 2 - 1500);
+        assert_eq!(picked, vec![("a".to_string(), 1000)]);
+        // No more than MAX_IMAGES in all; the next round starts where this stopped.
+        let many: Vec<_> = (0..MAX_IMAGES + 5).map(|n| item(&format!("p{n}"), "image/png", 10)).collect();
+        let (picked, next) = pick_images(&many, 0, 0, 0);
+        assert_eq!((picked.len(), next), (MAX_IMAGES, MAX_IMAGES));
+        let (more, end) = pick_images(&many, next, MAX_IMAGES - 2, 0);
+        assert_eq!(more.iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>(), ["p20", "p21"]);
+        assert_eq!(end, MAX_IMAGES + 2);
+        assert!(pick_images(&many, next, MAX_IMAGES, 0).0.is_empty());
+    }
 
     #[test]
     fn a_phone_photo_in_the_body_is_not_dropped() {

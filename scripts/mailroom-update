@@ -19,7 +19,9 @@ version="$(grep -m1 -o '"version": "[0-9.]*"' src-tauri/tauri.conf.json | grep -
 
 echo "Building Mailroom ${version} (release)…"
 # Not --quiet: Settings > Software reads the "Compiling" lines from the log.
-cargo build --release --manifest-path src-tauri/Cargo.toml
+# --locked: build exactly the dependency versions the committed Cargo.lock
+# names, and stop rather than quietly pick newer ones if it is out of date.
+cargo build --release --locked --manifest-path src-tauri/Cargo.toml
 # How long this took, so the next update's progress bar can estimate.
 state="$HOME/.local/state/mailroom"
 mkdir -p "$state" && echo "$SECONDS" > "$state/update-seconds"
