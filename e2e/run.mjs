@@ -1274,6 +1274,28 @@ test("a cancelled meeting's row offers no answers", { fake: true, setup: () => {
   same(await calls("respond_invite"), [], "and nothing is sent");
 });
 
+test("Forward and Reply on your own reply from Sent Items, inside the thread", { fake: true, setup: () => {
+  const at = n => new Date(Date.now() - n * 60000).toISOString().replace(/\.\d+Z$/, "Z");
+  const base = { thread: "conv-pump", subject: "Pump order", fromName: "Kai", fromEmail: "kai@example.org", unread: false, flagged: false, cc: [], bcc: [], to: [], categories: [], hasAttachments: false, files: [] };
+  ["pump-1", "pump-2"].forEach((id, i) => window.__inbox.push(Object.assign({}, base, { id, received: at(90 - i * 30), preview: id, bodyHtml: "<p>" + id + "</p>" })));
+} }, async ({ p }) => {
+  await p.click('.row[data-id="pump-2"]'); await wait(500);
+  // A reply of yours, with an attachment, that the thread pulls in from Sent Items.
+  await p.evaluate(() => {
+    const head = messages.find(m => m.id === "pump-2");
+    messages.push(Object.assign({}, head, { id: "pump-sent", box: "sent", seq: head.seq - 1, from: "Jon", fromName: "Jon", email: "jon@example.com", preview: "Here it is", bodyHtml: "<p>Here it is</p>", received: new Date(Date.now() - 45 * 60000).toISOString().replace(/\.\d+Z$/, "Z"), hasAttachment: true, files: [{ id: "q1", name: "quote.pdf", size: 1000, contentType: "application/pdf" }], attachments: ["quote.pdf"] }));
+    render();
+  }); await wait(400);
+  await p.click('#reading [data-fold="pump-sent"]'); await wait(400);
+  await p.click('#reading [data-forward="pump-sent"]'); await wait(600);
+  const fw = await p.evaluate(() => ({ form: !!document.querySelector('#reading form#compose-form[data-msg="pump-sent"]'), subject: replyDraft.subject, files: replyDraft.attachments }));
+  same(fw, { form: true, subject: "FW: Pump order", files: ["quote.pdf"] }, "Forward opens a forward of it, with its attachment");
+  await p.evaluate(() => { replyDraft = null; render(); }); await wait(300);
+  if (await p.$('#reading [data-fold="pump-sent"]')) { await p.click('#reading [data-fold="pump-sent"]'); await wait(400); }
+  await p.click('#reading [data-reply="pump-sent"]'); await wait(600);
+  same(await p.evaluate(() => [!!document.querySelector('#reading form#compose-form[data-msg="pump-sent"]'), replyDraft.compose || "reply"]), [true, "reply"], "and Reply opens a reply");
+});
+
 test("new mail notifies once, escaped", { fake: true }, async ({ p, calls, clear }) => {
   await clear();
   await p.evaluate(() => {

@@ -8732,12 +8732,16 @@ function renderReading() {
   const threadDraft = folderDraft ? null : sameThreadDraft(conv);
   const shownDraft = folderDraft || threadDraft;
   if (shownDraft && shownDraft.needsBody) ensureMessageBody(shownDraft);
-  const answering = replyDraft && conv.messages.some(m => m.id === replyDraft.msgId) && (!shownDraft || replyDraft.draftId !== shownDraft.id);
+  // Your replies from Sent Items show in the thread too, and can be
+  // answered or forwarded from their own card (2026-11-21: Forward on one
+  // did nothing, because only conv.messages was searched).
+  const answerable = conv.messages.concat(threadSent(conv));
+  const answering = replyDraft && answerable.some(m => m.id === replyDraft.msgId) && (!shownDraft || replyDraft.draftId !== shownDraft.id);
   if (shownDraft && !answering && (!replyDraft || replyDraft.draftId !== shownDraft.id)) {
     replyDraft = draftState(shownDraft);
   }
   const usingDraft = !!(shownDraft && replyDraft && replyDraft.draftId === shownDraft.id);
-  const replyMsg = !folderDraft && replyDraft && conv.messages.find(m => m.id === replyDraft.msgId);
+  const replyMsg = !folderDraft && replyDraft && answerable.find(m => m.id === replyDraft.msgId);
   const showReply = !!replyMsg && replyView !== "message";
   const showDraftCard = usingDraft && !replyMsg && !folderDraft;
   const shown = folderDraft ? conv.messages : threadShown(conv);
@@ -18086,7 +18090,7 @@ const folderBusy = new Set();
 let syncNote = "";
 const folderRun = new Map();
 const bodyLoads = new Set();
-const APP_VERSION = "1.4.6";
+const APP_VERSION = "1.4.7";
 let appVersion = APP_VERSION;
 
 prepareDesktopAccounts();
