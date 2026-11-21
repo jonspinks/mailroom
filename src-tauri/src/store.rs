@@ -1,5 +1,5 @@
 use crate::graph::{LiveFile, LiveFolder, LiveMessage};
-use rusqlite::{named_params, params, Connection};
+use rusqlite::{params, Connection};
 use serde::Serialize;
 
 const SCHEMA: &str = "
@@ -83,7 +83,154 @@ fn ensure_schema(conn: &Connection) -> Result<(), String> {
          on folder_messages (email, thread);",
     )
     .map_err(|err| err.to_string())?;
+    add_search_index(conn)?;
+    // A new cache gets the unread index at once. One that already holds mail
+    // gets it from catch_up, off the launch path: building it reads every row.
+    let empty: bool = conn
+        .query_row("select not exists (select 1 from folder_messages)", [], |row| row.get(0))
+        .map_err(|err| err.to_string())?;
+    if empty {
+        conn.execute_batch(UNREAD_INDEX).map_err(|err| err.to_string())?;
+    }
     Ok(())
+}
+
+/// Folder counts ask for the unread rows of one folder after every sync.
+/// Without this each count read `unread` from the row itself, which sits
+/// behind the body, so it walked every body in the folder.
+const UNREAD_INDEX: &str = "create index if not exists folder_messages_unread
+     on folder_messages (email, folder_id, unread) where unread != 0";
+
+/// The text search looks through: the headers `SEARCH_HAY` reads, without the
+/// account name, which is the reader's and not the message's.
+macro_rules! search_head {
+    () => {
+        "coalesce(fm.subject,'') || ' ' || coalesce(fm.from_name,'') || ' ' || coalesce(fm.from_email,'') || ' ' || coalesce(fm.preview,'') || ' ' || coalesce(fm.to_json,'') || ' ' || coalesce(fm.cc_json,'') || ' ' || coalesce(fm.bcc_json,'') || ' ' || coalesce(fm.files,'')"
+    };
+}
+
+/// What the search index holds for one message: its headers and its body text.
+const SEARCH_INDEXED: &str = concat!(search_head!(), " || ' ' || coalesce(fm.body_text,'')");
+
+/// The search index (2026-11). `message_search` maps every three-letter run
+/// in a message's headers and body text to the row that has it, so a search
+/// reads the few rows that could match instead of every body in the account.
+/// It only narrows: the LIKE tests in `search_cached_on` still decide, so a
+/// search finds exactly what it found before.
+///
+/// The triggers do not index. They note the row in `search_dirty`, and
+/// `index_search_batch` indexes noted rows a few at a time. A search reads
+/// noted rows as well as indexed ones, so it is right at any moment: just
+/// after a write, half way through the first fill, or after a kill. An
+/// existing cache starts with every row noted and is filled in behind the
+/// window. The triggers name only plain tables, so a build from before the
+/// index can still write this file.
+///
+/// Rows are known by rowid. `folder_messages` has no integer key of its own,
+/// so VACUUM may renumber it: never VACUUM this file without emptying
+/// `message_search` and noting every row again.
+fn add_search_index(conn: &Connection) -> Result<(), String> {
+    let have = |conn: &Connection| -> Result<bool, String> {
+        conn.query_row(
+            "select count(*) from sqlite_master where name in
+             ('message_search', 'search_dirty', 'folder_messages_search_new', 'folder_messages_search_gone',
+              'folder_messages_search_head', 'folder_messages_search_body')",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .map(|count| count == 6)
+        .map_err(|err| err.to_string())
+    };
+    if have(conn)? {
+        return Ok(());
+    }
+    let tx = rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)
+        .map_err(|err| err.to_string())?;
+    if have(&tx)? {
+        return Ok(());
+    }
+    let note = |row: &str| format!("insert into search_dirty (id) select {row}.rowid where not exists (select 1 from search_dirty where id = {row}.rowid);");
+    let changed = ["subject", "from_name", "from_email", "preview", "to_json", "cc_json", "bcc_json", "files"]
+        .map(|name| format!("old.{name} is not new.{name}"))
+        .join(" or ");
+    tx.execute_batch(&format!(
+        "create virtual table if not exists message_search using fts5(
+             text, content='', contentless_delete=1, detail=none, tokenize='trigram');
+         create table if not exists search_dirty (id integer primary key);
+         create trigger if not exists folder_messages_search_new after insert on folder_messages
+         begin {new} end;
+         create trigger if not exists folder_messages_search_gone after delete on folder_messages
+         begin {old} end;
+         create trigger if not exists folder_messages_search_head
+         after update of subject, from_name, from_email, preview, to_json, cc_json, bcc_json, files on folder_messages
+         when {changed}
+         begin {new} end;
+         create trigger if not exists folder_messages_search_body after update of body_text on folder_messages
+         begin {new} end;
+         delete from message_search;
+         delete from search_dirty;
+         insert into search_dirty (id) select rowid from folder_messages;",
+        new = note("new"),
+        old = note("old"),
+    ))
+    .map_err(|err| err.to_string())?;
+    tx.commit().map_err(|err| err.to_string())
+}
+
+/// Most rows one batch indexes, and about how long it may hold the write lock.
+const SEARCH_BATCH_ROWS: usize = 400;
+const SEARCH_BATCH_TIME: std::time::Duration = std::time::Duration::from_millis(25);
+
+/// Index some of the rows the triggers noted. True when more are waiting.
+/// One transaction: a row leaves `search_dirty` only with its index entry
+/// written, so a kill half way loses nothing.
+fn index_search_batch(conn: &mut Connection) -> Result<bool, String> {
+    let waiting: bool = conn
+        .prepare_cached("select exists (select 1 from search_dirty)")
+        .and_then(|mut stmt| stmt.query_row([], |row| row.get(0)))
+        .map_err(|err| err.to_string())?;
+    if !waiting {
+        return Ok(false);
+    }
+    let started = std::time::Instant::now();
+    let tx = conn.transaction().map_err(|err| err.to_string())?;
+    let ids = {
+        let mut stmt = tx
+            .prepare_cached("select id from search_dirty order by id limit ?1")
+            .map_err(|err| err.to_string())?;
+        let rows = stmt
+            .query_map([SEARCH_BATCH_ROWS as i64 + 1], |row| row.get::<_, i64>(0))
+            .map_err(|err| err.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(|err| err.to_string())?
+    };
+    let mut more = ids.len() > SEARCH_BATCH_ROWS;
+    {
+        let mut forget = tx.prepare_cached("delete from message_search where rowid = ?1").map_err(|err| err.to_string())?;
+        // Nothing is written for a row that has since been deleted.
+        let mut index = tx
+            .prepare_cached(&format!(
+                "insert into message_search (rowid, text) select fm.rowid, {SEARCH_INDEXED} from folder_messages fm where fm.rowid = ?1"
+            ))
+            .map_err(|err| err.to_string())?;
+        let mut done = tx.prepare_cached("delete from search_dirty where id = ?1").map_err(|err| err.to_string())?;
+        for (n, id) in ids.iter().take(SEARCH_BATCH_ROWS).enumerate() {
+            if n > 0 && started.elapsed() > SEARCH_BATCH_TIME {
+                more = true;
+                break;
+            }
+            forget.execute([id]).map_err(|err| err.to_string())?;
+            index.execute([id]).map_err(|err| err.to_string())?;
+            done.execute([id]).map_err(|err| err.to_string())?;
+        }
+    }
+    tx.commit().map_err(|err| err.to_string())?;
+    Ok(more)
+}
+
+/// One step of the work that is kept off the launch path. True when there is more.
+fn catch_up(conn: &mut Connection) -> Result<bool, String> {
+    conn.execute_batch(UNREAD_INDEX).map_err(|err| err.to_string())?;
+    index_search_batch(conn)
 }
 
 /// Gmail mail cached before 1.3.21 was decoded as Latin-1 when its bytes were
@@ -235,6 +382,9 @@ fn extra_text(item: &LiveMessage) -> String {
     if !item.focus.is_empty() {
         extra.insert("focus".into(), item.focus.clone().into());
     }
+    if !item.reply_to.is_empty() {
+        extra.insert("replyTo".into(), serde_json::to_value(&item.reply_to).unwrap_or_default());
+    }
     serde_json::Value::Object(extra).to_string()
 }
 
@@ -246,6 +396,7 @@ fn apply_extra(item: &mut LiveMessage, text: &str) {
         _ => String::new(),
     };
     item.invite = extra["invite"].as_bool().unwrap_or(false);
+    item.reply_to = serde_json::from_value(extra["replyTo"].clone()).unwrap_or_default();
     item.focus = match extra["focus"].as_str() {
         Some("focused") => "focused".into(),
         Some("other") => "other".into(),
@@ -318,35 +469,159 @@ fn add_flagged(conn: &Connection, table: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Set once the schema has been checked in this run. Every store call opens
-/// its own connection, and the check is about fifteen queries, so it runs on
-/// the first open only.
-static SCHEMA_READY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// The connections to one cache file, opened once and kept for the life of
+/// the app. Opening one per call meant parsing the schema, the pragmas and
+/// the chmods every time, and closing the last one checkpointed the WAL.
+///
+/// Writes share one connection, so they queue here instead of on SQLite's
+/// lock. Reads have their own (WAL lets them run beside a write), and search
+/// has a third, so a slow search never holds up the message list.
+struct Store {
+    writer: std::sync::Mutex<Connection>,
+    reader: std::sync::Mutex<Connection>,
+    searcher: std::sync::Mutex<Connection>,
+    /// Raised after a write, which may have left rows for the search index.
+    stirred: std::sync::Mutex<bool>,
+    bell: std::sync::Condvar,
+}
 
-fn open() -> Result<Connection, String> {
-    let path = db_path();
+/// One store per file. The path follows HOME, which tests point elsewhere.
+static STORES: std::sync::Mutex<Vec<(std::path::PathBuf, &'static Store)>> = std::sync::Mutex::new(Vec::new());
+
+/// A panic elsewhere while a connection was held does not spoil it: an
+/// unfinished transaction rolled back as it unwound.
+fn hold<T>(lock: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+fn store() -> Result<&'static Store, String> {
+    store_at(db_path())
+}
+
+fn store_at(path: std::path::PathBuf) -> Result<&'static Store, String> {
+    let mut stores = hold(&STORES);
+    if let Some((_, found)) = stores.iter().find(|(known, _)| *known == path) {
+        return Ok(found);
+    }
+    // The schema is checked here, once per file, with the list held: a second
+    // caller waits for the first instead of racing it.
+    let opened: &'static Store = Box::leak(Box::new(open_store(&path)?));
+    stores.push((path, opened));
+    let _ = std::thread::Builder::new().name("mail-cache".into()).spawn(move || tend(opened));
+    Ok(opened)
+}
+
+fn open_store(path: &std::path::Path) -> Result<Store, String> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(|err| err.to_string())?;
     }
-    let conn = Connection::open(&path).map_err(|err| err.to_string())?;
+    let writer = Connection::open(path).map_err(|err| err.to_string())?;
+    tune(&writer)?;
+    // WAL: reads don't wait behind backfill writes, and a write is one
+    // append instead of a journal plus the database. It stays set in the file.
+    writer.query_row("pragma journal_mode = wal", [], |_| Ok(())).map_err(|err| err.to_string())?;
+    ensure_schema(&writer)?;
+    let reader = open_reader(path)?;
+    let searcher = open_reader(path)?;
+    keep_private(path);
+    Ok(Store {
+        writer: std::sync::Mutex::new(writer),
+        reader: std::sync::Mutex::new(reader),
+        searcher: std::sync::Mutex::new(searcher),
+        stirred: std::sync::Mutex::new(true),
+        bell: std::sync::Condvar::new(),
+    })
+}
+
+fn open_reader(path: &std::path::Path) -> Result<Connection, String> {
+    let conn = Connection::open(path).map_err(|err| err.to_string())?;
     tune(&conn)?;
-    if !SCHEMA_READY.load(std::sync::atomic::Ordering::Acquire) {
-        // WAL: reads don't wait behind backfill writes, and a write is one
-        // append instead of a journal plus the database. It stays set in the file.
-        conn.query_row("pragma journal_mode = wal", [], |_| Ok(())).map_err(|err| err.to_string())?;
-        ensure_schema(&conn)?;
-        SCHEMA_READY.store(true, std::sync::atomic::Ordering::Release);
-    }
-    keep_private(&path);
+    conn.pragma_update(None, "query_only", true).map_err(|err| err.to_string())?;
     Ok(conn)
+}
+
+/// The write connection for one call. Dropping it wakes `tend`.
+struct Writing {
+    conn: std::sync::MutexGuard<'static, Connection>,
+    store: &'static Store,
+}
+
+impl std::ops::Deref for Writing {
+    type Target = Connection;
+    fn deref(&self) -> &Connection {
+        &self.conn
+    }
+}
+
+impl std::ops::DerefMut for Writing {
+    fn deref_mut(&mut self) -> &mut Connection {
+        &mut self.conn
+    }
+}
+
+impl Drop for Writing {
+    fn drop(&mut self) {
+        *hold(&self.store.stirred) = true;
+        self.store.bell.notify_one();
+    }
+}
+
+// None of these is held across a network call or another store call: every
+// `pub fn` here takes one, does its SQL and lets go before it returns.
+fn writing() -> Result<Writing, String> {
+    Ok(writing_to(store()?))
+}
+
+fn writing_to(store: &'static Store) -> Writing {
+    Writing { conn: hold(&store.writer), store }
+}
+
+fn reading() -> Result<std::sync::MutexGuard<'static, Connection>, String> {
+    Ok(hold(&store()?.reader))
+}
+
+fn searching() -> Result<std::sync::MutexGuard<'static, Connection>, String> {
+    Ok(hold(&store()?.searcher))
+}
+
+/// The cache's own thread. After a write it runs `catch_up` in short steps,
+/// letting go of the write connection between them so a sync or a mail
+/// action is never kept waiting for long. The one long step is building the
+/// unread index on a cache from before it: that reads the whole file once,
+/// and writes wait for it while reads carry on.
+fn tend(store: &'static Store) {
+    loop {
+        {
+            let mut stirred = hold(&store.stirred);
+            while !*stirred {
+                stirred = store.bell.wait(stirred).unwrap_or_else(|poisoned| poisoned.into_inner());
+            }
+            *stirred = false;
+        }
+        // An error waits for the next write rather than spinning on it.
+        loop {
+            let more = catch_up(&mut hold(&store.writer));
+            if !matches!(more, Ok(true)) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
 }
 
 /// Per connection. NORMAL is safe with WAL: a power cut can lose the last
 /// writes, never corrupt the file, and this cache refills from the server.
 /// The timeout makes a second writer wait its turn instead of failing.
+/// Sorts and search lists stay in memory, 8 MB of pages are kept, and up to
+/// 64 MB of the file is read through the page cache without a copy.
 fn tune(conn: &Connection) -> Result<(), String> {
     conn.busy_timeout(std::time::Duration::from_secs(5)).map_err(|err| err.to_string())?;
-    conn.pragma_update(None, "synchronous", "NORMAL").map_err(|err| err.to_string())
+    conn.pragma_update(None, "synchronous", "NORMAL").map_err(|err| err.to_string())?;
+    conn.execute_batch("pragma temp_store = memory; pragma cache_size = -8000; pragma mmap_size = 67108864;")
+        .map_err(|err| err.to_string())?;
+    // The list, sync and search statements are kept prepared between calls.
+    conn.set_prepared_statement_cache_capacity(64);
+    Ok(())
 }
 
 /// The cache holds whole mailboxes. Only this user may read it.
@@ -364,7 +639,7 @@ fn keep_private(db: &std::path::Path) {
 }
 
 pub fn replace_inbox(items: &[LiveMessage]) -> Result<(), String> {
-    let mut conn = open()?;
+    let mut conn = writing()?;
     let tx = conn.transaction().map_err(|err| err.to_string())?;
     tx.execute("delete from messages", []).map_err(|err| err.to_string())?;
     for item in items {
@@ -375,22 +650,22 @@ pub fn replace_inbox(items: &[LiveMessage]) -> Result<(), String> {
 }
 
 pub fn load_inbox() -> Result<Vec<LiveMessage>, String> {
-    let conn = open()?;
+    let conn = reading()?;
     load_legacy(&conn)
 }
 
 pub fn replace_folders(email: &str, folders: &[LiveFolder]) -> Result<(), String> {
-    let mut conn = open()?;
+    let mut conn = writing()?;
     replace_folders_on(&mut conn, email, folders)
 }
 
 pub fn replace_folder_messages(email: &str, folder_id: &str, items: &[LiveMessage]) -> Result<(), String> {
-    let mut conn = open()?;
+    let mut conn = writing()?;
     replace_folder_messages_on(&mut conn, email, folder_id, items)
 }
 
 pub fn record_mail_action(email: &str, kind: &str, ids: &[String]) -> Result<(), String> {
-    let mut conn = open()?;
+    let mut conn = writing()?;
     record_mail_action_on(&mut conn, email, kind, ids)
 }
 
@@ -458,7 +733,7 @@ fn record_mail_action_on(conn: &mut Connection, email: &str, kind: &str, ids: &[
 /// back on the next start (2026-10-27, "Jon and Nick Sync").
 pub fn forget_messages(email: &str, ids: &[String]) -> Result<(), String> {
     let email = email.trim().to_lowercase();
-    let mut conn = open()?;
+    let mut conn = writing()?;
     let folders = forget_messages_on(&mut conn, &email, ids)?;
     drop(conn);
     for folder in folders {
@@ -492,10 +767,35 @@ fn forget_messages_on(conn: &mut Connection, email: &str, ids: &[String]) -> Res
     Ok(folders)
 }
 
+/// Everything cached for one account, for when it signs out. Nothing called
+/// this before 2026-11, so a signed-out account's mail stayed in the file.
+/// The old single-inbox table has no account column, so it loses the rows
+/// this account also holds. The search index follows through its triggers.
+/// The file does not shrink (see add_search_index on VACUUM); the freed
+/// pages are used again.
+pub fn forget_account(email: &str) -> Result<(), String> {
+    let email = email.trim().to_lowercase();
+    if email.is_empty() {
+        return Ok(());
+    }
+    let mut conn = writing()?;
+    forget_account_on(&mut conn, &email)
+}
+
+fn forget_account_on(conn: &mut Connection, email: &str) -> Result<(), String> {
+    let tx = conn.transaction().map_err(|err| err.to_string())?;
+    tx.execute("delete from messages where id in (select id from folder_messages where email = ?1)", [email])
+        .map_err(|err| err.to_string())?;
+    for table in ["folder_messages", "folders", "folder_delta"] {
+        tx.execute(&format!("delete from {table} where email = ?1"), [email]).map_err(|err| err.to_string())?;
+    }
+    tx.commit().map_err(|err| err.to_string())
+}
+
 /// Record a move to any folder. A folder this computer has not seen is
 /// left to the next sync.
 pub fn record_move(email: &str, folder_id: &str, ids: &[String]) -> Result<(), String> {
-    let mut conn = open()?;
+    let mut conn = writing()?;
     record_move_on(&mut conn, &email.trim().to_lowercase(), folder_id.trim(), ids)
 }
 
@@ -534,7 +834,7 @@ pub fn rename_moved(email: &str, moved: &[crate::graph::MovedId]) -> Result<(), 
     if moved.is_empty() {
         return Ok(());
     }
-    let mut conn = open()?;
+    let mut conn = writing()?;
     rename_moved_on(&mut conn, &email.trim().to_lowercase(), moved)
 }
 
@@ -568,18 +868,18 @@ fn rename_moved_on(conn: &mut Connection, email: &str, moved: &[crate::graph::Mo
 }
 
 pub fn load_message_body(email: &str, message_id: &str) -> Result<String, String> {
-    let conn = open()?;
+    let conn = reading()?;
     load_message_body_on(&conn, email, message_id)
 }
 
 pub fn cached_inbox_id(email: &str) -> Result<Option<String>, String> {
-    let conn = open()?;
+    let conn = reading()?;
     cached_inbox_id_on(&conn, email)
 }
 
 /// One cached message's header and the folder it is in, for a mailroom: link.
 pub fn find_message(email: &str, message_id: &str) -> Result<Option<(LiveMessage, String)>, String> {
-    let conn = open()?;
+    let conn = reading()?;
     find_message_on(&conn, email, message_id)
 }
 
@@ -603,27 +903,27 @@ fn find_message_on(conn: &Connection, email: &str, message_id: &str) -> Result<O
 }
 
 pub fn folder_sync_state(email: &str, folder_id: &str) -> Result<FolderSyncState, String> {
-    let conn = open()?;
+    let conn = reading()?;
     folder_sync_state_on(&conn, email, folder_id)
 }
 
 pub fn load_delta_link(email: &str, folder_id: &str) -> Result<Option<String>, String> {
-    let conn = open()?;
+    let conn = reading()?;
     load_delta_link_on(&conn, email, folder_id)
 }
 
 pub fn save_delta_link(email: &str, folder_id: &str, link: &str) -> Result<(), String> {
-    let mut conn = open()?;
+    let mut conn = writing()?;
     save_delta_link_on(&mut conn, email, folder_id, link)
 }
 
 pub fn clear_delta_link(email: &str, folder_id: &str) -> Result<(), String> {
-    let mut conn = open()?;
+    let mut conn = writing()?;
     clear_delta_link_on(&mut conn, email, folder_id)
 }
 
 pub fn upsert_folder_messages(email: &str, folder_id: &str, items: &[LiveMessage]) -> Result<(), String> {
-    let mut conn = open()?;
+    let mut conn = writing()?;
     upsert_folder_messages_on(&mut conn, email, folder_id, items)
 }
 
@@ -634,7 +934,7 @@ pub fn apply_delta(
     changed: &[LiveMessage],
     link: &str,
 ) -> Result<(), String> {
-    let mut conn = open()?;
+    let mut conn = writing()?;
     apply_delta_on(&mut conn, email, folder_id, removed, changed, link)
 }
 
@@ -646,7 +946,7 @@ pub fn patch_messages(
     folder_id: &str,
     patches: &[crate::graph::MessagePatch],
 ) -> Result<Vec<LiveMessage>, String> {
-    let mut conn = open()?;
+    let mut conn = writing()?;
     patch_messages_on(&mut conn, email, folder_id, patches)
 }
 
@@ -664,12 +964,12 @@ fn patch_messages_on(
     let tx = conn.transaction().map_err(|err| err.to_string())?;
     let mut merged = Vec::new();
     for patch in patches {
-        let found = tx.query_row(
-            "select id, thread, subject, from_name, from_email, received, preview, '', unread, flagged, attached, files, to_json, cc_json, bcc_json, cats, extra
-             from folder_messages where email = ?1 and folder_id = ?2 and id = ?3",
-            params![email, folder_id, patch.id.trim()],
-            message_row,
-        );
+        let found = tx
+            .prepare_cached(
+                "select id, thread, subject, from_name, from_email, received, preview, '', unread, flagged, attached, files, to_json, cc_json, bcc_json, cats, extra
+                 from folder_messages where email = ?1 and folder_id = ?2 and id = ?3",
+            )
+            .and_then(|mut stmt| stmt.query_row(params![email, folder_id, patch.id.trim()], message_row));
         let mut item = match found {
             Ok(item) => item,
             Err(rusqlite::Error::QueryReturnedNoRows) => continue,
@@ -718,7 +1018,7 @@ fn patch_messages_on(
 /// A folder was marked read, or emptied, on the server.
 pub fn folder_changed(email: &str, folder_id: &str, emptied: bool) -> Result<(), String> {
     let email = email.trim().to_lowercase();
-    let mut conn = open()?;
+    let mut conn = writing()?;
     let tx = conn.transaction().map_err(|err| err.to_string())?;
     if emptied {
         tx.execute("delete from folder_messages where email = ?1 and folder_id = ?2", params![email, folder_id.trim()])
@@ -738,15 +1038,27 @@ pub fn refresh_folder_counts(email: &str, folder_id: &str) -> Result<(), String>
     if email.is_empty() || folder_id.is_empty() {
         return Ok(());
     }
-    let mut conn = open()?;
+    let mut conn = writing()?;
     let tx = conn.transaction().map_err(|err| err.to_string())?;
     refresh_counts_tx(&tx, &email, folder_id)?;
     tx.commit().map_err(|err| err.to_string())?;
     Ok(())
 }
 
+/// Put the server's own counts on a folder. The rows cached for it are only
+/// the sync window, so counting those can run low.
+pub fn set_folder_counts(email: &str, folder_id: &str, unread: i64, total: i64) -> Result<(), String> {
+    let conn = writing()?;
+    conn.execute(
+        "update folders set unread = ?3, total = ?4 where email = ?1 and id = ?2",
+        params![email.trim().to_lowercase(), folder_id.trim(), unread, total],
+    )
+    .map_err(|err| err.to_string())?;
+    Ok(())
+}
+
 pub fn load_folder_headers(email: &str, folder_id: &str) -> Result<Vec<LiveMessage>, String> {
-    let conn = open()?;
+    let conn = reading()?;
     load_folder_messages(&conn, email.trim().to_lowercase().as_str(), folder_id.trim(), false)
 }
 
@@ -759,13 +1071,13 @@ pub struct MessagePage {
 }
 
 pub fn load_folders(email: &str) -> Result<Vec<LiveFolder>, String> {
-    let conn = open()?;
+    let conn = reading()?;
     Ok(load_folders_on(&conn, email.trim().to_lowercase().as_str())?.unwrap_or_default())
 }
 
 /// Newest inbox messages, plus the folder list. `None` when this account has no cached folders.
 pub fn load_inbox_page(email: &str, limit: i64) -> Result<Option<(Vec<LiveFolder>, MessagePage)>, String> {
-    let conn = open()?;
+    let conn = reading()?;
     let email = email.trim().to_lowercase();
     let Some(folders) = load_folders_on(&conn, &email)? else {
         return Ok(None);
@@ -786,7 +1098,7 @@ pub fn load_folder_page(
     before: &str,
     before_id: &str,
 ) -> Result<MessagePage, String> {
-    let conn = open()?;
+    let conn = reading()?;
     load_folder_page_on(&conn, email, folder_id, include_body, limit, before, before_id)
 }
 
@@ -798,7 +1110,7 @@ pub fn load_box_page(
     before: &str,
     before_id: &str,
 ) -> Result<MessagePage, String> {
-    let conn = open()?;
+    let conn = reading()?;
     load_box_page_on(&conn, email, box_key, include_body, limit, before, before_id)
 }
 
@@ -853,12 +1165,16 @@ fn replace_folder_messages_on(
         params![email, folder_id],
     )
     .map_err(|err| err.to_string())?;
-    for item in items {
-        tx.execute(
+    let mut insert = tx
+        .prepare_cached(
             "insert or replace into folder_messages
              (email, folder_id, id, thread, subject, from_name, from_email, received, preview, body_html, unread, flagged, attached, files, to_json, cc_json, bcc_json, cats, extra, body_text)
              values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)",
-            params![
+        )
+        .map_err(|err| err.to_string())?;
+    for item in items {
+        insert
+            .execute(params![
                 email,
                 folder_id,
                 item.id,
@@ -879,10 +1195,10 @@ fn replace_folder_messages_on(
                 cats_text(&item.categories),
                 extra_text(item),
                 search_text(&item.body_html)
-            ],
-        )
-        .map_err(|err| err.to_string())?;
+            ])
+            .map_err(|err| err.to_string())?;
     }
+    drop(insert);
     tx.commit().map_err(|err| err.to_string())?;
     Ok(())
 }
@@ -895,13 +1211,14 @@ fn load_mailbox_on(conn: &Connection, email: &str) -> Result<Option<(Vec<LiveFol
 
 fn load_folders_on(conn: &Connection, email: &str) -> Result<Option<Vec<LiveFolder>>, String> {
     let count: i64 = conn
-        .query_row("select count(*) from folders where email = ?1", [email], |row| row.get(0))
+        .prepare_cached("select count(*) from folders where email = ?1")
+        .and_then(|mut stmt| stmt.query_row([email], |row| row.get(0)))
         .map_err(|err| err.to_string())?;
     if count == 0 {
         return Ok(None);
     }
     let mut stmt = conn
-        .prepare(
+        .prepare_cached(
             "select id, parent_id, name, box_key, unread, total
              from folders where email = ?1 order by position",
         )
@@ -965,19 +1282,17 @@ fn folder_sync_state_on(conn: &Connection, email: &str, folder_id: &str) -> Resu
         return Ok(FolderSyncState { messages: 0, newest: None, delta_link: None });
     }
     let messages: i64 = conn
-        .query_row(
-            "select count(*) from folder_messages where email = ?1 and folder_id = ?2",
-            params![email, folder_id],
-            |row| row.get(0),
-        )
+        .prepare_cached("select count(*) from folder_messages where email = ?1 and folder_id = ?2")
+        .and_then(|mut stmt| stmt.query_row(params![email, folder_id], |row| row.get(0)))
         .map_err(|err| err.to_string())?;
-    let newest = optional_string(conn.query_row(
-        "select received from folder_messages
-         where email = ?1 and folder_id = ?2 and received != ''
-         order by received desc limit 1",
-        params![email, folder_id],
-        |row| row.get(0),
-    ))?;
+    let newest = optional_string(
+        conn.prepare_cached(
+            "select received from folder_messages
+             where email = ?1 and folder_id = ?2 and received != ''
+             order by received desc limit 1",
+        )
+        .and_then(|mut stmt| stmt.query_row(params![email, folder_id], |row| row.get(0))),
+    )?;
     let delta_link = load_delta_link_on(conn, &email, folder_id)?;
     Ok(FolderSyncState { messages, newest, delta_link })
 }
@@ -988,11 +1303,10 @@ fn load_delta_link_on(conn: &Connection, email: &str, folder_id: &str) -> Result
     if email.is_empty() || folder_id.is_empty() {
         return Ok(None);
     }
-    optional_string(conn.query_row(
-        "select delta_link from folder_delta where email = ?1 and folder_id = ?2",
-        params![email, folder_id],
-        |row| row.get(0),
-    ))
+    optional_string(
+        conn.prepare_cached("select delta_link from folder_delta where email = ?1 and folder_id = ?2")
+            .and_then(|mut stmt| stmt.query_row(params![email, folder_id], |row| row.get(0))),
+    )
 }
 
 fn save_delta_link_on(conn: &mut Connection, email: &str, folder_id: &str, link: &str) -> Result<(), String> {
@@ -1087,23 +1401,35 @@ fn apply_delta_on(
 }
 
 fn refresh_counts_tx(tx: &rusqlite::Transaction, email: &str, folder_id: &str) -> Result<(), String> {
-    tx.execute(
+    // The unread count is answered by UNREAD_INDEX, the total by
+    // folder_messages_by_received: neither opens a message row.
+    tx.prepare_cached(
         "update folders set
             unread = (select count(*) from folder_messages where email = ?1 and folder_id = ?2 and unread != 0),
             total = (select count(*) from folder_messages where email = ?1 and folder_id = ?2)
          where email = ?1 and id = ?2",
-        params![email, folder_id],
     )
+    .and_then(|mut stmt| stmt.execute(params![email, folder_id]))
     .map_err(|err| err.to_string())?;
     Ok(())
 }
 
 fn upsert_message_tx(tx: &rusqlite::Transaction, email: &str, folder_id: &str, item: &LiveMessage) -> Result<(), String> {
-    tx.execute(
+    // A change without a body keeps the cached one, so it does not name the
+    // body columns at all: naming them would send the row back through the
+    // search index on every sync (see add_search_index).
+    let body = if item.body_html.is_empty() {
+        ""
+    } else {
+        "body_html = excluded.body_html,
+           body_text = excluded.body_text,"
+    };
+    tx.prepare_cached(&format!(
         "insert into folder_messages
          (email, folder_id, id, thread, subject, from_name, from_email, received, preview, body_html, unread, flagged, attached, files, to_json, cc_json, bcc_json, cats, extra, body_text)
          values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)
          on conflict(email, id) do update set
+           {body}
            folder_id = excluded.folder_id,
            thread = case when excluded.thread = '' then folder_messages.thread else excluded.thread end,
            subject = case when excluded.subject = '' then folder_messages.subject else excluded.subject end,
@@ -1111,8 +1437,6 @@ fn upsert_message_tx(tx: &rusqlite::Transaction, email: &str, folder_id: &str, i
            from_email = case when excluded.from_email = '' then folder_messages.from_email else excluded.from_email end,
            received = case when excluded.received = '' then folder_messages.received else excluded.received end,
            preview = case when excluded.preview = '' then folder_messages.preview else excluded.preview end,
-           body_html = case when excluded.body_html = '' then folder_messages.body_html else excluded.body_html end,
-           body_text = case when excluded.body_html = '' then folder_messages.body_text else excluded.body_text end,
            unread = excluded.unread,
            flagged = excluded.flagged,
            attached = case when excluded.files != '[]' then 1 when excluded.attached = 1 then 1 else 0 end,
@@ -1121,8 +1445,10 @@ fn upsert_message_tx(tx: &rusqlite::Transaction, email: &str, folder_id: &str, i
            cc_json = case when excluded.cc_json = '[]' then folder_messages.cc_json else excluded.cc_json end,
            bcc_json = case when excluded.bcc_json = '[]' then folder_messages.bcc_json else excluded.bcc_json end,
            cats = excluded.cats,
-           extra = case when excluded.extra = '{}' then folder_messages.extra else excluded.extra end",
-        params![
+           extra = case when excluded.extra = '{{}}' then folder_messages.extra else excluded.extra end"
+    ))
+    .and_then(|mut stmt| {
+        stmt.execute(params![
             email,
             folder_id,
             item.id,
@@ -1143,8 +1469,8 @@ fn upsert_message_tx(tx: &rusqlite::Transaction, email: &str, folder_id: &str, i
             cats_text(&item.categories),
             extra_text(item),
             search_text(&item.body_html)
-        ],
-    )
+        ])
+    })
     .map_err(|err| err.to_string())?;
     Ok(())
 }
@@ -1189,7 +1515,7 @@ fn load_message_body_on(conn: &Connection, email: &str, message_id: &str) -> Res
         return Ok(String::new());
     }
     let mut stmt = conn
-        .prepare("select body_html from folder_messages where email = ?1 and id = ?2 limit 1")
+        .prepare_cached("select body_html from folder_messages where email = ?1 and id = ?2 limit 1")
         .map_err(|err| err.to_string())?;
     let mut rows = stmt.query(params![email, message_id]).map_err(|err| err.to_string())?;
     if let Some(row) = rows.next().map_err(|err| err.to_string())? {
@@ -1204,18 +1530,17 @@ pub fn save_message_body(email: &str, message_id: &str, html: &str) -> Result<()
     if email.is_empty() || message_id.is_empty() {
         return Ok(());
     }
-    let conn = open()?;
-    conn.execute(
-        "update folder_messages set body_html = ?3, body_text = ?4 where email = ?1 and id = ?2",
-        params![email, message_id, html, search_text(html)],
-    )
-    .map_err(|err| err.to_string())?;
+    let text = search_text(html);
+    let conn = writing()?;
+    conn.prepare_cached("update folder_messages set body_html = ?3, body_text = ?4 where email = ?1 and id = ?2")
+        .and_then(|mut stmt| stmt.execute(params![email, message_id, html, text]))
+        .map_err(|err| err.to_string())?;
     Ok(())
 }
 
 fn folder_ids_for_box(conn: &Connection, email: &str, box_key: &str) -> Result<Vec<String>, String> {
     let mut stmt = conn
-        .prepare("select id from folders where email = ?1 and box_key = ?2 order by position")
+        .prepare_cached("select id from folders where email = ?1 and box_key = ?2 order by position")
         .map_err(|err| err.to_string())?;
     let rows = stmt
         .query_map(params![email, box_key], |row| row.get(0))
@@ -1291,7 +1616,7 @@ fn load_folder_page_on(
     let body = if include_body { "body_html" } else { "''" };
     let fetch = limit.saturating_add(1);
     let mut stmt = conn
-        .prepare(&format!(
+        .prepare_cached(&format!(
             "select id, thread, subject, from_name, from_email, received, preview, {body}, unread, flagged, attached, files, to_json, cc_json, bcc_json, cats, extra
              from folder_messages
              where email = ?1 and folder_id = ?2
@@ -1405,6 +1730,7 @@ fn message_fields(row: &rusqlite::Row) -> rusqlite::Result<LiveMessage> {
         to: people_from_text(row.get::<_, Option<String>>(12)?.unwrap_or_default()),
         cc: people_from_text(row.get::<_, Option<String>>(13)?.unwrap_or_default()),
         bcc: people_from_text(row.get::<_, Option<String>>(14)?.unwrap_or_default()),
+        reply_to: Vec::new(),
         categories: cats_from_text(row.get::<_, Option<String>>(15).ok().flatten().unwrap_or_default()),
         importance: String::new(),
         invite: false,
@@ -1424,7 +1750,7 @@ fn cats_from_text(text: String) -> Vec<String> {
 pub fn set_categories(email: &str, ids: &[String], cats: &[String]) -> Result<(), String> {
     let email = email.trim().to_lowercase();
     let text = cats_text(cats);
-    let mut conn = open()?;
+    let mut conn = writing()?;
     let tx = conn.transaction().map_err(|err| err.to_string())?;
     for id in ids {
         tx.execute("update folder_messages set cats = ?1 where email = ?2 and id = ?3", params![text, email, id])
@@ -1460,7 +1786,7 @@ fn files_from_text(text: String) -> Vec<LiveFile> {
 }
 
 pub fn save_message_files(email: &str, message_id: &str, files: &[LiveFile]) -> Result<(), String> {
-    let mut conn = open()?;
+    let mut conn = writing()?;
     save_message_files_on(&mut conn, email, message_id, files)
 }
 
@@ -1517,7 +1843,7 @@ pub struct CachedSearchPage {
     pub more: bool,
 }
 
-const SEARCH_HAY: &str = "lower(coalesce(fm.subject,'') || ' ' || coalesce(fm.from_name,'') || ' ' || coalesce(fm.from_email,'') || ' ' || coalesce(fm.preview,'') || ' ' || coalesce(fm.to_json,'') || ' ' || coalesce(fm.cc_json,'') || ' ' || coalesce(fm.bcc_json,'') || ' ' || coalesce(fm.files,'') || ' ' || :account)";
+const SEARCH_HAY: &str = concat!("lower(", search_head!(), " || ' ' || :account)");
 
 fn like_pattern(word: &str) -> String {
     let mut out = String::from("%");
@@ -1531,7 +1857,9 @@ fn like_pattern(word: &str) -> String {
     out
 }
 
-fn search_patterns(values: &[String], slots: usize) -> Vec<String> {
+/// The words or phrases of a search as it compares them: lower case, at
+/// most 80 letters, empty slots after the last one.
+fn search_terms(values: &[String], slots: usize) -> Vec<String> {
     let mut out = vec![String::new(); slots];
     let mut n = 0;
     for value in values {
@@ -1542,10 +1870,46 @@ fn search_patterns(values: &[String], slots: usize) -> Vec<String> {
         if word.is_empty() {
             continue;
         }
-        out[n] = like_pattern(&word);
+        out[n] = word.chars().take(80).collect();
         n += 1;
     }
     out
+}
+
+/// Most three-letter runs one search asks the index for. Any of them narrow.
+const SEARCH_RUNS_MAX: usize = 64;
+
+/// The question for `message_search`: every three-letter run of every term,
+/// all of which a matching message must hold. `None` when the index cannot
+/// narrow this search and it reads the account as before: no term has three
+/// letters, or the only long ones could be found in the account name, which
+/// every message matches and the index does not hold.
+fn search_match(terms: &[&String], account: &str) -> Option<String> {
+    let mut runs: Vec<String> = Vec::new();
+    for term in terms {
+        // In the name, or running off the end of the headers into it.
+        let in_account = account.contains(term.as_str())
+            || term.match_indices(' ').any(|(at, _)| account.starts_with(&term[at + 1..]));
+        if in_account {
+            continue;
+        }
+        let letters: Vec<char> = term.chars().collect();
+        for run in letters.windows(3) {
+            if run.contains(&'\0') {
+                continue;
+            }
+            let run: String = run.iter().collect();
+            if !runs.contains(&run) {
+                runs.push(run);
+            }
+        }
+    }
+    runs.truncate(SEARCH_RUNS_MAX);
+    if runs.is_empty() {
+        return None;
+    }
+    let quoted: Vec<String> = runs.iter().map(|run| format!("\"{}\"", run.replace('"', "\"\""))).collect();
+    Some(quoted.join(" AND "))
 }
 
 fn calendar_day(value: &str) -> String {
@@ -1582,7 +1946,7 @@ pub fn search_cached(
     before: &str,
     before_id: &str,
 ) -> Result<CachedSearchPage, String> {
-    let conn = open()?;
+    let conn = searching()?;
     search_cached_on(
         &conn,
         email,
@@ -1630,8 +1994,10 @@ fn search_cached_on(
     }
     let limit = if limit <= 0 { 100 } else { limit.min(200) };
     let fetch = limit + 1;
-    let words = search_patterns(words, 8);
-    let phrases = search_patterns(phrases, 4);
+    let word_terms = search_terms(words, 8);
+    let phrase_terms = search_terms(phrases, 4);
+    let words: Vec<String> = word_terms.iter().map(|term| if term.is_empty() { String::new() } else { like_pattern(term) }).collect();
+    let phrases: Vec<String> = phrase_terms.iter().map(|term| if term.is_empty() { String::new() } else { like_pattern(term) }).collect();
     let files = match files.trim() {
         "yes" | "no" => files.trim(),
         _ => "",
@@ -1645,11 +2011,22 @@ fn search_cached_on(
     // The page then lists the whole conversation, as Outlook does, so a reply
     // that only quotes the words still shows beside the one that has them.
     let has_text = words.iter().chain(phrases.iter()).any(|p| !p.is_empty());
-    let mut hits = String::from(
+    let terms: Vec<&String> = word_terms.iter().chain(phrase_terms.iter()).filter(|term| !term.is_empty()).collect();
+    let matching = search_match(&terms, &account);
+    // With the index, only the rows it names are read, plus those written
+    // since it was last brought up to date. The LIKE tests below still decide.
+    let mut hits = String::from(if matching.is_some() {
+        "with hits as materialized (
+           select fm.id, fm.thread
+           from (select rowid as r from message_search where message_search match :match
+                 union select id from search_dirty) near
+           cross join folder_messages fm on fm.rowid = near.r
+           where fm.email = :email"
+    } else {
         "with hits as materialized (
            select fm.id, fm.thread from folder_messages fm
-           where fm.email = :email",
-    );
+           where fm.email = :email"
+    });
     for i in 0..8 {
         hits.push_str(&format!(" and (:w{i} = '' or {SEARCH_HAY} like :w{i} escape '\\' or fm.body_text like :w{i} escape '\\')"));
     }
@@ -1690,35 +2067,40 @@ fn search_cached_on(
           order by fm.received desc, fm.id desc
           limit :fetch",
     );
-    let mut stmt = conn.prepare(&sql).map_err(|err| err.to_string())?;
+    let mut stmt = conn.prepare_cached(&sql).map_err(|err| err.to_string())?;
+    let (before, before_id) = (before.trim(), before_id.trim());
+    let (unread, read, flagged, invite, text) =
+        (unread_only as i64, read_only as i64, flagged_only as i64, invite_only as i64, has_text as i64);
+    let mut bound: Vec<(&str, &dyn rusqlite::ToSql)> = vec![
+        (":email", &email),
+        (":box", &box_key),
+        (":before", &before),
+        (":before_id", &before_id),
+        (":from_day", &from_day),
+        (":to_day", &to_day),
+        (":zone", &zone),
+        (":unread", &unread),
+        (":read", &read),
+        (":flagged", &flagged),
+        (":invite", &invite),
+        (":account", &account),
+        (":files", &files),
+        (":fetch", &fetch),
+        (":text", &text),
+    ];
+    let names = [":w0", ":w1", ":w2", ":w3", ":w4", ":w5", ":w6", ":w7", ":p0", ":p1", ":p2", ":p3"];
+    for (name, pattern) in names.into_iter().zip(words.iter().chain(phrases.iter())) {
+        bound.push((name, pattern));
+    }
+    if let Some(matching) = &matching {
+        bound.push((":match", matching));
+    }
     let rows = stmt
-        .query_map(
-            named_params! {
-                ":email": email,
-                ":box": box_key,
-                ":before": before.trim(),
-                ":before_id": before_id.trim(),
-                ":from_day": from_day,
-                ":to_day": to_day,
-                ":zone": zone,
-                ":unread": unread_only as i64,
-                ":read": read_only as i64,
-                ":flagged": flagged_only as i64,
-                ":invite": invite_only as i64,
-                ":account": account,
-                ":files": files,
-                ":fetch": fetch,
-                ":text": has_text as i64,
-                ":w0": &words[0], ":w1": &words[1], ":w2": &words[2], ":w3": &words[3],
-                ":w4": &words[4], ":w5": &words[5], ":w6": &words[6], ":w7": &words[7],
-                ":p0": &phrases[0], ":p1": &phrases[1], ":p2": &phrases[2], ":p3": &phrases[3],
-            },
-            |row| {
-                let message = message_row(row)?;
-                let box_key: String = row.get(17)?;
-                Ok((message, box_key))
-            },
-        )
+        .query_map(&bound[..], |row| {
+            let message = message_row(row)?;
+            let box_key: String = row.get(17)?;
+            Ok((message, box_key))
+        })
         .map_err(|err| err.to_string())?;
     let mut messages = Vec::new();
     let mut boxes = Vec::new();
@@ -1765,6 +2147,7 @@ mod tests {
             to: vec![crate::graph::LivePerson { name: "Bea".into(), email: "bea@example.com".into() }],
             cc: vec![],
             bcc: vec![],
+            reply_to: vec![],
             categories: vec![],
             importance: String::new(),
             invite: false,
@@ -1831,6 +2214,20 @@ mod tests {
         assert_eq!((back.importance.as_str(), back.invite), ("high", true));
         apply_extra(&mut back, "{}");
         assert_eq!((back.importance.as_str(), back.invite), ("", false));
+    }
+
+    #[test]
+    fn reply_to_survives_the_cache() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        ensure_schema(&conn).unwrap();
+        let mut item = message("r1");
+        item.reply_to = vec![crate::graph::LivePerson { name: "Help".into(), email: "help@shop.example".into() }];
+        replace_folder_messages_on(&mut conn, "jon@example.com", "in", &[item, message("r2")]).unwrap();
+        let mut back = load_folder_messages(&conn, "jon@example.com", "in", false).unwrap();
+        back.sort_by(|a, b| a.id.cmp(&b.id));
+        assert_eq!(back[0].reply_to.len(), 1);
+        assert_eq!((back[0].reply_to[0].name.as_str(), back[0].reply_to[0].email.as_str()), ("Help", "help@shop.example"));
+        assert!(back[1].reply_to.is_empty());
     }
 
     #[test]
@@ -2460,5 +2857,279 @@ mod tests {
         assert!(search_text(&huge).len() <= SEARCH_TEXT_MAX);
         assert_eq!(search_text(""), "");
     }
-}
 
+    /// Bring the search index and the unread index up to date, as `tend` does.
+    fn caught_up(conn: &mut Connection) {
+        while catch_up(conn).unwrap() {}
+    }
+
+    fn waiting(conn: &Connection) -> i64 {
+        conn.query_row("select count(*) from search_dirty", [], |row| row.get(0)).unwrap()
+    }
+
+    /// Rows the index names for one question, before the LIKE tests.
+    fn named(conn: &Connection, question: &str) -> i64 {
+        conn.query_row("select count(*) from message_search where message_search match ?1", [question], |row| row.get(0))
+            .unwrap()
+    }
+
+    fn mailbox(conn: &mut Connection) {
+        replace_folders_on(conn, "jon@example.com", &[folder("in", "root", "inbox")]).unwrap();
+        let mut bill = message("bill");
+        bill.subject = "Kiln INVOICE".into();
+        bill.body_html = "<p>Pay by etransfer, quoting \"K-12\"</p>".into();
+        let mut note = message("note");
+        note.subject = "Lunch".into();
+        note.from_name = "Émile Zola".into();
+        note.body_html = "<p>Soup at noon</p>".into();
+        replace_folder_messages_on(conn, "jon@example.com", "in", &[bill, note]).unwrap();
+    }
+
+    #[test]
+    fn the_search_index_finds_parts_of_words_as_the_old_search_did() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        ensure_schema(&conn).unwrap();
+        mailbox(&mut conn);
+        // Written a moment ago and not indexed yet: found all the same.
+        assert_eq!(waiting(&conn), 2);
+        assert_eq!(search_ids(&conn, &["voic"]), vec!["bill"]);
+        caught_up(&mut conn);
+        assert_eq!(waiting(&conn), 0);
+        // The index names the one row, and only that one is read.
+        assert_eq!(named(&conn, "\"voi\" AND \"oic\""), 1);
+        assert_eq!(search_ids(&conn, &["voic"]), vec!["bill"]);
+        assert_eq!(search_ids(&conn, &["VOICE", "transf"]), vec!["bill"]);
+        assert_eq!(search_ids(&conn, &["\"k-12\""]), vec!["bill"]);
+        assert_eq!(search_ids(&conn, &["soup", "invoice"]), Vec::<String>::new());
+        assert_eq!(search_ids(&conn, &["zola"]), vec!["note"]);
+        // Two letters are too few for the index. They are still searched for.
+        assert_eq!(search_ids(&conn, &["ki"]), vec!["bill"]);
+        assert_eq!(search_ids(&conn, &["ki", "voic"]), vec!["bill"]);
+        // The account's own name is in no message, and matches them all.
+        assert_eq!(search_ids(&conn, &["jon"]).len(), 2);
+        assert_eq!(search_ids(&conn, &["jon", "soup"]), vec!["note"]);
+        // LIKE folds only A to Z, so the result does too, whatever the index folds.
+        assert_eq!(search_ids(&conn, &["émile"]), Vec::<String>::new());
+        assert!(named(&conn, "\"émi\"") > 0);
+    }
+
+    #[test]
+    fn the_search_index_follows_every_change_to_a_message() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        ensure_schema(&conn).unwrap();
+        mailbox(&mut conn);
+        caught_up(&mut conn);
+
+        // Read state, flags and a header-only sync of the same mail change
+        // nothing the index holds, so nothing is indexed again.
+        record_mail_action_on(&mut conn, "jon@example.com", "read", &["bill".to_string()]).unwrap();
+        let mut bare = message("bill");
+        bare.subject = "Kiln INVOICE".into();
+        bare.body_html = String::new();
+        upsert_folder_messages_on(&mut conn, "jon@example.com", "in", &[bare.clone()]).unwrap();
+        assert_eq!(waiting(&conn), 0);
+        assert_eq!(search_ids(&conn, &["etransfer"]), vec!["bill"]);
+
+        // A new subject, then a new body.
+        bare.subject = "Kiln receipt".into();
+        upsert_folder_messages_on(&mut conn, "jon@example.com", "in", &[bare.clone()]).unwrap();
+        assert_eq!(waiting(&conn), 1);
+        assert_eq!(search_ids(&conn, &["receipt"]), vec!["bill"]);
+        assert_eq!(search_ids(&conn, &["invoice"]), Vec::<String>::new());
+        caught_up(&mut conn);
+        assert_eq!(search_ids(&conn, &["receipt"]), vec!["bill"]);
+        assert_eq!(search_ids(&conn, &["invoice"]), Vec::<String>::new());
+        assert_eq!(named(&conn, "\"voi\""), 0);
+        bare.body_html = "<p>Paid by cheque</p>".into();
+        upsert_folder_messages_on(&mut conn, "jon@example.com", "in", &[bare]).unwrap();
+        caught_up(&mut conn);
+        assert_eq!(search_ids(&conn, &["cheque"]), vec!["bill"]);
+        assert_eq!(search_ids(&conn, &["etransfer"]), Vec::<String>::new());
+
+        // A new id keeps its place in the index. A deleted message leaves it.
+        rename_moved_on(&mut conn, "jon@example.com", &[crate::graph::MovedId { from: "bill".into(), to: "bill2".into() }]).unwrap();
+        assert_eq!(search_ids(&conn, &["cheque"]), vec!["bill2"]);
+        forget_messages_on(&mut conn, "jon@example.com", &["bill2".to_string()]).unwrap();
+        assert_eq!(search_ids(&conn, &["cheque"]), Vec::<String>::new());
+        caught_up(&mut conn);
+        assert_eq!((waiting(&conn), named(&conn, "\"che\"")), (0, 0));
+
+        // Replacing a folder's messages gives them new rows.
+        let mut again = message("note");
+        again.body_html = "<p>Stew at one</p>".into();
+        replace_folder_messages_on(&mut conn, "jon@example.com", "in", &[again]).unwrap();
+        assert_eq!(search_ids(&conn, &["stew"]), vec!["note"]);
+        caught_up(&mut conn);
+        assert_eq!(search_ids(&conn, &["stew"]), vec!["note"]);
+        assert_eq!(search_ids(&conn, &["soup"]), Vec::<String>::new());
+        assert_eq!(named(&conn, "\"sou\""), 0);
+    }
+
+    #[test]
+    fn a_cache_from_before_the_search_index_is_indexed_in_steps() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        ensure_schema(&conn).unwrap();
+        replace_folders_on(&mut conn, "jon@example.com", &[folder("in", "root", "inbox")]).unwrap();
+        let many: Vec<LiveMessage> = (0..SEARCH_BATCH_ROWS + 50)
+            .map(|n| {
+                let mut item = message(&format!("m{n:04}"));
+                item.unread = n % 2 == 0;
+                item.body_html = format!("<p>parcel number{n:04}</p>");
+                item
+            })
+            .collect();
+        replace_folder_messages_on(&mut conn, "jon@example.com", "in", &many).unwrap();
+        // As 1.4.4 left the file: no index, no triggers, no unread index.
+        conn.execute_batch(
+            "drop trigger folder_messages_search_new; drop trigger folder_messages_search_gone;
+             drop trigger folder_messages_search_head; drop trigger folder_messages_search_body;
+             drop table message_search; drop table search_dirty; drop index folder_messages_unread;",
+        )
+        .unwrap();
+
+        ensure_schema(&conn).unwrap();
+        let unread_index = |conn: &Connection| -> i64 {
+            conn.query_row("select count(*) from sqlite_master where name = 'folder_messages_unread'", [], |row| row.get(0)).unwrap()
+        };
+        // Opening only notes the rows. Search is right before any are indexed.
+        assert_eq!((waiting(&conn), unread_index(&conn)), (many.len() as i64, 0));
+        assert_eq!(search_ids(&conn, &["number0007"]), vec!["m0007"]);
+        // One step does one batch, and a second open starts nothing over.
+        assert!(catch_up(&mut conn).unwrap());
+        let left = waiting(&conn);
+        assert!(left > 0 && left < many.len() as i64);
+        assert_eq!(unread_index(&conn), 1);
+        ensure_schema(&conn).unwrap();
+        assert_eq!(waiting(&conn), left);
+        assert_eq!(search_ids(&conn, &["number0007"]), vec!["m0007"]);
+        assert_eq!(search_ids(&conn, &[&format!("number{:04}", many.len() - 1)]), vec![format!("m{:04}", many.len() - 1)]);
+        caught_up(&mut conn);
+        assert_eq!(waiting(&conn), 0);
+        assert_eq!(named(&conn, "\"par\" AND \"arc\""), many.len() as i64);
+        assert_eq!(search_ids(&conn, &["number0007"]), vec!["m0007"]);
+        assert!(!catch_up(&mut conn).unwrap());
+    }
+
+    #[test]
+    fn half_an_indexing_step_leaves_the_rows_waiting() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        ensure_schema(&conn).unwrap();
+        mailbox(&mut conn);
+        // The app is killed with a step under way: its transaction never commits.
+        {
+            let tx = conn.transaction().unwrap();
+            tx.execute("insert into message_search (rowid, text) select rowid, subject from folder_messages", []).unwrap();
+            tx.execute("delete from search_dirty", []).unwrap();
+        }
+        assert_eq!(waiting(&conn), 2);
+        caught_up(&mut conn);
+        assert_eq!(search_ids(&conn, &["etransfer"]), vec!["bill"]);
+    }
+
+    #[test]
+    fn unread_counts_come_from_the_unread_index() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        ensure_schema(&conn).unwrap();
+        mailbox(&mut conn);
+        let plan: Vec<String> = conn
+            .prepare("explain query plan select count(*) from folder_messages where email = ?1 and folder_id = ?2 and unread != 0")
+            .unwrap()
+            .query_map(params!["jon@example.com", "in"], |row| row.get::<_, String>(3))
+            .unwrap()
+            .flatten()
+            .collect();
+        assert!(plan.iter().any(|step| step.contains("COVERING INDEX folder_messages_unread")), "{plan:?}");
+        record_mail_action_on(&mut conn, "jon@example.com", "read", &["bill".to_string()]).unwrap();
+        let tx = conn.transaction().unwrap();
+        refresh_counts_tx(&tx, "jon@example.com", "in").unwrap();
+        tx.commit().unwrap();
+        let folders = load_folders_on(&conn, "jon@example.com").unwrap().unwrap();
+        assert_eq!((folders[0].unread, folders[0].total), (1, 2));
+    }
+
+    #[test]
+    fn signing_out_forgets_that_account_everywhere() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        ensure_schema(&conn).unwrap();
+        mailbox(&mut conn);
+        replace_folders_on(&mut conn, "ada@example.com", &[folder("in", "root", "inbox")]).unwrap();
+        let mut hers = message("hers");
+        hers.body_html = "<p>Her etransfer</p>".into();
+        replace_folder_messages_on(&mut conn, "ada@example.com", "in", &[hers.clone()]).unwrap();
+        for email in ["jon@example.com", "ada@example.com"] {
+            conn.execute(
+                "insert into folder_delta (email, folder_id, delta_link) values (?1, 'in', 'link')",
+                [email],
+            )
+            .unwrap();
+        }
+        let tx = conn.transaction().unwrap();
+        let mut bill = message("bill");
+        bill.subject = "Kiln INVOICE".into();
+        insert_legacy(&tx, &bill).unwrap();
+        insert_legacy(&tx, &hers).unwrap();
+        tx.commit().unwrap();
+        caught_up(&mut conn);
+
+        forget_account_on(&mut conn, "jon@example.com").unwrap();
+        let count = |sql: &str| -> i64 { conn.query_row(sql, [], |row| row.get(0)).unwrap() };
+        for table in ["folders", "folder_messages", "folder_delta"] {
+            assert_eq!(count(&format!("select count(*) from {table} where email = 'jon@example.com'")), 0, "{table}");
+            assert_eq!(count(&format!("select count(*) from {table} where email = 'ada@example.com'")), 1, "{table}");
+        }
+        assert_eq!(load_legacy(&conn).unwrap().into_iter().map(|item| item.id).collect::<Vec<_>>(), vec!["hers"]);
+        caught_up(&mut conn);
+        assert_eq!((waiting(&conn), named(&conn, "\"etr\"")), (0, 1));
+        assert_eq!(search_ids(&conn, &["etransfer"]), Vec::<String>::new());
+    }
+
+    #[test]
+    fn one_file_keeps_its_connections_and_stays_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("mailroom-store-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("mail.db");
+        let store = open_store(&path).unwrap();
+        {
+            let mut writer = hold(&store.writer);
+            mailbox(&mut writer);
+        }
+        // A read sees a finished write at once, on its own connection.
+        let reader = hold(&store.reader);
+        assert_eq!(load_folder_messages(&reader, "jon@example.com", "in", false).unwrap().len(), 2);
+        assert_eq!(search_ids(&hold(&store.searcher), &["voic"]), vec!["bill"]);
+        assert!(reader.execute("delete from folders", []).is_err());
+        let mode: String = reader.query_row("pragma journal_mode", [], |row| row.get(0)).unwrap();
+        assert_eq!(mode, "wal");
+        for file in [path.clone(), dir.join("mail.db-wal")] {
+            assert_eq!(std::fs::metadata(&file).unwrap().permissions().mode() & 0o777, 0o600, "{}", file.display());
+        }
+        assert_eq!(std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777, 0o700);
+        drop(reader);
+        drop(store);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_write_wakes_the_indexing_behind_it() {
+        let dir = std::env::temp_dir().join(format!("mailroom-store-tend-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("mail.db");
+        let store = store_at(path.clone()).unwrap();
+        // The same file is the same store, not a second set of connections.
+        assert!(std::ptr::eq(store, store_at(path).unwrap()));
+        mailbox(&mut writing_to(store));
+        let mut left = -1;
+        for _ in 0..500 {
+            left = waiting(&hold(&store.reader));
+            if left == 0 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert_eq!(left, 0);
+        assert_eq!(search_ids(&hold(&store.searcher), &["voic"]), vec!["bill"]);
+        assert_eq!(named(&hold(&store.searcher), "\"voi\""), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

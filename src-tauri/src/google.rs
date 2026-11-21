@@ -917,6 +917,7 @@ pub fn parse_message(value: &Value) -> Option<(LiveMessage, Vec<String>)> {
         to: people(header(payload, "To")),
         cc: people(header(payload, "Cc")),
         bcc: people(header(payload, "Bcc")),
+        reply_to: people(header(payload, "Reply-To")),
         categories: Vec::new(),
         importance: if importance == "high" || priority == '1' || priority == '2' {
             "high".into()
@@ -1432,7 +1433,23 @@ pub fn apply_mail(email: &str, kind: &str, message_ids: &[String], destination: 
         "trash" => each(&client, &token, &ids, "trash")?,
         "inbox" | "notjunk" => {
             each(&client, &token, &ids, "untrash")?;
-            modify(&client, &token, &ids, &strings(&["INBOX"]), &strings(&["SPAM"]))?;
+            // Mail coming back from Snoozed arrives with no source folder,
+            // so the label is looked up here; left on, the mail would stay
+            // listed in Snoozed as well.
+            let mut remove = strings(&["SPAM"]);
+            if kind == "inbox" {
+                if is_user_label(source.trim()) {
+                    remove.push(source.trim().to_string());
+                }
+                if let Ok(labels) = get(&client, &token, &format!("{GMAIL}/labels")) {
+                    if let Some(snoozed) = snoozed_label(&labels) {
+                        if !remove.contains(&snoozed) {
+                            remove.push(snoozed);
+                        }
+                    }
+                }
+            }
+            modify(&client, &token, &ids, &strings(&["INBOX"]), &remove)?;
         }
         // Gmail learns from the Spam label itself; there is no blocked list
         // to change, so unblocking alone has nothing to do.
@@ -1468,6 +1485,24 @@ pub fn mark_folder_read(email: &str, folder_id: &str) -> Result<usize, String> {
     Ok(ids.len())
 }
 
+/// The folder snooze keeps mail in, when the account has one.
+const SNOOZED: &str = "Snoozed";
+
+fn label_named(labels: &Value, name: &str) -> Option<String> {
+    labels["labels"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|label| label["name"].as_str().is_some_and(|n| n.eq_ignore_ascii_case(name)))
+        .and_then(|label| label["id"].as_str())
+        .map(String::from)
+}
+
+/// The id of the Snoozed label Mailroom made, never one of Gmail's own.
+fn snoozed_label(labels: &Value) -> Option<String> {
+    label_named(labels, SNOOZED).filter(|id| is_user_label(id))
+}
+
 /// A label by name, made if it is missing; returns its id.
 pub fn ensure_folder(email: &str, name: &str) -> Result<String, String> {
     let name = name.trim();
@@ -1477,12 +1512,8 @@ pub fn ensure_folder(email: &str, name: &str) -> Result<String, String> {
     let token = auth::access_token_for(email)?;
     let client = graph::http_client()?;
     let labels = get(&client, &token, &format!("{GMAIL}/labels"))?;
-    for label in labels["labels"].as_array().into_iter().flatten() {
-        if label["name"].as_str().is_some_and(|n| n.eq_ignore_ascii_case(name)) {
-            if let Some(id) = label["id"].as_str() {
-                return Ok(id.to_string());
-            }
-        }
+    if let Some(id) = label_named(&labels, name) {
+        return Ok(id);
     }
     let made = call(
         &client,
@@ -1877,16 +1908,34 @@ fn threading_for(client: &reqwest::blocking::Client, token: &str, mode: Mode, re
     }
 }
 
+/// The files a forward keeps, out of the original's: all of them, or those
+/// the compose form still names. The form knows files by name, so two files
+/// with one name are kept as many times as the name is listed.
+fn kept_files(files: Vec<LiveFile>, keep: Option<&[String]>) -> Vec<LiveFile> {
+    let Some(keep) = keep else { return files };
+    let mut wanted: HashMap<&str, usize> = HashMap::new();
+    for name in keep {
+        *wanted.entry(name.as_str()).or_default() += 1;
+    }
+    files
+        .into_iter()
+        .filter(|file| match wanted.get_mut(file.name.as_str()) {
+            Some(left) if *left > 0 => {
+                *left -= 1;
+                true
+            }
+            _ => false,
+        })
+        .collect()
+}
+
 /// The original's files a forward keeps: all of them, or those named.
 fn forwarded_files(client: &reqwest::blocking::Client, token: &str, reply_to: &str, keep: Option<&[String]>) -> Result<Vec<Attachment>, String> {
     let value = full_message(client, token, reply_to)?;
     let mut bodies = Bodies::default();
     walk(&value["payload"], &mut bodies, 0);
     let mut out = Vec::new();
-    for file in bodies.files {
-        if keep.is_some_and(|list| !list.iter().any(|id| id == &file.id)) {
-            continue;
-        }
+    for file in kept_files(bodies.files, keep) {
         let Some(part) = find_part(&value["payload"], &file.id, 0) else { continue };
         let bytes = part_bytes(client, token, reply_to, part)?;
         out.push(Attachment { name: file.name, content_type: file.content_type, bytes });
@@ -1928,6 +1977,8 @@ fn upload_send(client: &reqwest::blocking::Client, token: &str, raw: &[u8], thre
     Err((status.as_u16(), reason(&response.text().unwrap_or_default())))
 }
 
+const FORWARD_FILES_FAILED: &str = "The original's attachments could not be fetched, so the message was not sent. It is still in Outbox.";
+
 #[allow(clippy::too_many_arguments)]
 pub fn send(
     email: &str,
@@ -1955,8 +2006,11 @@ pub fn send(
     let token = auth::access_token_for(email)?;
     let client = graph::http_client()?;
     let threading = threading_for(&client, &token, mode, reply_to);
-    let mut attached = if mode == Mode::Forward && !reply_to.trim().is_empty() {
-        forwarded_files(&client, &token, reply_to, keep_files).unwrap_or_default()
+    // A forward with every file removed has nothing to fetch. Otherwise a
+    // failed fetch stops the send: better than a forward missing its files.
+    let wants_files = mode == Mode::Forward && !reply_to.trim().is_empty() && keep_files.is_none_or(|keep| !keep.is_empty());
+    let mut attached = if wants_files {
+        forwarded_files(&client, &token, reply_to, keep_files).map_err(|_| FORWARD_FILES_FAILED.to_string())?
     } else {
         Vec::new()
     };
@@ -2049,6 +2103,54 @@ mod tests {
 
     fn b64(text: &str) -> String {
         URL_SAFE_NO_PAD.encode(text.as_bytes())
+    }
+
+    #[test]
+    fn a_forward_keeps_the_files_the_form_still_names() {
+        let file = |id: &str, name: &str| LiveFile { id: id.into(), name: name.into(), content_type: "application/pdf".into(), size: 1 };
+        let all = || vec![file("1", "plan.pdf"), file("2", "scan.pdf"), file("3", "scan.pdf"), file("4", "notes.txt")];
+        let ids = |files: Vec<LiveFile>| files.into_iter().map(|f| f.id).collect::<Vec<_>>();
+        let names = |list: &[&str]| list.iter().map(|n| n.to_string()).collect::<Vec<_>>();
+        // No list: everything goes. The list holds names, not part ids.
+        assert_eq!(ids(kept_files(all(), None)), ["1", "2", "3", "4"]);
+        assert_eq!(ids(kept_files(all(), Some(&names(&["notes.txt", "plan.pdf"])))), ["1", "4"]);
+        assert_eq!(ids(kept_files(all(), Some(&names(&["1", "2"])))), Vec::<String>::new());
+        // Two files with one name: as many as the name is listed.
+        assert_eq!(ids(kept_files(all(), Some(&names(&["scan.pdf"])))), ["2"]);
+        assert_eq!(ids(kept_files(all(), Some(&names(&["scan.pdf", "scan.pdf", "scan.pdf"])))), ["2", "3"]);
+        assert_eq!(ids(kept_files(all(), Some(&[]))), Vec::<String>::new());
+    }
+
+    #[test]
+    fn reply_to_is_read_from_its_header() {
+        let message = |headers: Value| json!({ "id": "m1", "threadId": "t1", "labelIds": ["INBOX"], "internalDate": "1792800000000", "payload": { "mimeType": "text/plain", "headers": headers, "body": { "data": b64("Hi") } } });
+        let with = message(json!([
+            { "name": "From", "value": "List <list@example.org>" },
+            { "name": "reply-to", "value": "\"Stone, Bob\" <bob@example.org>, help@example.org" },
+        ]));
+        let (m, _) = parse_message(&with).unwrap();
+        let got: Vec<(&str, &str)> = m.reply_to.iter().map(|p| (p.name.as_str(), p.email.as_str())).collect();
+        assert_eq!(got, [("Stone, Bob", "bob@example.org"), ("", "help@example.org")]);
+        assert!(serde_json::to_value(&m).unwrap()["replyTo"].is_array());
+        let (plain, _) = parse_message(&message(json!([{ "name": "From", "value": "a@example.org" }]))).unwrap();
+        assert!(plain.reply_to.is_empty());
+        // A folder fill reads the same headers.
+        assert_eq!(listed_message(&with).unwrap().0.reply_to.len(), 2);
+    }
+
+    #[test]
+    fn the_snoozed_folder_is_found_among_the_persons_own_labels() {
+        let labels = json!({ "labels": [
+            { "id": "INBOX", "name": "INBOX", "type": "system" },
+            { "id": "Label_12", "name": "Receipts", "type": "user" },
+            { "id": "Label_31", "name": "snoozed", "type": "user" },
+        ] });
+        assert_eq!(snoozed_label(&labels).as_deref(), Some("Label_31"));
+        assert_eq!(label_named(&labels, "receipts").as_deref(), Some("Label_12"));
+        assert_eq!(snoozed_label(&json!({ "labels": [{ "id": "Label_12", "name": "Receipts" }] })), None);
+        // Never one of Gmail's own labels, whatever it is called.
+        assert_eq!(snoozed_label(&json!({ "labels": [{ "id": "SNOOZED", "name": "Snoozed" }] })), None);
+        assert_eq!(snoozed_label(&Value::Null), None);
     }
 
     fn sample() -> Value {
@@ -2192,7 +2294,7 @@ mod tests {
         let at = |id: &str, received: &str| LiveMessage {
             id: id.into(), thread: id.into(), subject: String::new(), from_name: String::new(), from_email: String::new(),
             received: received.into(), preview: String::new(), body_html: String::new(), unread: false, flagged: false,
-            has_attachments: false, files: Vec::new(), to: Vec::new(), cc: Vec::new(), bcc: Vec::new(), categories: Vec::new(),
+            has_attachments: false, files: Vec::new(), to: Vec::new(), cc: Vec::new(), bcc: Vec::new(), reply_to: Vec::new(), categories: Vec::new(),
             importance: String::new(), invite: false, focus: String::new(),
         };
         let cached = vec![at("kept", "2026-10-20T10:00:00Z"), at("archived", "2026-10-21T10:00:00Z"), at("old", "2026-01-01T10:00:00Z")];

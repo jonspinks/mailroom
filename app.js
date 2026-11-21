@@ -4203,12 +4203,43 @@ function conversationFor(id) {
   return { id: latest.thread, messages: ordered, latest, topic: cleanSubject(latest.subject) };
 }
 
+// Painting the list asks the same questions of every conversation: which
+// replies sit in Sent, which draft belongs to it. Asked one at a time, each
+// answer reads every message, and sorting asks twice per comparison. While
+// the list paints, the answers come from one pass instead.
+let listMemo = null;
+
+function withListMemo(run) {
+  if (listMemo) return run();
+  listMemo = { byThread: null, shadowed: null, summaries: new Map() };
+  try {
+    return run();
+  } finally {
+    listMemo = null;
+  }
+}
+
+// Every message of a thread, in the order `messages` holds them.
+function threadMessages(thread) {
+  if (!listMemo) return messages;
+  if (!listMemo.byThread) {
+    const byThread = new Map();
+    messages.forEach(m => {
+      const list = byThread.get(m.thread);
+      if (list) list.push(m);
+      else byThread.set(m.thread, [m]);
+    });
+    listMemo.byThread = byThread;
+  }
+  return listMemo.byThread.get(thread) || [];
+}
+
 function sameThreadDraft(conv) {
   if (!conv) return null;
   const accountsInThread = new Set(conv.messages.map(m => m.account));
   let best = null;
-  const shadowed = shadowedServerDrafts();
-  messages.forEach(m => {
+  const shadowed = listMemo ? (listMemo.shadowed || (listMemo.shadowed = shadowedServerDrafts())) : shadowedServerDrafts();
+  threadMessages(conv.id).forEach(m => {
     if (!m.draft || messageBox(m) !== "drafts") return;
     if (m.live && shadowed.has(m.id)) return;
     if (m.thread !== conv.id || !accountsInThread.has(m.account)) return;
@@ -4224,7 +4255,7 @@ function threadSent(conv) {
   if (!conv || !conv.latest || messageBox(conv.latest) === "sent") return [];
   const accountsInThread = new Set(conv.messages.map(m => m.account));
   const own = new Set(conv.messages.map(m => m.id));
-  return messages.filter(m => m.thread === conv.id && messageBox(m) === "sent" && accountsInThread.has(m.account) && !own.has(m.id) && !m.pendingSend);
+  return threadMessages(conv.id).filter(m => m.thread === conv.id && messageBox(m) === "sent" && accountsInThread.has(m.account) && !own.has(m.id) && !m.pendingSend);
 }
 
 // When each conversation last asked Microsoft for its Sent Items. Opened
@@ -4280,10 +4311,14 @@ function threadHead(conv) {
 }
 
 function listSummary(conv) {
+  const kept = listMemo && listMemo.summaries.get(conv);
+  if (kept) return kept;
   const shown = threadShown(conv);
   const own = new Set(conv.messages.map(m => m.id));
   const summary = [...shown].reverse().find(m => own.has(m.id)) || shown[shown.length - 1];
-  return { shown, summary };
+  const listed = { shown, summary };
+  if (listMemo) listMemo.summaries.set(conv, listed);
+  return listed;
 }
 
 function draftState(draft) {
@@ -4875,6 +4910,10 @@ function topResultIds(items) {
 }
 
 function renderList() {
+  withListMemo(paintList);
+}
+
+function paintList() {
   const listEl = document.querySelector(".list");
   const keepScroll = listEl ? listEl.scrollTop : 0;
   ensureSearchCache();
@@ -4977,23 +5016,22 @@ function renderList() {
     </div>`;
   };
   const top = topResultIds(items);
-  const orderedItems = items.slice().sort((a, b) => {
-    const ap = isPinned(a.id);
-    const bp = isPinned(b.id);
+  // Each conversation's place is worked out once, not once per comparison.
+  const orderedItems = items.map(conv => {
+    const head = listSummary(conv).summary;
+    return { conv, pin: pinnedOrder.indexOf(conv.id), top: top.indexOf(conv.id), day: +messageDay(head), seq: head.seq || 0 };
+  }).sort((a, b) => {
+    const ap = a.pin >= 0;
+    const bp = b.pin >= 0;
     if (ap !== bp) return ap ? -1 : 1;
-    if (ap && bp) return pinnedOrder.indexOf(a.id) - pinnedOrder.indexOf(b.id);
-    const at = top.indexOf(a.id);
-    const bt = top.indexOf(b.id);
-    if ((at < 0) !== (bt < 0)) return at >= 0 ? -1 : 1;
-    if (at >= 0) return at - bt;
-    const aHead = listSummary(a).summary;
-    const bHead = listSummary(b).summary;
-    const byDay = messageDay(bHead) - messageDay(aHead);
-    if (byDay) return byDay;
-    return (bHead.seq || 0) - (aHead.seq || 0);
-  });
+    if (ap && bp) return a.pin - b.pin;
+    if ((a.top < 0) !== (b.top < 0)) return a.top >= 0 ? -1 : 1;
+    if (a.top >= 0) return a.top - b.top;
+    return (b.day - a.day) || (b.seq - a.seq);
+  }).map(item => item.conv);
   let lastGroup = "";
-  rows.innerHTML = orderedItems.map(c => {
+  const parts = [];
+  orderedItems.forEach(c => {
     const listed = listSummary(c);
     const shown = listed.shown;
     const head = listed.summary;
@@ -5003,7 +5041,8 @@ function renderList() {
     const hidden = collapsedMailGroups.has(group.id);
     const heading = group.id === lastGroup ? "" : `<button class="date-group" type="button" data-mail-group="${esc(group.id)}" aria-expanded="${hidden ? "false" : "true"}" aria-label="${esc((hidden ? "Expand " : "Collapse ") + group.label)}">${sectionChevron()}${esc(group.label)}</button>`;
     lastGroup = group.id;
-    if (hidden) return heading;
+    if (heading) parts.push({ key: "group\n" + group.id, html: heading });
+    if (hidden) return;
     const twist = many
       ? `<button class="twist" type="button" data-twist="${c.id}" aria-expanded="${open}" aria-label="${open ? "Collapse" : "Expand"} conversation"><svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path d="M4.2 2.2L8 6 4.2 9.8" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg></button>`
       : `<span class="twist-gap"></span>`;
@@ -5022,7 +5061,7 @@ function renderList() {
     const title = open
       ? `<button class="conv-title${shown.some(m => m.unread) ? " unread" : ""}${picked.has(c.id) ? " picked" : ""}" type="button" data-thread="${c.id}" data-id="${head.id}"><span class="conv-subject">${esc(c.topic || "(No subject)")}</span><span class="conv-count">${shown.length}</span></button>`
       : "";
-    return heading + `<div class="conv${open ? " open" : ""}">
+    parts.push({ key: "conv\n" + c.id, html: `<div class="conv${open ? " open" : ""}">
       <div class="conv-line">
         ${twist}
         ${open ? title : rowHtml(head, {
@@ -5037,32 +5076,71 @@ function renderList() {
         })}
       </div>
       ${kids}
-    </div>`;
-  }).join("") + (moreListMail() ? `<button class="list-more" type="button" id="list-older">Older mail</button>` : "");
+    </div>` });
+  });
+  if (moreListMail()) parts.push({ key: "older", html: `<button class="list-more" type="button" id="list-older">Older mail</button>` });
+  placeListParts(parts);
   if (listEl && keepScroll) listEl.scrollTop = keepScroll;
-  bindListOlder();
-  rows.querySelectorAll("[data-row-flag]").forEach(btn => {
+}
+
+// Selecting a message, flagging one or a sync landing changes a line or two
+// of the list. A line whose markup is the same as last time keeps its
+// element, so only the lines that changed are built, bound and laid out.
+function placeListParts(parts) {
+  const kept = new Map();
+  [...rows.children].forEach(node => {
+    if (node._listKey) kept.set(node._listKey, node);
+  });
+  const maker = document.createElement("template");
+  const wanted = parts.map(part => {
+    const old = kept.get(part.key);
+    if (old && old._listHtml === part.html) {
+      kept.delete(part.key);
+      return old;
+    }
+    maker.innerHTML = part.html;
+    const node = maker.content.firstElementChild;
+    node._listKey = part.key;
+    node._listHtml = part.html;
+    bindListPart(node);
+    return node;
+  });
+  wanted.forEach((node, at) => {
+    if (rows.children[at] !== node) rows.insertBefore(node, rows.children[at] || null);
+  });
+  while (rows.children.length > wanted.length) rows.lastElementChild.remove();
+}
+
+function bindListPart(part) {
+  const all = (selector) => (part.matches(selector) ? [part] : []).concat([...part.querySelectorAll(selector)]);
+  if (part.id === "list-older") {
+    part.onclick = () => {
+      if (searchActive()) loadOlderSearch();
+      else loadOlderPages();
+    };
+  }
+  all("[data-row-flag]").forEach(btn => {
     btn.onclick = (ev) => {
       ev.stopPropagation();
       ev.preventDefault();
       toggleFlag(btn.dataset.rowFlag);
     };
   });
-  rows.querySelectorAll("[data-row-pin]").forEach(btn => {
+  all("[data-row-pin]").forEach(btn => {
     btn.onclick = (ev) => {
       ev.stopPropagation();
       ev.preventDefault();
       togglePin(btn.dataset.rowPin);
     };
   });
-  rows.querySelectorAll("[data-row-delete]").forEach(btn => {
+  all("[data-row-delete]").forEach(btn => {
     btn.onclick = (ev) => {
       ev.stopPropagation();
       ev.preventDefault();
       deleteListed(btn.dataset.rowDelete, btn.dataset.rowOnly === "1");
     };
   });
-  rows.querySelectorAll("[data-mail-group]").forEach(btn => {
+  all("[data-mail-group]").forEach(btn => {
     btn.onclick = () => {
       const id = btn.dataset.mailGroup;
       const opening = collapsedMailGroups.has(id);
@@ -5075,7 +5153,7 @@ function renderList() {
       }
     };
   });
-  rows.querySelectorAll(".twist").forEach(btn => {
+  all(".twist").forEach(btn => {
     btn.onclick = (ev) => {
       ev.preventDefault();
       ev.stopPropagation();
@@ -5085,7 +5163,7 @@ function renderList() {
       renderList();
     };
   });
-  rows.querySelectorAll("[data-open-mail-file]").forEach(btn => {
+  all("[data-open-mail-file]").forEach(btn => {
     btn.onclick = (ev) => {
       ev.preventDefault();
       ev.stopPropagation();
@@ -5097,14 +5175,14 @@ function renderList() {
       if (msg) openAttachment(msg, { id: btn.dataset.fileId || "", name: btn.dataset.fileName || "" });
     };
   });
-  rows.querySelectorAll("[data-file-more]").forEach(btn => {
+  all("[data-file-more]").forEach(btn => {
     btn.onclick = (ev) => {
       ev.preventDefault();
       ev.stopPropagation();
       selectListedMessage(btn.dataset.fileMsg);
     };
   });
-  rows.querySelectorAll(".conv-title[data-id]").forEach(btn => {
+  all(".conv-title[data-id]").forEach(btn => {
     btn.addEventListener("contextmenu", (ev) => {
       ev.preventDefault();
       showRowMenu(ev.clientX, ev.clientY, btn.dataset.id, false);
@@ -5116,7 +5194,7 @@ function renderList() {
       selectListedMessage(btn.dataset.id);
     };
   });
-  rows.querySelectorAll(".row[data-id]").forEach(btn => {
+  all(".row[data-id]").forEach(btn => {
     btn.draggable = true;
     btn.addEventListener("dragstart", (ev) => {
       draggedMail = { id: btn.dataset.id, child: btn.classList.contains("child") };
@@ -5261,7 +5339,7 @@ function bulkAction(act) {
   const pending = [];
   byAccount.forEach(group => pending.push(moveConversation({ messages: group }, next)));
   // One undo for the lot.
-  lastMove = { at: Date.now(), pending: Promise.all(pending), items: list.map(message => ({ message, box: from.get(message) })) };
+  lastMove = { at: Date.now(), pending: Promise.all(pending), items: list.map(message => ({ message, id: message.id, box: from.get(message) })) };
   done();
   toastMove((next === "archive" ? "Archived " : "Deleted ") + count + " conversations");
 }
@@ -6092,19 +6170,31 @@ async function checkSnoozes() {
   if (!due.length) return;
   checkingSnoozes = true;
   let back = 0;
+  const mark = (item) => [item.email, item.until].concat(item.ids).join("\n");
+  const settled = new Set();
   try {
     for (const item of due) {
+      let ids = item.ids;
       try {
         const moved = await tauriInvoke("apply_mail", { kind: "inbox", messageIds: item.ids, email: item.email });
-        const ids = item.ids.map(id => ((moved || []).find(pair => pair.from === id) || { to: id }).to);
-        await tauriInvoke("apply_mail", { kind: "unread", messageIds: ids, email: item.email });
+        ids = item.ids.map(id => ((moved || []).find(pair => pair.from === id) || { to: id }).to);
+        settled.add(mark(item));
         back += ids.length;
       } catch (err) {
-        // Moved or deleted since; nothing to bring back.
+        // Moved or deleted since: nothing to bring back. Anything else
+        // (offline, just woken, the server busy) is tried again next time,
+        // or the mail would sit in Snoozed for good.
+        if (mailItemGone(String(err && err.message || err))) settled.add(mark(item));
+        continue;
+      }
+      try {
+        await tauriInvoke("apply_mail", { kind: "unread", messageIds: ids, email: item.email });
+      } catch (err) {
+        // It is back in the Inbox; only the unread mark was lost.
       }
     }
   } finally {
-    saveSnoozes(loadSnoozes().filter(item => item.until > Date.now()));
+    saveSnoozes(loadSnoozes().filter(item => !settled.has(mark(item))));
     checkingSnoozes = false;
   }
   if (back) {
@@ -6898,12 +6988,15 @@ function ownAddresses() {
       if (item.address) set.add(item.address.toLowerCase());
     });
     if (acct.email) set.add(acct.email.toLowerCase());
+    // The other addresses the server delivers to this mailbox are yours too.
+    aliasList(acct).forEach(address => set.add(address.toLowerCase()));
   });
   return set;
 }
 
 function recipientLabel(email) {
-  const person = knownPeople().find(item => item.email.toLowerCase() === String(email).toLowerCase());
+  knownPeople();
+  const person = peopleKept.byEmail.get(String(email).toLowerCase());
   return person ? person.name : email;
 }
 
@@ -6911,7 +7004,22 @@ function addressText(value) {
   return Array.isArray(value) ? value.join(" ") : String(value || "");
 }
 
+// Everyone the mailbox knows is read from every message, and one paint of a
+// conversation asks once per recipient. The answer is kept for the rest of
+// the turn it was worked out in, and not past a change in what it reads.
+let peopleKept = null;
+
 function knownPeople() {
+  const stamp = [messages.length, contacts.length, directoryPeople.size, activeProfile, Object.keys(accounts).length].join("\n");
+  if (peopleKept && peopleKept.stamp === stamp) return peopleKept.list;
+  const list = readKnownPeople();
+  const kept = { stamp, list, byEmail: new Map(list.map(person => [person.email.toLowerCase(), person])) };
+  peopleKept = kept;
+  queueMicrotask(() => { if (peopleKept === kept) peopleKept = null; });
+  return list;
+}
+
+function readKnownPeople() {
   const own = ownAddresses();
   const byEmail = new Map();
   function add(email, name, source) {
@@ -7110,7 +7218,9 @@ function recipientBits(email) {
 function replyRecipients(msg, all) {
   const own = ownAddresses();
   const fromSelf = own.has((msg.email || "").toLowerCase());
-  const sender = fromSelf ? "" : (msg.email || "");
+  // A sender who names a Reply-To (a list, a ticket desk, someone writing
+  // on another's behalf) is answered there, not at the From address.
+  const sender = fromSelf ? "" : (msg.replyAddr || msg.email || "");
   const list = all ? addressList(sender, msg.to) : addressList(sender || msg.to);
   return list.join("; ");
 }
@@ -7622,6 +7732,11 @@ function finishLocalSend(message) {
   }
 }
 
+// Forwards started before the original's attachment names had arrived. An
+// empty list from one of those means "not known yet", not "send none", so
+// the forward keeps every file rather than dropping them all.
+const forwardFilesUnknown = new Set();
+
 function deliverPending(message) {
   if (!message || !message.pendingSend || message.sending || message.sendError) return;
   if (!inDesktop()) {
@@ -7660,7 +7775,7 @@ function deliverPending(message) {
     draftId: message.serverDraftId || null,
     replyTo: threaded ? original.id : null,
     mode: mode || null,
-    keepFiles: mode === "forward" ? (message.attachments || []) : null,
+    keepFiles: mode === "forward" && !(original && forwardFilesUnknown.has(original.id) && !(message.attachments || []).length) ? (message.attachments || []) : null,
     files: message.files || [],
     sendAt: message.sendLater || null,
     importance: message.importance || "",
@@ -8214,6 +8329,10 @@ function startForward(msg) {
   const files = previous && previous.compose === "forward"
     ? (previous.attachments || [])
     : messageFiles(msg).map(file => file.name);
+  if (!(previous && previous.compose === "forward")) {
+    if (msg.hasAttachment && !files.length) forwardFilesUnknown.add(msg.id);
+    else forwardFilesUnknown.delete(msg.id);
+  }
   draft.to = "";
   draft.toName = "";
   draft.cc = "";
@@ -8308,7 +8427,7 @@ function reportJunk(targets) {
   const from = new Map(list.map(m => [m, messageBox(m)]));
   const pending = [];
   byAccount.forEach((group, accountId) => pending.push(moveConversation({ messages: group }, junkKey(accountId), "junk")));
-  lastMove = { at: Date.now(), pending: Promise.all(pending), serverKind: "junk", items: list.map(message => ({ message, box: from.get(message) })) };
+  lastMove = { at: Date.now(), pending: Promise.all(pending), serverKind: "junk", items: list.map(message => ({ message, id: message.id, box: from.get(message) })) };
   toastMove(list.length === 1 ? "Reported as junk" : "Reported " + list.length + " messages as junk");
   return true;
 }
@@ -8322,7 +8441,7 @@ function notJunk(targets) {
   const from = new Map(list.map(m => [m, messageBox(m)]));
   const pending = [];
   byAccount.forEach(group => pending.push(moveConversation({ messages: group }, "inbox", "notjunk")));
-  lastMove = { at: Date.now(), pending: Promise.all(pending), serverKind: "notjunk", items: list.map(message => ({ message, box: from.get(message) })) };
+  lastMove = { at: Date.now(), pending: Promise.all(pending), serverKind: "notjunk", items: list.map(message => ({ message, id: message.id, box: from.get(message) })) };
   toastMove(list.length === 1 ? "Not junk · moved to Inbox" : list.length + " messages moved to Inbox as not junk");
   return true;
 }
@@ -8583,7 +8702,7 @@ function moveConversation(conv, next, serverKind) {
     });
   }, prior, kind === "move" || kind === "junk" ? { id: folder ? folder.id : (kind === "junk" ? "" : next), key: next } : null);
   if (!undoing) {
-    lastMove = { at: Date.now(), pending, serverKind: kind, items: moving.map(message => ({ message, box: fromBox.get(message) || "inbox" })) };
+    lastMove = { at: Date.now(), pending, serverKind: kind, items: moving.map(message => ({ message, id: message.id, box: fromBox.get(message) || "inbox" })) };
   }
   return pending;
 }
@@ -9848,16 +9967,27 @@ function followMovedIds(moved) {
     const from = pair && pair.from;
     const to = pair && pair.to;
     if (!from || !to || from === to) return;
-    messages.forEach(m => { if (m.id === from) m.id = to; });
+    messages.forEach(m => {
+      if (m.id === from) m.id = to;
+      // A reply or forward waiting to go still answers the moved message.
+      if (m.replyTo === from) m.replyTo = to;
+    });
+    [replyDraft, paneCompose].forEach(draft => { if (draft && draft.msgId === from) draft.msgId = to; });
+    document.querySelectorAll("[data-msg]").forEach(el => { if (el.dataset.msg === from) el.dataset.msg = to; });
+    if (lastMove) lastMove.items.forEach(item => { if (item.id === from) item.id = to; });
+    if (forwardFilesUnknown.delete(from)) forwardFilesUnknown.add(to);
     if (selected === from) selected = to;
   });
 }
+
+const MAIL_ACTION_BATCH = 40;
 
 async function pushMailAction(targets, kind, revert, prior, destination) {
   if (readWindow) return;
   const live = (targets || []).filter(serverMessage);
   if (!live.length) return;
   const snapshot = prior || rememberMessages(live);
+  let sentSome = false;
   try {
     // A Gmail move takes the label of the folder the mail was in, so send
     // that folder along; Microsoft ignores it.
@@ -9874,8 +10004,12 @@ async function pushMailAction(targets, kind, revert, prior, destination) {
       groups.get(key).messageIds.push(message.id);
     });
     for (const { email, source, messageIds } of groups.values()) {
-      const moved = await tauriInvoke("apply_mail", { kind, messageIds, email, destination: destination ? destination.id : null, source: source || null });
-      followMovedIds(moved);
+      // The server takes forty at a time.
+      for (let at = 0; at < messageIds.length; at += MAIL_ACTION_BATCH) {
+        const moved = await tauriInvoke("apply_mail", { kind, messageIds: messageIds.slice(at, at + MAIL_ACTION_BATCH), email, destination: destination ? destination.id : null, source: source || null });
+        followMovedIds(moved);
+        sentSome = true;
+      }
     }
     applyMailShifts(snapshot, kind, destination ? destination.key : "");
     if (view === "mail") render();
@@ -9892,6 +10026,9 @@ async function pushMailAction(targets, kind, revert, prior, destination) {
       return;
     }
     if (revert) revert();
+    // Part of it reached the server before the rest failed: what is shown
+    // was put back whole, so ask the server what is true now.
+    if (sentSome) pollMail();
     if (mailServerBusy(text)) {
       toast("The mail server is busy · try again in a moment");
       render();
@@ -11614,6 +11751,28 @@ function localFromUtc(stamp, allDay) {
   return { iso, minutes: when.getHours() * 60 + when.getMinutes() };
 }
 
+function spanStamps(seed, dayNum, whole, begin, finish) {
+  const seedWhole = seed.start == null;
+  if (whole !== seedWhole) return null;
+  if (!whole && (begin !== seed.start || finish !== seed.end)) return null;
+  const shift = dayNum - seed.day;
+  if (whole) {
+    const first = dayFromIso(String(seed.spanStart).slice(0, 10));
+    const last = dayFromIso(String(seed.spanEnd).slice(0, 10));
+    if (first == null || last == null) return null;
+    return { start: isoFromDay(first + shift), end: isoFromDay(last + shift) };
+  }
+  const stamp = (raw) => {
+    const at = new Date(raw);
+    if (Number.isNaN(at.getTime())) return null;
+    const moved = new Date(at.getFullYear(), at.getMonth(), at.getDate() + shift, at.getHours(), at.getMinutes());
+    return localStamp(isoFromDay(dayFromDate(moved)), moved.getHours() * 60 + moved.getMinutes());
+  };
+  const start = stamp(seed.spanStart);
+  const end = stamp(seed.spanEnd);
+  return start && end ? { start, end } : null;
+}
+
 async function saveLiveEvent(job) {
   const { form, seed, owner, calId, title, dayNum, whole, begin, finish, people, reply, invite, fail } = job;
   const acct = accounts[owner];
@@ -11629,8 +11788,14 @@ async function saveLiveEvent(job) {
     allDay: whole,
     showAs: showAsOf({ showAs: data.get("showas") })
   };
-  const notes = String(data.get("notes") || "").trim();
   const editing = !!seed.id;
+  // An event over several days is shown a day at a time, and the form holds
+  // one day of it. Saved as that, a title change would cut a three-day event
+  // down to the day that was opened. With its times left alone it keeps its
+  // whole length, moved by as many days as the date was.
+  const spanned = editing && seed.spanStart && seed.spanEnd && !seed.seriesMasterId ? spanStamps(seed, dayNum, whole, begin, finish) : null;
+  if (spanned) Object.assign(fields, spanned);
+  const notes = String(data.get("notes") || "").trim();
   if (!editing || notes !== String(seed.notes || "").trim()) fields.notes = notes;
   const emails = list => list.map(p => String(p.email).toLowerCase()).sort().join(",");
   if (!editing ? people.length : emails(people) !== emails(seed.attendees || [])) {
@@ -12063,6 +12228,10 @@ const MAIL_UNWRAP_TAGS = new Set(["form", "button"]);
 const MAIL_URL_ATTRS = new Set(["href", "src", "background", "poster", "action", "formaction", "cite", "longdesc", "lowsrc", "dynsrc", "data", "codebase", "xlink:href"]);
 const MAIL_DROP_ATTRS = new Set(["id", "name", "form", "srcdoc", "ping", "formaction", "action", "http-equiv", "is", "autofocus", "contenteditable", "tabindex"]);
 const MAIL_APP_ATTRS = new Set(["data-mail-style", "data-dark-ink", "data-mark-bg"]);
+// The only data- attributes a body keeps: the ones Mailroom writes into a
+// message it is composing. The reading pane's buttons are found by their
+// data- attributes, so any other one in a letter could pass for a button.
+const MAIL_KEEP_DATA = new Set(["data-quote-start", "data-sig", "data-sig-id", "data-sig-src", "data-picture-id", "data-size"]);
 const MAIL_MEDIA_ATTRS = new Set(["src", "background", "poster", "lowsrc", "dynsrc"]);
 // Outlook marks where quoted history begins with one of these ids.
 const QUOTE_MARKER_IDS = /^(x_)?(divRplyFwdMsg|appendonsend|mail-editor-reference-message-container|OLK_SRC_BODY_SECTION)$/i;
@@ -12102,7 +12271,7 @@ function cleanMailNode(node, keepStyle) {
       // Markers the reading pane writes for itself. From a sender they would
       // be trusted as the app's own (data-mail-style once restored a style
       // that never went through the remote-picture block).
-      if (name.startsWith("on") || MAIL_DROP_ATTRS.has(name) || MAIL_APP_ATTRS.has(name)) {
+      if (name.startsWith("on") || MAIL_DROP_ATTRS.has(name) || MAIL_APP_ATTRS.has(name) || (name.startsWith("data-") && !MAIL_KEEP_DATA.has(name))) {
         child.removeAttribute(attr.name);
         return;
       }
@@ -12119,9 +12288,12 @@ function cleanMailNode(node, keepStyle) {
         return;
       }
       // Mail stays inside its letter: nothing pinned over the rest of the app.
-      if (name === "style" && /position\s*:\s*(fixed|sticky)/i.test(attr.value)) {
-        child.style.removeProperty("position");
-        if (/position\s*:\s*(fixed|sticky)/i.test(child.getAttribute("style") || "")) child.removeAttribute("style");
+      // Asked of the parsed style, which reads comments and escapes the way
+      // the browser will; the text is checked as well in case it didn't parse.
+      if (name === "style") {
+        const pinned = /^(fixed|sticky|-webkit-sticky)$/i;
+        if (pinned.test(child.style.position)) child.style.removeProperty("position");
+        if (pinned.test(child.style.position) || /position\s*:\s*(fixed|sticky)/i.test(child.getAttribute("style") || "")) child.removeAttribute("style");
       }
     });
     if (MAIL_UNWRAP_TAGS.has(tag)) child.replaceWith(...child.childNodes);
@@ -14679,7 +14851,7 @@ function inviteMarkup(meeting, to) {
         <label>End<input id="invite-end" value="${fmt(meeting.end)}" inputmode="numeric" autocomplete="off"></label>
       </div>
       <label class="field">Where<input id="invite-where" value="${esc(meeting.where || "")}" placeholder="Add a place"></label>
-      <p class="invite-who">${esc(note)}${who.length ? " · with " + who.join(", ") : ""}</p>
+      <p class="invite-who">${esc(note)}${who.length ? " · with " + who.map(esc).join(", ") : ""}</p>
     </div>`;
 }
 
@@ -16299,8 +16471,14 @@ function bindCompose(root, ctx) {
     helpButton.setAttribute("aria-expanded", document.body.dataset.assist === "open" ? "true" : "false");
     helpButton.onclick = () => openAssist();
   }
+  // The assistant reads the draft when it is asked something, not on every
+  // key: gathering the conversation and writing it out waits for a pause.
+  let assistPublish = null;
   form.addEventListener("input", () => {
-    if (document.body.dataset.assist === "open" || assistPopped()) publishAssistContext();
+    clearTimeout(assistPublish);
+    assistPublish = setTimeout(() => {
+      if (document.body.dataset.assist === "open" || assistPopped()) publishAssistContext();
+    }, 200);
   });
   bindColourButtons(form, body, () => { if (ctx.draft) ctx.draft.bodyHtml = body.innerHTML; });
   markDarkInks(body);
@@ -17015,8 +17193,12 @@ async function undoLastMove() {
   // A server move must finish first: it gives the message a new id.
   try { await move.pending; } catch (e) {}
   const byBox = new Map();
-  move.items.forEach(({ message, box: from }) => {
-    if (!messages.includes(message) || messageBox(message) === from) return;
+  move.items.forEach((item) => {
+    const from = item.box;
+    // Opening another folder reads its messages afresh, so the one that
+    // moved may be a new object by now. Its id still finds it.
+    const message = messages.includes(item.message) ? item.message : messages.find(m => m.id === (item.id || item.message.id) && m.account === item.message.account);
+    if (!message || messageBox(message) === from) return;
     if (!byBox.has(from)) byBox.set(from, []);
     byBox.get(from).push(message);
   });
@@ -17117,11 +17299,16 @@ function render() {
   if (view === "people") {
     renderContacts();
     renderContact();
+  } else if (view === "calendar") {
+    // The list and the reading pane are not on screen here. They are painted
+    // when Mail comes back, and afresh: what the calendar holds may have
+    // changed what an invite says about clashes.
+    delete reading.dataset.paint;
+    renderCalendar();
   } else {
     renderList();
     renderReading();
   }
-  if (view === "calendar") renderCalendar();
   paintFollowUps();
   paintSearchExtras();
 }
@@ -17575,9 +17762,21 @@ function applyListWidth(preferred, save) {
   if (save) {
     try { localStorage.setItem("mailroom-list-width", String(preferredListWidth)); } catch (e) {}
   }
-  const readingPane = document.getElementById("reading");
-  if (readingPane) fitWideMail(readingPane);
+  refitReadingSoon();
   return width;
+}
+
+// Dragging the splitter or the window edge sends an event per pixel. The
+// open mail is measured again once per frame, not once per event.
+let refitReadingQueued = false;
+function refitReadingSoon() {
+  if (refitReadingQueued) return;
+  refitReadingQueued = true;
+  requestAnimationFrame(() => {
+    refitReadingQueued = false;
+    const readingPane = document.getElementById("reading");
+    if (readingPane) fitWideMail(readingPane);
+  });
 }
 
 // The folder pane's width, dragged at its edge and remembered (2026-10-23).
@@ -18073,6 +18272,9 @@ function openEventForm(seed) {
     const whole = form.querySelector("[name=allday]").checked;
     let begin = parseClock(data.get("start"));
     let finish = parseClock(data.get("end"));
+    // A day in the middle of a longer event runs to midnight, which the
+    // field shows as 00:00.
+    if (!whole && seed && seed.spanEnd && finish === 0 && seed.end === 24 * 60) finish = 24 * 60;
     if (!whole) {
       if (begin == null) begin = 13 * 60;
       if (finish == null || finish <= begin) return fail("End must be after the start.");
@@ -18516,6 +18718,7 @@ function liveMessage(accountId, item, boxKey) {
     to: toPeople.map(person => person.email).join("; "),
     cc: ccPeople.map(person => person.email).join("; "),
     bcc: bccPeople.map(person => person.email).join("; "),
+    replyAddr: recipientRows(item.replyTo).map(person => person.email).join("; "),
     toPeople,
     ccPeople,
     bccPeople,
@@ -19129,7 +19332,8 @@ function installLiveEvents(accountId, items) {
       if (start == null || end == null || end <= start) return;
       for (let day = start; day < end; day++) {
         const id = end - start > 1 ? item.id + "@" + isoFromDay(day) : item.id;
-        allday.push(Object.assign({}, shared, { id, day }));
+        const span = end - start > 1 ? { spanStart: item.start, spanEnd: item.end } : {};
+        allday.push(Object.assign({}, shared, span, { id, day }));
       }
       return;
     }
@@ -19148,7 +19352,8 @@ function installLiveEvents(accountId, items) {
     }
     slices.forEach(slice => {
       const id = slices.length > 1 ? item.id + "@" + isoFromDay(slice.day) : item.id;
-      events.push(Object.assign({}, shared, slice, { id }));
+      const span = slices.length > 1 ? { spanStart: item.start, spanEnd: item.end } : {};
+      events.push(Object.assign({}, shared, span, slice, { id }));
     });
   });
 }
@@ -19686,8 +19891,9 @@ async function pollMail() {
   lastMailPoll = Date.now();
   let missed = "";
   try {
-    for (const [id, acct] of Object.entries(accounts)) {
-      if (!acct.signedIn || !acct.email || accountNeedsSignIn(id)) continue;
+    // Every account is asked at once, so a slow one holds up nobody else.
+    await Promise.all(Object.entries(accounts).map(async ([id, acct]) => {
+      if (!acct.signedIn || !acct.email || accountNeedsSignIn(id)) return;
       try {
         const inbox = await tauriInvoke("sync_inbox", { email: acct.email, since: syncSinceIso() });
         fillAccountMail(id, inbox);
@@ -19697,7 +19903,7 @@ async function pollMail() {
         // tried again shortly. Sign-in problems show in the banner.
         if (couldNotReach(err)) missed = String(err && err.message || err);
       }
-    }
+    }));
     // Leave the reading pane alone, so a reply being typed is not touched.
     // An open search is asked again, without clearing the rows already shown.
     if (searchActive()) searchCacheStale = true;
@@ -19740,9 +19946,8 @@ function startMailPolling() {
   // New meetings need to be on hand to be reminded about.
   setInterval(() => { syncCalendars(null, false).then(() => { if (view === "calendar") render(); }); }, 15 * 60 * 1000);
   Object.keys(accounts).forEach(id => {
-    loadCategories(id).then(() => { if (view === "mail") render(); });
-    loadAliases(id).then(() => { if (view === "mail") render(); });
-    loadSearchFolders(id).then(() => { if (view === "mail") render(); });
+    // One repaint for the three, not one each.
+    Promise.allSettled([loadCategories(id), loadAliases(id), loadSearchFolders(id)]).then(() => { if (view === "mail") render(); });
   });
   checkAutoReplies();
   checkForwardRules();
