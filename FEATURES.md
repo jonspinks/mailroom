@@ -111,6 +111,7 @@ compares them with this list, and opens an issue for anything new.
 | Notifications | ✅ once per message, Focused only |
 | Works offline | ✅ local cache; Outbox survives a restart |
 | Keyboard shortcuts | ✅ Outlook's (Ctrl+R, Ctrl+Shift+R, Insert, Ctrl+Q…) |
+| Go to Folder (Ctrl+Y) | ✅ every folder in the profile, Favorites first, type to find |
 | Default mail app | ✅ mailto: links (Omarchy) |
 | Links to a message | ✅ mailroom://message/… opens one message, even after it was moved; it only opens, and marks nothing read (Omarchy) |
 | Follows the desktop theme | ✅ Omarchy colours, font and corners, live |

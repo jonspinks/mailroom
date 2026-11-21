@@ -3026,6 +3026,32 @@ test("Settings > Mail has the Mark as read choice, and it is kept", { fake: true
   same(await p.evaluate(() => [markReadWhen, localStorage.getItem("mailroom-mark-read")]), ["leave", "leave"], "picked and stored");
 });
 
+test("Ctrl+Y opens Go to folder: type, arrow, Enter; it works from Calendar too", { fake: true }, async ({ p, calls }) => {
+  await p.keyboard.down("Control"); await p.keyboard.press("y"); await p.keyboard.up("Control"); await wait(200);
+  expect(await p.$(".goto-dialog"), "Ctrl+Y opens the dialog");
+  const labels = await p.$$eval(".goto-dialog .goto-name", e => e.map(x => x.textContent));
+  expect(labels.includes("Inbox") && labels.includes("Kiln project"), "every folder is listed, subfolders too", labels);
+  await p.type("#goto-filter", "kil"); await wait(100);
+  same(await p.$$eval(".goto-dialog .goto-name", e => e.map(x => x.textContent)), ["Kiln project"], "typing filters the list");
+  await p.keyboard.press("Enter"); await wait(400);
+  same(await p.evaluate(() => [box, folderPick, !!document.querySelector(".goto-dialog")]), ["f-kiln", "folder", false], "Enter opens it and closes the dialog");
+  const fetched = [...await calls("cached_folder"), ...await calls("sync_folder")];
+  expect(fetched.some(c => JSON.stringify(c).includes("f-kiln")), "and fetches the folder", fetched);
+  await p.evaluate(() => setView("calendar")); await wait(200);
+  await p.keyboard.down("Control"); await p.keyboard.press("y"); await p.keyboard.up("Control"); await wait(200);
+  await p.type("#goto-filter", "box"); await wait(100);
+  await p.keyboard.press("ArrowDown"); await p.keyboard.press("ArrowUp"); await p.keyboard.press("ArrowUp"); await wait(100);
+  const picked = await p.$eval('.goto-dialog [aria-selected="true"] .goto-name', e => e.textContent);
+  await p.keyboard.press("Enter"); await wait(400);
+  same(await p.evaluate(() => view), "mail", "from Calendar it goes back to Mail");
+  same(await p.evaluate(() => boxLabel(box, account)), picked, "the highlighted folder opens, after wrapping round");
+  await p.keyboard.down("Control"); await p.keyboard.press("y"); await p.keyboard.up("Control"); await wait(200);
+  await p.keyboard.press("Escape"); await wait(100);
+  same(await p.$(".goto-dialog"), null, "Escape closes it");
+  await p.keyboard.press("?"); await wait(200);
+  expect(await p.$eval(".shortcuts-dialog", e => e.textContent.includes("Ctrl+Y")), "and it is on the shortcuts list");
+});
+
 test("a mailroom: link opens a cached message, at start and while running, and marks nothing read", { fake: true, setup: () => {
   window.__launch = { kind: "open", account: "jon@example.com", id: "m1" };
 } }, async ({ p, calls, clear }) => {
