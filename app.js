@@ -4048,6 +4048,63 @@ function mailGroupFor(m) {
 // ---- Focused Inbox (2026-10-23): Microsoft sorts the Inbox into Focused
 // and Other; Mailroom shows the two as tabs, as Outlook does. A message it
 // hasn't sorted counts as Focused. Off in Settings > Mail.
+// When a message shown in the reading pane is marked read (Settings > Mail),
+// as Outlook's "Mark as read" choices: when opened, after a few seconds,
+// when the selection moves on, or never. A pop-out window always marks read.
+const MARK_READ_CHOICES = ["open", "delay", "leave", "never"];
+const MARK_READ_DELAY = 5000;
+let markReadWhen = (() => { try { const v = localStorage.getItem("mailroom-mark-read"); return MARK_READ_CHOICES.includes(v) ? v : "open"; } catch (e) { return "open"; } })();
+let pendingRead = null; // { thread, ids, leave, timer } waiting on the delay or on the selection moving on
+
+function selectedThread() {
+  const msg = messages.find(m => m.id === selected);
+  return msg ? msg.thread : null;
+}
+
+// "When I move to another message": once the selection has left the
+// conversation (another message, another folder, a delete), mark it read.
+// Called from render, so every way of moving on counts.
+function settleLeftRead() {
+  if (!pendingRead || !pendingRead.leave || selectedThread() === pendingRead.thread) return false;
+  const left = messages.filter(m => pendingRead.ids.includes(m.id) && m.unread);
+  pendingRead = null;
+  if (!left.length) return false;
+  setUnread(left, false, false);
+  return true;
+}
+
+// The reading pane has just shown these messages: mark them read now, later
+// or not at all. Another message of the same conversation joins the wait.
+function shownInPane(targets) {
+  const list = (targets || []).filter(Boolean);
+  const thread = list.length ? list[0].thread : null;
+  const ids = list.filter(m => m.unread).map(m => m.id);
+  if (pendingRead && pendingRead.thread !== thread) {
+    clearTimeout(pendingRead.timer);
+    settleLeftRead();
+    if (pendingRead) pendingRead = null;
+  }
+  if (!ids.length || markReadWhen === "never") { render(); return; }
+  if (markReadWhen === "open") { setUnread(list, false, false); return; }
+  if (pendingRead) {
+    ids.forEach(id => { if (!pendingRead.ids.includes(id)) pendingRead.ids.push(id); });
+    render();
+    return;
+  }
+  pendingRead = { thread, ids, leave: markReadWhen === "leave" };
+  if (!pendingRead.leave) {
+    const wait = pendingRead;
+    wait.timer = setTimeout(() => {
+      if (pendingRead !== wait) return;
+      pendingRead = null;
+      if (selectedThread() !== wait.thread) return;
+      const still = messages.filter(m => wait.ids.includes(m.id) && m.unread);
+      if (still.length) setUnread(still, false, false);
+    }, MARK_READ_DELAY);
+  }
+  render();
+}
+
 let focusedInbox = (() => { try { return localStorage.getItem("mailroom-focused") !== "off"; } catch (e) { return true; } })();
 let focusTab = "focused";
 const focusOf = m => (m && m.focus === "other" ? "other" : "focused");
@@ -6593,8 +6650,7 @@ function selectListedMessage(id) {
   const targets = conv.latest.id === msg.id
     ? conv.messages.filter(m => m.account === msg.account && messageBox(m) === messageBox(msg))
     : [msg];
-  if (targets.some(m => m.unread)) setUnread(targets, false, false);
-  else render();
+  shownInPane(targets);
 }
 
 const replyIcon = `<svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true"><path d="M8 5.4L3.6 9.6 8 13.8" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/><path d="M4.4 9.6h7.2a4.4 4.4 0 014.4 4.4V16.2" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>`;
@@ -8757,8 +8813,7 @@ function renderReading() {
       selected = id;
       revealReading = true;
       const msg = messages.find(m => m.id === id);
-      if (msg && msg.unread) setUnread([msg], false, false);
-      else render();
+      shownInPane(msg ? [msg] : []);
     };
   });
   reading.querySelectorAll("[data-collapse]").forEach(btn => {
@@ -8776,8 +8831,7 @@ function renderReading() {
       selected = card.dataset.pick;
       revealReading = true;
       const msg = messages.find(m => m.id === selected);
-      if (msg && msg.unread) setUnread([msg], false, false);
-      else render();
+      shownInPane(msg ? [msg] : []);
     });
   });
   reading.querySelectorAll("[data-show-remote]").forEach(btn => {
@@ -13335,6 +13389,18 @@ function renderMailSettings(body) {
       <p class="field-hint">As Outlook does. The meeting stays on your calendar.</p>
     </section>
     <section class="notify-setting">
+      <h2>Mark as read</h2>
+      <label class="field">Mark a message as read
+        <select id="mark-read-when">
+          <option value="open"${markReadWhen === "open" ? " selected" : ""}>When it opens in the reading pane</option>
+          <option value="delay"${markReadWhen === "delay" ? " selected" : ""}>After it has been open for 5 seconds</option>
+          <option value="leave"${markReadWhen === "leave" ? " selected" : ""}>When I move to another message</option>
+          <option value="never"${markReadWhen === "never" ? " selected" : ""}>Never: only when I mark it</option>
+        </select>
+        <span class="field-hint">As in Outlook. Opening a message in its own window always marks it read. Ctrl+Q marks read whatever this says.</span>
+      </label>
+    </section>
+    <section class="notify-setting">
       <h2>Focused Inbox</h2>
       <label class="check-row"><input type="checkbox" id="focused-on"${focusedInbox ? " checked" : ""}> Sort my Inbox into Focused and Other</label>
       <p class="field-hint">Microsoft sorts it, as in Outlook; for a Google account, Other is Gmail's Promotions, Social, Updates and Forums tabs. New-mail alerts are for Focused only.</p>
@@ -13406,6 +13472,12 @@ function renderMailSettings(body) {
     focusedInbox = focusBox.checked;
     try { localStorage.setItem("mailroom-focused", focusedInbox ? "on" : "off"); } catch (e) {}
     focusTab = "focused";
+  };
+  const markReadSelect = body.querySelector("#mark-read-when");
+  markReadSelect.onchange = () => {
+    markReadWhen = MARK_READ_CHOICES.includes(markReadSelect.value) ? markReadSelect.value : "open";
+    if (pendingRead) { clearTimeout(pendingRead.timer); pendingRead = null; }
+    try { localStorage.setItem("mailroom-mark-read", markReadWhen); } catch (e) {}
   };
   const tidyBox = body.querySelector("#tidy-invites");
   tidyBox.onchange = () => {
@@ -16834,6 +16906,7 @@ function applyMailEvent() {
 }
 
 function render() {
+  if (settleLeftRead()) return; // it rendered
   closeCalendarColour();
   capturePaneCompose();
   if (view === "mail") captureReplyDraft();
@@ -17877,7 +17950,7 @@ const folderBusy = new Set();
 let syncNote = "";
 const folderRun = new Map();
 const bodyLoads = new Set();
-const APP_VERSION = "1.4.2";
+const APP_VERSION = "1.4.3";
 let appVersion = APP_VERSION;
 
 prepareDesktopAccounts();
@@ -19380,8 +19453,7 @@ function openFromNotification(id) {
   selected = msg.id;
   folded.delete(msg.id);
   expanded.add(msg.id);
-  render();
-  if (msg.unread) setUnread([msg], false, false);
+  shownInPane([msg]);
 }
 
 async function pollMail() {
