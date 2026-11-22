@@ -131,6 +131,9 @@
     auto_reply: () => window.__autoReply || { status: "disabled", externalAudience: "none", start: "", end: "", internal: "", external: "" },
     set_auto_reply: (a) => { window.__autoReply = a.reply; return null; },
     ensure_folder: () => "f-snoozed",
+    create_folder: (a) => (window.__folderError ? Promise.reject(window.__folderError) : "f-new-" + String(a.name).toLowerCase().replace(/\W+/g, "-")),
+    rename_folder: () => (window.__folderError ? Promise.reject(window.__folderError) : null),
+    delete_folder: () => (window.__folderError ? Promise.reject(window.__folderError) : null),
     whats_new: () => window.__news || [
       { date: "2026-11-09", title: "Print a message", version: "1.1.0", pr: 20 },
       { date: "2026-11-08", title: "rand 0.10; no build warnings", version: "", pr: 12 },

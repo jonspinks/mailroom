@@ -285,10 +285,22 @@
           "markdownDescription": "Enables the create_contact command without any pre-configured scope."
         },
         {
+          "description": "Enables the create_folder command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-create-folder",
+          "markdownDescription": "Enables the create_folder command without any pre-configured scope."
+        },
+        {
           "description": "Enables the delete_contact command without any pre-configured scope.",
           "type": "string",
           "const": "allow-delete-contact",
           "markdownDescription": "Enables the delete_contact command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the delete_folder command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-delete-folder",
+          "markdownDescription": "Enables the delete_folder command without any pre-configured scope."
         },
         {
           "description": "Enables the delete_rule command without any pre-configured scope.",
@@ -517,6 +529,12 @@
           "type": "string",
           "const": "allow-remove-event",
           "markdownDescription": "Enables the remove_event command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the rename_folder command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-rename-folder",
+          "markdownDescription": "Enables the rename_folder command without any pre-configured scope."
         },
         {
           "description": "Enables the report_unread command without any pre-configured scope.",
@@ -861,10 +879,22 @@
           "markdownDescription": "Denies the create_contact command without any pre-configured scope."
         },
         {
+          "description": "Denies the create_folder command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-create-folder",
+          "markdownDescription": "Denies the create_folder command without any pre-configured scope."
+        },
+        {
           "description": "Denies the delete_contact command without any pre-configured scope.",
           "type": "string",
           "const": "deny-delete-contact",
           "markdownDescription": "Denies the delete_contact command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the delete_folder command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-delete-folder",
+          "markdownDescription": "Denies the delete_folder command without any pre-configured scope."
         },
         {
           "description": "Denies the delete_rule command without any pre-configured scope.",
@@ -1093,6 +1123,12 @@
           "type": "string",
           "const": "deny-remove-event",
           "markdownDescription": "Denies the remove_event command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the rename_folder command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-rename-folder",
+          "markdownDescription": "Denies the rename_folder command without any pre-configured scope."
         },
         {
           "description": "Denies the report_unread command without any pre-configured scope.",

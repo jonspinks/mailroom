@@ -422,9 +422,81 @@ pub fn ensure_folder(email: &str, name: &str) -> Result<String, String> {
     made["id"].as_str().map(String::from).ok_or_else(|| "Microsoft did not make the folder.".into())
 }
 
+/// A folder name Outlook will take: something to show, not too long, and
+/// no control characters.
+pub fn folder_name(name: &str) -> Result<&str, String> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err("Enter a folder name.".into());
+    }
+    if name.chars().count() > 255 || name.chars().any(char::is_control) {
+        return Err("That folder name is not allowed.".into());
+    }
+    Ok(name)
+}
+
+fn folder_refusal((status, reason): (u16, String)) -> String {
+    match status {
+        409 => "There is already a folder with that name there.".into(),
+        404 => "That folder is no longer there.".into(),
+        _ => refusal("the folder")((status, reason)),
+    }
+}
+
+/// A new folder, at the top or inside `parent_id`. Returns its id.
+pub fn create_folder(email: &str, name: &str, parent_id: &str) -> Result<String, String> {
+    let name = folder_name(name)?;
+    let token = auth::access_token_for(email)?;
+    let client = graph::http_client()?;
+    let parent = parent_id.trim();
+    let url = if parent.is_empty() {
+        format!("{ME}/mailFolders")
+    } else {
+        format!("{ME}/mailFolders/{}/childFolders", graph::path_segment(parent))
+    };
+    let made = call(&client, &token, "POST", &url, Some(&json!({ "displayName": name }))).map_err(folder_refusal)?;
+    made["id"].as_str().map(String::from).ok_or_else(|| "Microsoft did not make the folder.".into())
+}
+
+pub fn rename_folder(email: &str, folder_id: &str, name: &str) -> Result<(), String> {
+    let name = folder_name(name)?;
+    let id = folder_id.trim();
+    if id.is_empty() {
+        return Err("Choose a folder.".into());
+    }
+    let token = auth::access_token_for(email)?;
+    let client = graph::http_client()?;
+    call(&client, &token, "PATCH", &format!("{ME}/mailFolders/{}", graph::path_segment(id)), Some(&json!({ "displayName": name })))
+        .map(|_| ())
+        .map_err(folder_refusal)
+}
+
+/// Delete a folder. Exchange moves it, with its mail and subfolders, to
+/// Deleted Items, as Outlook does.
+pub fn delete_folder(email: &str, folder_id: &str) -> Result<(), String> {
+    let id = folder_id.trim();
+    if id.is_empty() {
+        return Err("Choose a folder.".into());
+    }
+    let token = auth::access_token_for(email)?;
+    let client = graph::http_client()?;
+    call(&client, &token, "DELETE", &format!("{ME}/mailFolders/{}", graph::path_segment(id)), None)
+        .map(|_| ())
+        .map_err(folder_refusal)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn folder_names_are_checked() {
+        assert_eq!(folder_name("  Quotes "), Ok("Quotes"));
+        assert!(folder_name("   ").is_err());
+        assert!(folder_name("bad\nname").is_err());
+        assert!(folder_name(&"x".repeat(256)).is_err());
+        assert_eq!(folder_refusal((409, String::new())), "There is already a folder with that name there.");
+    }
 
     #[test]
     fn turning_a_rule_on_or_off_sends_only_that() {
