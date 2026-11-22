@@ -2045,6 +2045,7 @@
   .scheduled-text { flex: 1; min-width: 0; display: flex; flex-direction: column; }
   .scheduled-text b, .scheduled-text small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .scheduled-text small { color: var(--muted); }
+  .scheduled-item .linkish { flex: none; font-size: 13px; }
   .forward-banner { background: var(--clay-soft); color: var(--clay-ink); }
   .forward-banner > span { flex: 1; min-width: 0; }
   .auto-reply { display: grid; gap: 12px; max-width: 560px; }

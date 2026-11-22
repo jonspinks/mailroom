@@ -7869,8 +7869,8 @@ function paintScheduledPanel() {
   }
   panel.innerHTML = `<p class="move-group">Scheduled</p>` + items.map(({ id, item }) => `
     <div class="scheduled-item">
-      <div class="scheduled-text"><b>${esc(item.subject || "(No subject)")}</b><small>${esc((item.to || []).map(recipientLabel).join(", ") || "No recipients")} · goes ${esc(scheduledWhen(item.sendAt))}</small></div>
-      <button type="button" class="ghost" data-cancel-scheduled="${esc(item.id)}" data-acct="${esc(id)}">Cancel send</button>
+      <div class="scheduled-text"><b>${esc(item.subject || "(No subject)")}</b><small>Goes ${esc(scheduledWhen(item.sendAt))} · ${esc((item.to || []).map(recipientLabel).join(", ") || "No recipients")}</small></div>
+      <button type="button" class="linkish" data-cancel-scheduled="${esc(item.id)}" data-acct="${esc(id)}">Cancel send</button>
     </div>`).join("");
   panel.querySelectorAll("[data-cancel-scheduled]").forEach(btn => {
     btn.onclick = () => cancelScheduled(btn.dataset.acct, btn.dataset.cancelScheduled, btn);
@@ -18913,7 +18913,7 @@ const folderBusy = new Set();
 let syncNote = "";
 const folderRun = new Map();
 const bodyLoads = new Set();
-const APP_VERSION = "1.6.9";
+const APP_VERSION = "1.6.10";
 let appVersion = APP_VERSION;
 
 prepareDesktopAccounts();
