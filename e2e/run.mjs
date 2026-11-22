@@ -2922,9 +2922,16 @@ test("software: shows an update, updates and restarts", { fake: true }, async ({
   expect((await p.$eval("#software-status", e => e.textContent)).includes("0.14.0 is available"), "update shown");
   same(await p.$$eval(".software-changes li", l => l.map(x => x.textContent)), ["Settings > Software", "Left-click the tray icon"], "what's new");
   expect(await p.$eval("#settings-software", e => !!e.querySelector(".update-dot")), "dot on Software");
+  // The confirm is Mailroom's native dialog (#73): the page asks nothing itself.
   await clear();
-  await p.click("#software-update"); await wait(150);
-  await p.click('#choose-layer [data-choose="yes"]'); await wait(300);
+  await p.evaluate(() => { window.__updateDeclined = true; });
+  await p.click("#software-update"); await wait(300);
+  same(await p.$("#choose-layer"), null, "no page dialog to click through");
+  same((await calls("run_update")).length, 1, "the backend is asked");
+  expect(await p.$eval("#software-update", e => !e.hidden), "Cancel in the native dialog leaves things as they were");
+  await clear();
+  await p.evaluate(() => { window.__updateDeclined = false; });
+  await p.click("#software-update"); await wait(300);
   same((await calls("run_update")).length, 1, "update started");
   await p.click("#software-restart"); await wait(150);
   await p.click('#choose-layer [data-choose="yes"]'); await wait(300);
@@ -2936,8 +2943,7 @@ test("software: shows an update, updates and restarts", { fake: true }, async ({
 
 test("software: a progress bar follows the update", { fake: true }, async ({ p }) => {
   await p.evaluate(() => { window.__progress = { stage: "fetch", detail: "", elapsed: 1, estimate: 60 }; showSettings("software"); }); await wait(500);
-  await p.click("#software-update"); await wait(150);
-  await p.click('#choose-layer [data-choose="yes"]'); await wait(400);
+  await p.click("#software-update"); await wait(550);
   expect(await p.$(".update-progress"), "bar shown");
   expect((await p.$eval(".update-progress-text", e => e.textContent)).includes("Getting the new version"), "fetching");
   expect(await p.$eval("#software-update", e => e.disabled), "update button off while running");

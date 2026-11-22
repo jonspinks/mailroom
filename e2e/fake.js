@@ -140,7 +140,7 @@
       { date: "2026-11-08", title: "Mailroom 1.0.0", version: "", pr: 0 }
     ],
     check_update: () => window.__update || { current: "0.13.2", latest: "0.14.0", behind: 3, changes: ["Settings > Software", "Left-click the tray icon"], localChanges: false, repo: "/home/user/src/mailroom" },
-    run_update: () => null, update_progress: () => window.__progress || { stage: "idle", detail: "", elapsed: 0, estimate: 0 }, update_log: () => window.__updateLog || "", restart_app: () => null,
+    run_update: () => !window.__updateDeclined, update_progress: () => window.__progress || { stage: "idle", detail: "", elapsed: 0, estimate: 0 }, update_log: () => window.__updateLog || "", restart_app: () => null,
     mail_rules: () => window.__rules || [], save_rule: (a) => Object.assign({ id: "r" + Math.random().toString(36).slice(2, 6), other: false }, a.rule), delete_rule: () => null,
     people: (a) => a.query ? (["wagstaffe", "wag", "wa"].some(q => a.query.toLowerCase().startsWith(q)) ? [{ name: "Wagstaffe, Jane", email: "jane.wagstaffe@timberworks.example" }] : []) : [{ name: "Priya Shah", email: "priya@timberworks.example" }],
     sync_calendar: () => {

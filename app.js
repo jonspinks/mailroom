@@ -5525,10 +5525,10 @@ function renderSoftware(body) {
     tick();
   };
   updateBtn.onclick = async () => {
-    const sure = await chooseDialog("Update Mailroom?", "Mailroom builds the new version, then restarts. Keep working meanwhile.", [{ value: "yes", label: "Update and restart", primary: true }]);
-    if (sure !== "yes") return;
+    // Mailroom asks in a native dialog of its own (#73), so a script in the
+    // page can't start an update; false means the answer was Cancel.
     try {
-      await tauriInvoke("run_update");
+      if (!(await tauriInvoke("run_update"))) return;
     } catch (err) {
       return toast(String(err && err.message || err));
     }
@@ -18675,7 +18675,7 @@ const folderBusy = new Set();
 let syncNote = "";
 const folderRun = new Map();
 const bodyLoads = new Set();
-const APP_VERSION = "1.6.0";
+const APP_VERSION = "1.6.1";
 let appVersion = APP_VERSION;
 
 prepareDesktopAccounts();
