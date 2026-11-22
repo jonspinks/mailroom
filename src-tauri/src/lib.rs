@@ -1477,9 +1477,61 @@ async fn whats_new() -> Result<Vec<software::Change>, String> {
     in_background(|| software::whats_new(30)).await
 }
 
+/// Asked by the backend itself, in GTK, before an update starts (#73). The
+/// page can call run_update, but only a person at this dialog can say yes,
+/// so a script in the page can't start an update (a git pull and a build)
+/// on its own. Cancel is the default answer.
+#[cfg(target_os = "linux")]
+fn confirm_update(parent: Option<&gtk::ApplicationWindow>) -> bool {
+    use gtk::prelude::*;
+    if !gtk::is_initialized() && gtk::init().is_err() {
+        return false;
+    }
+    let dialog = gtk::MessageDialog::new(
+        parent,
+        gtk::DialogFlags::MODAL | gtk::DialogFlags::DESTROY_WITH_PARENT,
+        gtk::MessageType::Question,
+        gtk::ButtonsType::None,
+        "Update Mailroom?",
+    );
+    dialog.set_secondary_text(Some("Mailroom downloads and builds the new version, then restarts. Keep working meanwhile."));
+    dialog.add_button("Cancel", gtk::ResponseType::Cancel);
+    dialog.add_button("Update and restart", gtk::ResponseType::Accept);
+    dialog.set_default_response(gtk::ResponseType::Cancel);
+    let answer = dialog.run();
+    // SAFETY: the dialog was made here, run() has returned, and nothing else
+    // holds it, so destroying it can't pull a widget from under anyone.
+    unsafe { dialog.destroy() };
+    answer == gtk::ResponseType::Accept
+}
+
+#[cfg(not(target_os = "linux"))]
+fn confirm_update(_parent: Option<&()>) -> bool {
+    false
+}
+
+/// Start an update once the person has said yes in the native dialog.
+/// Ok(false) when they didn't.
 #[tauri::command]
-async fn run_update() -> Result<(), String> {
-    in_background(software::update).await
+async fn run_update(app: tauri::AppHandle, window: tauri::WebviewWindow) -> Result<bool, String> {
+    in_background(move || {
+        let (tx, rx) = std::sync::mpsc::sync_channel(1);
+        app.run_on_main_thread(move || {
+            #[cfg(target_os = "linux")]
+            let parent = window.gtk_window().ok();
+            #[cfg(target_os = "linux")]
+            let _ = tx.send(confirm_update(parent.as_ref()));
+            #[cfg(not(target_os = "linux"))]
+            let _ = (window, tx.send(confirm_update(None)));
+        })
+        .map_err(|_| "Mailroom could not ask about the update.".to_string())?;
+        if !rx.recv().unwrap_or(false) {
+            return Ok(false);
+        }
+        software::update()?;
+        Ok(true)
+    })
+    .await
 }
 
 #[tauri::command]
