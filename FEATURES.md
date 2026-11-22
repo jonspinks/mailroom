@@ -87,6 +87,7 @@ compares them with this list, and opens an issue for anything new.
 | Work week, week, month | ✅ |
 | Day view | ✅ also from a week's day heading |
 | Events over several days | ✅ start and end dates in the editor; opens whole from any of its days |
+| Open a .ics file | ✅ Open with Mailroom: pick the calendar, and its events are added at your local time |
 | Several calendars, colours, show and hide | ✅ |
 | Recurring events and exceptions | ✅ this event, this and following, or all |
 | Drag to move | ✅ |

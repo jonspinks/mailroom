@@ -33,6 +33,10 @@ pub struct Request {
     /// "open": the account's address and the message id, both decoded.
     pub account: String,
     pub id: String,
+    /// "ics": a calendar file opened in Mailroom, its name and its events.
+    /// "badics" when it could not be read or held no events.
+    pub file: String,
+    pub events: Vec<crate::gcal::FileEvent>,
 }
 
 impl Request {
@@ -53,6 +57,9 @@ pub fn from_args(args: &[String]) -> Option<Request> {
         if arg.get(..9).is_some_and(|scheme| scheme.eq_ignore_ascii_case("mailroom:")) {
             return Some(parse_mailroom(arg));
         }
+        if let Some(path) = calendar_file(arg) {
+            return Some(read_calendar_file(&path));
+        }
         if arg == "--compose" {
             return Some(Request { kind: "compose".into(), ..Default::default() });
         }
@@ -61,6 +68,57 @@ pub fn from_args(args: &[String]) -> Option<Request> {
         }
     }
     None
+}
+
+/// Calendar files are at most this big; a real one is a few kilobytes.
+const MAX_ICS_BYTES: u64 = 2 * 1024 * 1024;
+
+/// A .ics file named on the command line, as a path or a file:// URI (which
+/// is what a file manager's "Open with" may pass).
+fn calendar_file(arg: &str) -> Option<std::path::PathBuf> {
+    let path = match arg.get(..7) {
+        Some(scheme) if scheme.eq_ignore_ascii_case("file://") => {
+            let raw = &arg[7..];
+            let raw = raw.strip_prefix("localhost").unwrap_or(raw);
+            percent_decoded(raw)?
+        }
+        _ => arg.to_string(),
+    };
+    let path = std::path::PathBuf::from(path);
+    let ics = path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("ics") || ext.eq_ignore_ascii_case("ical") || ext.eq_ignore_ascii_case("ifb"));
+    (ics && path.is_absolute()).then_some(path)
+}
+
+fn percent_decoded(text: &str) -> Option<String> {
+    let bytes = text.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' {
+            let hex = std::str::from_utf8(bytes.get(i + 1..i + 3)?).ok()?;
+            out.push(u8::from_str_radix(hex, 16).ok()?);
+            i += 3;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8(out).ok()
+}
+
+fn read_calendar_file(path: &std::path::Path) -> Request {
+    let file = path.file_name().map(|name| name.to_string_lossy().chars().take(200).collect()).unwrap_or_default();
+    let bad = |file: String| Request { kind: "badics".into(), file, ..Default::default() };
+    let Ok(meta) = std::fs::metadata(path) else { return bad(file) };
+    if !meta.is_file() || meta.len() > MAX_ICS_BYTES {
+        return bad(file);
+    }
+    let Ok(bytes) = std::fs::read(path) else { return bad(file) };
+    let events = crate::gcal::file_events(&String::from_utf8_lossy(&bytes));
+    if events.is_empty() {
+        return bad(file);
+    }
+    Request { kind: "ics".into(), file, events, ..Default::default() }
 }
 
 pub fn stash(request: Option<Request>) {
@@ -227,6 +285,25 @@ mod tests {
 
     fn args(list: &[&str]) -> Vec<String> {
         list.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn a_calendar_file_is_read_from_a_path_or_a_file_uri() {
+        let dir = std::env::temp_dir().join(format!("mailroom-ics-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("Kiln plan.ics");
+        std::fs::write(&path, "BEGIN:VCALENDAR\nBEGIN:VEVENT\nSUMMARY:Kiln\nDTSTART:20261124T090000Z\nEND:VEVENT\nEND:VCALENDAR\n").unwrap();
+        let args = |a: &str| vec!["mailroom".to_string(), a.to_string()];
+        let got = from_args(&args(path.to_str().unwrap())).unwrap();
+        assert_eq!((got.kind.as_str(), got.file.as_str(), got.events.len()), ("ics", "Kiln plan.ics", 1));
+        let uri = format!("file://{}", path.to_str().unwrap().replace(' ', "%20"));
+        assert_eq!(from_args(&args(&uri)).unwrap().events[0].summary, "Kiln");
+        let empty = dir.join("empty.ics");
+        std::fs::write(&empty, "nothing here").unwrap();
+        assert_eq!(from_args(&args(empty.to_str().unwrap())).unwrap().kind, "badics");
+        assert!(from_args(&args("relative.ics")).is_none(), "only absolute paths");
+        assert!(from_args(&args("/tmp/notes.txt")).is_none());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

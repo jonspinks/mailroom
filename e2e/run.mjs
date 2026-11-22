@@ -3703,6 +3703,37 @@ test("hidden calendars stay hidden after a restart", { fake: true }, async ({ p 
   same(await hidden(), [], "and shown again once turned back on");
 });
 
+test("opening a .ics file adds its events to the calendar you pick, at the right local time", { fake: true, tz: true }, async ({ p, calls, clear }) => {
+  await p.evaluate(() => setView("calendar")); await wait(900);
+  await clear();
+  await p.evaluate(() => openLaunchRequest({ kind: "ics", file: "trip.ics", events: [
+    { summary: "Dubai meeting", location: "DIFC", notes: "Bring deck", allDay: false, start: "2026-11-24T09:00:00", end: "2026-11-24T10:00:00", zone: "Arabian Standard Time", repeats: false },
+    { summary: "Call", location: "", notes: "", allDay: false, start: "2026-11-25T15:00:00", end: "2026-11-25T15:45:00", zone: "UTC", repeats: false },
+    { summary: "Fair", location: "", notes: "", allDay: true, start: "2026-12-01", end: "2026-12-04", zone: "", repeats: true },
+    { summary: "Odd zone", location: "", notes: "", allDay: false, start: "2026-11-26T08:00:00", end: "2026-11-26T09:00:00", zone: "Somewhere/Made Up", repeats: false }
+  ] })); await wait(300);
+  const shown = await p.evaluate(() => ({ title: document.querySelector("#ics-title")?.textContent, items: [...document.querySelectorAll(".ics-event")].map(e => e.textContent.replace(/\s+/g, " ").trim()), cals: [...document.querySelectorAll("#ics-calendar option")].map(o => o.value) }));
+  same(shown.title, "Add to calendar", "the dialog opens");
+  expect(shown.items[0].includes("00:00–01:00") && shown.items[0].includes("DIFC"), "Dubai 09:00 shows as 00:00 in Toronto", shown.items[0]);
+  expect(shown.items[1].includes("10:00–10:45"), "15:00 UTC shows as 10:00", shown.items[1]);
+  expect(shown.items[2].includes("1 Dec") && shown.items[2].includes("3 Dec") && shown.items[2].includes("first one"), "an all-day span to its last day, and the repeat said", shown.items[2]);
+  expect(shown.items[3].includes("isn't one Mailroom knows"), "an unknown zone is said, not guessed", shown.items[3]);
+  expect(shown.cals.includes("AAMkCal1"), "writable calendars to pick from", shown.cals);
+  // Leave out the odd one, pick the calendar, add.
+  await p.click('[data-ics="3"]');
+  await p.select("#ics-calendar", "AAMkCal1");
+  await p.click("#ics-add"); await wait(600);
+  const saved = (await calls("save_event")).map(c => [c.calendarId, c.fields.subject, c.fields.start, c.fields.end, c.fields.allDay]);
+  same(saved, [
+    ["AAMkCal1", "Dubai meeting", "2026-11-24T00:00:00", "2026-11-24T01:00:00", false],
+    ["AAMkCal1", "Call", "2026-11-25T10:00:00", "2026-11-25T10:45:00", false],
+    ["AAMkCal1", "Fair", "2026-12-01", "2026-12-04", true]
+  ], "the three chosen, in local time, to that calendar");
+  same(await p.evaluate(() => [view, !!document.querySelector(".ics-dialog")]), ["calendar", false], "and Calendar shows them");
+  await p.evaluate(() => openLaunchRequest({ kind: "badics", file: "notes.ics", events: [] })); await wait(200);
+  expect((await p.$eval("#toast", e => e.textContent)).includes("no events"), "a file with no events says so");
+});
+
 // ---------------------------------------------------------------- runner
 
 const { server, url } = await serve();

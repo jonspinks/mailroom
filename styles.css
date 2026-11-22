@@ -3885,3 +3885,10 @@ html body[data-read="window"] .close-message { display: inline-grid; }
 /* A week view's day heading opens Day view (#71). */
 .dayhead[data-open-day] { cursor: pointer; }
 .dayhead[data-open-day]:hover .num, .dayhead[data-open-day]:focus-visible .num { text-decoration: underline; }
+
+/* Opening a .ics file: its events, and the calendar to add them to. */
+.ics-list { display: flex; flex-direction: column; gap: 8px; max-height: 45vh; overflow-y: auto; margin: 8px 0 12px; }
+.ics-event { display: flex; gap: 10px; align-items: flex-start; }
+.ics-event span { display: flex; flex-direction: column; min-width: 0; }
+.ics-event small { color: var(--muted); }
+.ics-event .ics-note { font-style: italic; }

@@ -432,6 +432,8 @@ fn mailto_default() -> Option<String> {
 const MAILTO_SCHEME: &str = "x-scheme-handler/mailto";
 /// mailroom://message/<account>/<id> links (launch.rs) open in Mailroom.
 const MAILROOM_SCHEME: &str = "x-scheme-handler/mailroom";
+/// .ics files open in Mailroom, which adds their events to a calendar.
+const CALENDAR_TYPE: &str = "text/calendar";
 
 fn scheme_default(scheme: &str) -> Option<String> {
     let out = Command::new("xdg-mime")
@@ -446,6 +448,11 @@ fn scheme_default(scheme: &str) -> Option<String> {
 fn claim_mailroom_links() {
     if scheme_default(MAILROOM_SCHEME).as_deref() != Some(DESKTOP_ID) {
         let _ = Command::new("xdg-mime").args(["default", DESKTOP_ID, MAILROOM_SCHEME]).status();
+    }
+    // Calendar files open in Mailroom when nothing else has been chosen for
+    // them; another calendar app someone picked is left as it is.
+    if scheme_default(CALENDAR_TYPE).is_none() {
+        let _ = Command::new("xdg-mime").args(["default", DESKTOP_ID, CALENDAR_TYPE]).status();
     }
 }
 
@@ -665,7 +672,7 @@ fn desktop_entry(exe: &str) -> String {
          Icon=io.github.jonspinks.mailroom\n\
          Terminal=false\n\
          Categories=Network;Email;Office;\n\
-         MimeType=x-scheme-handler/mailto;x-scheme-handler/mailroom;\n\
+         MimeType=x-scheme-handler/mailto;x-scheme-handler/mailroom;text/calendar;\n\
          StartupWMClass=mailroom\n\
          Actions=compose;\n\
          X-Mailroom-Managed=true\n\
@@ -703,7 +710,16 @@ fn install_desktop_entry(exe: &str) -> Result<(), String> {
 /// mailroom: scheme to it, leaving the rest (its Exec) as it is. `None` when
 /// the entry isn't Mailroom's or already has it.
 fn with_mailroom_scheme(entry: &str) -> Option<String> {
-    if !entry.contains("X-Mailroom-Managed=true") || entry.contains(MAILROOM_SCHEME) {
+    with_types(entry, &[MAILROOM_SCHEME])
+}
+
+/// Mailroom's own launcher entry with every type in `wanted` it lacks added
+/// to its MimeType line (the mailroom: scheme from 1.4.2, calendar files
+/// from 1.7). `None` when it isn't Mailroom's or has them all.
+fn with_types(entry: &str, wanted: &[&str]) -> Option<String> {
+    let listed = |t: &str| entry.lines().any(|l| l.trim().strip_prefix("MimeType=").is_some_and(|v| v.split(';').any(|x| x.trim() == t)));
+    let missing: Vec<&str> = wanted.iter().copied().filter(|t| !listed(t)).collect();
+    if !entry.contains("X-Mailroom-Managed=true") || missing.is_empty() {
         return None;
     }
     let mut out = String::new();
@@ -718,7 +734,7 @@ fn with_mailroom_scheme(entry: &str) -> Option<String> {
             Some(types) if section == "[Desktop Entry]" && !added => {
                 let types = types.trim_end_matches(';');
                 let sep = if types.is_empty() { "" } else { ";" };
-                out.push_str(&format!("MimeType={types}{sep}{MAILROOM_SCHEME};\n"));
+                out.push_str(&format!("MimeType={types}{sep}{};\n", missing.join(";")));
                 added = true;
             }
             _ => out.push_str(line),
@@ -737,7 +753,7 @@ pub fn refresh_desktop_entry() {
     if !text.contains("X-Mailroom-Managed=true") {
         return;
     }
-    if let Some(updated) = with_mailroom_scheme(&text) {
+    if let Some(updated) = with_types(&text, &[MAILROOM_SCHEME, CALENDAR_TYPE]) {
         if write_keeping_mode(&path, &updated).is_err() {
             return;
         }
@@ -1064,14 +1080,15 @@ mod tests {
         assert!(entry.contains("Exec=/opt/mailroom %u\n"));
         assert!(entry.contains("Exec=/opt/mailroom --compose\n"));
         assert!(desktop_entry("/opt/now tlook").contains("Exec=\"/opt/now tlook\" %u\n"));
-        assert!(entry.contains("MimeType=x-scheme-handler/mailto;x-scheme-handler/mailroom;\n"));
+        assert!(entry.contains("MimeType=x-scheme-handler/mailto;x-scheme-handler/mailroom;text/calendar;\n"));
     }
 
     #[test]
     fn an_older_entry_gains_the_mailroom_scheme_and_keeps_its_exec() {
-        let old = desktop_entry("/opt/old mailroom").replace("x-scheme-handler/mailroom;", "");
+        // An entry from before 1.4.2 named only mailto.
+        let old = desktop_entry("/opt/old mailroom").replace("x-scheme-handler/mailroom;text/calendar;", "");
         assert!(old.contains("MimeType=x-scheme-handler/mailto;\n"));
-        let new = with_mailroom_scheme(&old).unwrap();
+        let new = with_types(&old, &[MAILROOM_SCHEME, CALENDAR_TYPE]).unwrap();
         assert_eq!(new, desktop_entry("/opt/old mailroom"), "the same entry as a fresh one, Exec untouched");
         assert_eq!(with_mailroom_scheme(&new), None, "already there");
         let by_hand = old.replace("X-Mailroom-Managed=true\n", "");
@@ -1079,6 +1096,10 @@ mod tests {
         let bare = "[Desktop Entry]\nMimeType=\nX-Mailroom-Managed=true\n";
         assert_eq!(with_mailroom_scheme(bare).unwrap(), "[Desktop Entry]\nMimeType=x-scheme-handler/mailroom;\nX-Mailroom-Managed=true\n");
         assert_eq!(with_mailroom_scheme("[Desktop Entry]\nX-Mailroom-Managed=true\n"), None, "no MimeType line to add to");
+        let old = "[Desktop Entry]\nMimeType=x-scheme-handler/mailto;x-scheme-handler/mailroom;\nX-Mailroom-Managed=true\n";
+        let new = with_types(old, &[MAILROOM_SCHEME, CALENDAR_TYPE]).unwrap();
+        assert_eq!(new, "[Desktop Entry]\nMimeType=x-scheme-handler/mailto;x-scheme-handler/mailroom;text/calendar;\nX-Mailroom-Managed=true\n", "calendar files join, once");
+        assert_eq!(with_types(&new, &[MAILROOM_SCHEME, CALENDAR_TYPE]), None);
     }
 
     #[test]

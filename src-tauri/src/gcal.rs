@@ -913,6 +913,139 @@ fn parse_ics(raw: &str) -> Option<ParsedIcs> {
     Some(ParsedIcs { method, uid, summary, location, status, start, end, recurrence_id, rrule, organizer, attendees })
 }
 
+// ---- .ics files opened in Mailroom ----
+// A file from the desktop (Open with Mailroom) can hold several events and
+// says nothing about invites: each VEVENT becomes a FileEvent for the page,
+// which converts its time to local and adds it to the calendar picked.
+
+/// One event from a .ics file. `start`/`end` are `YYYY-MM-DD` when
+/// `all_day` (the end exclusive, as in iCalendar), otherwise a clock time
+/// `YYYY-MM-DDTHH:MM:SS` in `zone`: "UTC", a TZID as the file wrote it, or
+/// empty for floating (local) time.
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileEvent {
+    pub summary: String,
+    pub location: String,
+    pub notes: String,
+    pub all_day: bool,
+    pub start: String,
+    pub end: String,
+    pub zone: String,
+    /// It has an RRULE; Mailroom adds the first occurrence only.
+    pub repeats: bool,
+}
+
+const MAX_FILE_EVENTS: usize = 50;
+
+fn file_when(params: &[(String, String)], value: &str) -> Option<(String, String, bool)> {
+    let value = value.trim();
+    if ics_param(params, "VALUE").eq_ignore_ascii_case("DATE") || (value.len() == 8 && value.bytes().all(|b| b.is_ascii_digit())) {
+        return Some((basic_date(value)?, String::new(), true));
+    }
+    let clock = basic_clock(value)?;
+    if value.ends_with('Z') {
+        return Some((clock, "UTC".into(), false));
+    }
+    let zone: String = ics_param(params, "TZID").trim().trim_matches('"').chars().filter(|c| !c.is_control()).take(80).collect();
+    Some((clock, zone, false))
+}
+
+/// Seconds in an iCalendar DURATION such as `PT1H30M`, `P1D` or `P1DT2H`.
+fn duration_secs(value: &str) -> Option<i64> {
+    let text = value.trim().trim_start_matches('+');
+    let rest = text.strip_prefix('P')?;
+    let (mut total, mut number, mut in_time) = (0i64, String::new(), false);
+    for c in rest.chars() {
+        match c {
+            'T' => in_time = true,
+            '0'..='9' => number.push(c),
+            unit => {
+                let n: i64 = number.parse().ok()?;
+                number.clear();
+                total += n * match (unit, in_time) {
+                    ('W', false) => 7 * 86400,
+                    ('D', false) => 86400,
+                    ('H', true) => 3600,
+                    ('M', true) => 60,
+                    ('S', true) => 1,
+                    _ => return None,
+                };
+            }
+        }
+    }
+    if total <= 0 || total > 366 * 86400 { None } else { Some(total) }
+}
+
+/// The wall-clock or date `secs` after `start`, in the same form.
+fn shifted(start: &str, secs: i64, all_day: bool) -> Option<String> {
+    let base = if all_day { format!("{start}T00:00:00Z") } else { format!("{start}Z") };
+    let moved = google::iso_from_secs(google::secs_from_iso(&base)? + secs);
+    Some(if all_day { moved[..10].to_string() } else { moved.trim_end_matches('Z').chars().take(19).collect() })
+}
+
+/// Every event in a .ics file, up to 50, in file order.
+pub fn file_events(raw: &str) -> Vec<FileEvent> {
+    let unfolded = unfold_ics(raw);
+    let mut out = Vec::new();
+    let mut current: Option<(FileEvent, Option<(String, String, bool)>, Option<(String, String, bool)>, Option<i64>)> = None;
+    let mut skip = 0u32;
+    for line in unfolded.lines() {
+        let line = line.trim_end_matches('\r').trim_end();
+        let Some(prop) = parse_ics_line(line) else { continue };
+        if skip > 0 {
+            if prop.name == "BEGIN" { skip += 1 } else if prop.name == "END" { skip -= 1 }
+            continue;
+        }
+        let kind = prop.value.trim().to_ascii_uppercase();
+        if prop.name == "BEGIN" {
+            if kind == "VEVENT" && current.is_none() {
+                let blank = FileEvent { summary: String::new(), location: String::new(), notes: String::new(), all_day: false, start: String::new(), end: String::new(), zone: String::new(), repeats: false };
+                current = Some((blank, None, None, None));
+            } else if kind != "VCALENDAR" {
+                skip = 1;
+            }
+            continue;
+        }
+        if prop.name == "END" {
+            if kind == "VEVENT" {
+                if let Some((mut ev, Some(start), end, duration)) = current.take() {
+                    ev.all_day = start.2;
+                    ev.zone = start.1.clone();
+                    ev.start = start.0.clone();
+                    ev.end = match (end, duration) {
+                        (Some(end), _) if end.2 == start.2 => end.0,
+                        (_, Some(secs)) => shifted(&start.0, secs, start.2).unwrap_or_default(),
+                        _ => shifted(&start.0, if start.2 { 86400 } else { 3600 }, start.2).unwrap_or_default(),
+                    };
+                    if ev.end.is_empty() || ev.end <= ev.start {
+                        ev.end = shifted(&ev.start, if ev.all_day { 86400 } else { 3600 }, ev.all_day).unwrap_or_default();
+                    }
+                    if ev.summary.trim().is_empty() {
+                        ev.summary = "(No title)".into();
+                    }
+                    out.push(ev);
+                    if out.len() >= MAX_FILE_EVENTS { break; }
+                }
+                current = None;
+            }
+            continue;
+        }
+        let Some((ev, start, end, duration)) = current.as_mut() else { continue };
+        match prop.name.as_str() {
+            "SUMMARY" => ev.summary = prop.value.chars().take(500).collect(),
+            "LOCATION" => ev.location = prop.value.chars().take(500).collect(),
+            "DESCRIPTION" => ev.notes = prop.value.chars().take(20_000).collect(),
+            "RRULE" => ev.repeats = true,
+            "DTSTART" => *start = file_when(&prop.params, &prop.value),
+            "DTEND" => *end = file_when(&prop.params, &prop.value),
+            "DURATION" => *duration = duration_secs(&prop.value),
+            _ => {}
+        }
+    }
+    out
+}
+
 fn when_text(when: &IcsWhen) -> String {
     match when {
         IcsWhen::Date(date) | IcsWhen::Utc(date) => date.clone(),
@@ -1398,6 +1531,25 @@ pub fn end_series_before(email: &str, master_id: &str, date: &str) -> Result<boo
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_calendar_file_gives_every_event_with_its_zone() {
+        let raw = "BEGIN:VCALENDAR\r\nBEGIN:VTIMEZONE\r\nTZID:Eastern Standard Time\r\nBEGIN:STANDARD\r\nTZOFFSETTO:-0500\r\nEND:STANDARD\r\nEND:VTIMEZONE\r\n\
+BEGIN:VEVENT\r\nSUMMARY:Kiln firing\\, round 2\r\nDTSTART;TZID=Eastern Standard Time:20261124T090000\r\nDTEND;TZID=Eastern Standard Time:20261124T103000\r\nLOCATION:Shop\r\nDESCRIPTION:Bring gloves\\nand tongs\r\nBEGIN:VALARM\r\nTRIGGER:-PT15M\r\nEND:VALARM\r\nEND:VEVENT\r\n\
+BEGIN:VEVENT\r\nSUMMARY:Fair\r\nDTSTART;VALUE=DATE:20261201\r\nDTEND;VALUE=DATE:20261204\r\nRRULE:FREQ=YEARLY\r\nEND:VEVENT\r\n\
+BEGIN:VEVENT\r\nSUMMARY:Call\r\nDTSTART:20261125T150000Z\r\nDURATION:PT45M\r\nEND:VEVENT\r\n\
+BEGIN:VEVENT\r\nDTSTART:20261126T080000\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+        let got = file_events(raw);
+        assert_eq!(got.len(), 4);
+        assert_eq!((got[0].summary.as_str(), got[0].start.as_str(), got[0].end.as_str(), got[0].zone.as_str(), got[0].all_day), ("Kiln firing, round 2", "2026-11-24T09:00:00", "2026-11-24T10:30:00", "Eastern Standard Time", false));
+        assert_eq!(got[0].notes, "Bring gloves\nand tongs", "description unescaped; the alarm inside is skipped");
+        assert_eq!((got[1].start.as_str(), got[1].end.as_str(), got[1].all_day, got[1].repeats), ("2026-12-01", "2026-12-04", true, true));
+        assert_eq!((got[2].end.as_str(), got[2].zone.as_str()), ("2026-11-25T15:45:00", "UTC"), "a DURATION gives the end");
+        assert_eq!((got[3].summary.as_str(), got[3].zone.as_str(), got[3].end.as_str()), ("(No title)", "", "2026-11-26T09:00:00"), "floating time, no end: an hour");
+        assert!(file_events("not a calendar").is_empty());
+        assert_eq!(duration_secs("P1DT2H"), Some(93600));
+        assert_eq!(duration_secs("-PT5M"), None);
+    }
 
     #[test]
     fn invite_text_with_wide_characters_does_not_panic() {
