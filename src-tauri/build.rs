@@ -112,6 +112,8 @@ fn main() {
             "set_auto_reply",
             "ensure_folder",
             "create_folder",
+            "scheduled_sends",
+            "cancel_scheduled",
             "rename_folder",
             "delete_folder",
             "people",

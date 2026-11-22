@@ -2550,6 +2550,8 @@ pub fn run() {
             set_auto_reply,
             ensure_folder,
             create_folder,
+            scheduled_sends,
+            cancel_scheduled,
             rename_folder,
             delete_folder,
             people,
@@ -2912,4 +2914,22 @@ mod picture_tests {
 /// Recipient names keyed by lower-case address, whatever case the page used.
 fn lower_keys(names: std::collections::HashMap<String, String>) -> std::collections::HashMap<String, String> {
     names.into_iter().map(|(address, name)| (address.trim().to_ascii_lowercase(), name)).collect()
+}
+
+/// Mail waiting to go at a set time (Microsoft only: Gmail has none).
+#[tauri::command]
+async fn scheduled_sends(email: String) -> Result<Vec<compose::Scheduled>, String> {
+    in_background(move || {
+        if auth::is_google(email.trim()) {
+            return Ok(Vec::new());
+        }
+        compose::scheduled_sends(email.trim())
+    })
+    .await
+}
+
+/// Stop a scheduled send; the message stays, as a draft. Returns its id.
+#[tauri::command]
+async fn cancel_scheduled(email: String, id: String) -> Result<String, String> {
+    in_background(move || compose::cancel_scheduled(email.trim(), &id)).await
 }

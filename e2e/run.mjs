@@ -1573,6 +1573,36 @@ test("sent mail carries the recipients' display names (#70)", { fake: true }, as
   same(sent && sent.names, { "ada@example.org": "Ada Lovelace", "maya@example.org": "Maya Chen" }, "names for the people Mailroom knows, keyed by address; none made up");
 });
 
+test("scheduled mail waits in Outbox with Cancel send, which keeps it as a draft (#68)", { fake: true, setup: () => {
+  window.__scheduled = [{ id: "sched-1", subject: "Quarterly report", to: ["ada@example.org"], sendAt: "2026-12-01T08:00:00Z" }];
+} }, async ({ p, calls, clear }) => {
+  await wait(600);
+  const acct = await p.evaluate(() => Object.keys(accounts)[0]);
+  same(await p.$("#scheduled-panel"), null, "not shown outside Outbox");
+  await p.evaluate(a => openFolder(a, "outbox", "", "folder"), acct); await wait(300);
+  const text = await p.$eval("#scheduled-panel", e => e.textContent);
+  expect(text.includes("Quarterly report") && text.includes("Ada Lovelace") && /goes .*Dec/.test(text), "Outbox lists it with who and when", text);
+  // A refusal leaves it scheduled and says why.
+  await p.evaluate(() => { window.__cancelError = "It has already been sent."; });
+  await p.click("[data-cancel-scheduled]"); await wait(400);
+  expect((await p.$eval("#toast", e => e.textContent)).includes("already been sent"), "the reason is shown");
+  await p.evaluate(() => { window.__cancelError = null; });
+  // Cancel send: it goes back to Drafts, which opens.
+  await clear();
+  await p.click("[data-cancel-scheduled]"); await wait(500);
+  same((await calls("cancel_scheduled")).map(c => c.id), ["sched-1"], "cancelled on the server");
+  same(await p.evaluate(() => box), "drafts", "Drafts opens, to edit or schedule again");
+  same(await p.$("#scheduled-panel"), null, "and nothing is left scheduled");
+  // Scheduling something new lists it there, not as a sent message.
+  await clear();
+  await p.evaluate(a => { window.__scheduled = [{ id: "sched-2", subject: "Later", to: [], sendAt: "2026-12-02T09:00:00Z" }]; queueOutgoing({ to: "a@maplehill.example", subject: "Later", bodyHtml: "<p>x</p>", from: a, sendAt: "2026-12-02T09:00:00Z" }, 0); }, acct); await wait(600);
+  same((await calls("send_mail")).map(c => c.sendAt), ["2026-12-02T09:00:00Z"], "handed to Microsoft to hold");
+  expect((await calls("scheduled_sends")).length >= 1, "and the scheduled list is read again");
+  same(await p.evaluate(() => messages.filter(m => m.subject === "Later").map(m => messageBox(m))), [], "no copy pretends to be in Sent");
+  await p.evaluate(a => openFolder(a, "outbox", "", "folder"), acct); await wait(300);
+  expect((await p.$eval("#scheduled-panel", e => e.textContent)).includes("Later"), "it is in Outbox's Scheduled list");
+});
+
 // ---------------------------------------------------------------- calendar
 
 test("calendar: new repeating event, edit sends only changes, series and invites", { fake: true, tz: true }, async ({ p, calls, clear }) => {

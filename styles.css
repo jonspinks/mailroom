@@ -2037,6 +2037,11 @@
   #row-menu [data-cat][aria-checked="true"]::after { content: "✓"; margin-left: auto; }
   .menu-note { margin: 6px 10px; font-size: 12px; color: var(--muted); max-width: 220px; }
   .ooo-banner { display: flex; align-items: center; gap: 10px; padding: 7px 14px; background: var(--amber-soft); color: var(--amber-ink); font-size: 13px; border-bottom: 1px solid var(--line); }
+  .scheduled-panel { border-bottom: 1px solid var(--line); padding-bottom: 4px; }
+  .scheduled-item { display: flex; align-items: center; gap: 10px; padding: 6px 14px; }
+  .scheduled-text { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+  .scheduled-text b, .scheduled-text small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .scheduled-text small { color: var(--muted); }
   .forward-banner { background: var(--clay-soft); color: var(--clay-ink); }
   .forward-banner > span { flex: 1; min-width: 0; }
   .auto-reply { display: grid; gap: 12px; max-width: 560px; }

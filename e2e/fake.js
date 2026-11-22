@@ -131,6 +131,8 @@
     auto_reply: () => window.__autoReply || { status: "disabled", externalAudience: "none", start: "", end: "", internal: "", external: "" },
     set_auto_reply: (a) => { window.__autoReply = a.reply; return null; },
     ensure_folder: () => "f-snoozed",
+    scheduled_sends: () => window.__scheduled || [],
+    cancel_scheduled: (a) => { if (window.__cancelError) return Promise.reject(window.__cancelError); window.__scheduled = (window.__scheduled || []).filter(x => x.id !== a.id); return "draft-of-" + a.id; },
     create_folder: (a) => (window.__folderError ? Promise.reject(window.__folderError) : "f-new-" + String(a.name).toLowerCase().replace(/\W+/g, "-")),
     rename_folder: () => (window.__folderError ? Promise.reject(window.__folderError) : null),
     delete_folder: () => (window.__folderError ? Promise.reject(window.__folderError) : null),
