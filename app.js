@@ -4926,6 +4926,7 @@ function paintList() {
   listTitle.textContent = listHeading();
   listTitle.title = listTitle.textContent;
   paintFocusTabs();
+  paintScheduledPanel();
   const summary = document.getElementById("search-summary");
   const summaryText = searchSummary();
   if (summary) {
@@ -7751,8 +7752,13 @@ function finishLocalSend(message) {
   }
   const name = (accounts[message.account] && accounts[message.account].name) || "";
   if (message.sendLater) {
-    message.time = "Scheduled";
-    toast("Scheduled for " + new Date(message.sendLater).toLocaleString("en-GB", { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }));
+    // Not sent yet: Exchange holds it in the Outbox, where the Scheduled
+    // panel lists it with Cancel send (#68). No local copy in Sent.
+    const at = messages.indexOf(message);
+    if (at >= 0) messages.splice(at, 1);
+    if (selected === message.id) selected = null;
+    loadScheduled(message.account);
+    toast("Scheduled for " + scheduledWhen(message.sendLater) + ". It waits in Outbox until then.");
   } else toast(message.meeting ? "Invite sent · " + message.meeting.title : "Sent from " + name);
   loadedLiveFolders.delete(message.account + "\nsent");
   if (box === "outbox" && selected === message.id) box = "sent";
@@ -7763,6 +7769,67 @@ function finishLocalSend(message) {
     if (account === "all" && box === "sent") ensureUnifiedFolder("sent");
     else if (box === "sent") ensureFolderMessages(message.account, "sent");
   }
+}
+
+// ---- Scheduled sends (#68) ----
+// Microsoft holds a Send later message in the account's Outbox until its
+// time. The Outbox folder lists them above its own messages, each with
+// Cancel send, which keeps the message as a draft to edit or reschedule.
+const scheduledSends = new Map(); // account id -> [{ id, subject, to, sendAt }]
+
+function scheduledWhen(iso) {
+  const at = new Date(iso);
+  return Number.isNaN(at.getTime()) ? "later" : at.toLocaleString("en-GB", { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+}
+
+async function loadScheduled(accountId) {
+  const acct = accounts[accountId];
+  if (!acct || !acct.signedIn || !acct.email || !inDesktop() || isGoogleAccount(accountId)) return;
+  try {
+    const rows = await tauriInvoke("scheduled_sends", { email: acct.email });
+    if (Array.isArray(rows) && rows.length) scheduledSends.set(accountId, rows); else scheduledSends.delete(accountId);
+  } catch (err) { return; }
+  if (view === "mail" && box === "outbox") paintScheduledPanel();
+}
+
+function paintScheduledPanel() {
+  let panel = document.getElementById("scheduled-panel");
+  const ids = view === "mail" && box === "outbox" ? (account === "all" ? profileAccountIds() : [account]) : [];
+  const items = [];
+  ids.forEach(id => (scheduledSends.get(id) || []).forEach(item => items.push({ id, item })));
+  if (!items.length) { if (panel) panel.remove(); return; }
+  if (!panel) {
+    panel = document.createElement("div");
+    panel.id = "scheduled-panel";
+    panel.className = "scheduled-panel";
+    rows.parentElement.insertBefore(panel, rows);
+  }
+  panel.innerHTML = `<p class="move-group">Scheduled</p>` + items.map(({ id, item }) => `
+    <div class="scheduled-item">
+      <div class="scheduled-text"><b>${esc(item.subject || "(No subject)")}</b><small>${esc((item.to || []).map(recipientLabel).join(", ") || "No recipients")} · goes ${esc(scheduledWhen(item.sendAt))}</small></div>
+      <button type="button" class="ghost" data-cancel-scheduled="${esc(item.id)}" data-acct="${esc(id)}">Cancel send</button>
+    </div>`).join("");
+  panel.querySelectorAll("[data-cancel-scheduled]").forEach(btn => {
+    btn.onclick = () => cancelScheduled(btn.dataset.acct, btn.dataset.cancelScheduled, btn);
+  });
+}
+
+async function cancelScheduled(accountId, id, btn) {
+  const acct = accounts[accountId];
+  if (!acct) return;
+  if (btn) btn.disabled = true;
+  try {
+    await tauriInvoke("cancel_scheduled", { email: acct.email, id });
+  } catch (err) {
+    if (btn) btn.disabled = false;
+    toast(String(err && err.message || err || "The send was not cancelled."));
+    return loadScheduled(accountId);
+  }
+  const left = (scheduledSends.get(accountId) || []).filter(item => item.id !== id);
+  if (left.length) scheduledSends.set(accountId, left); else scheduledSends.delete(accountId);
+  loadedLiveFolders.delete(accountId + "\ndrafts");
+  toast("Send cancelled. It is in Drafts, to edit or schedule again.");
+  openFolder(accountId, "drafts", folderIdFor(accountId, "drafts"), "folder");
 }
 
 // Forwards started before the original's attachment names had arrived. An
@@ -17223,7 +17290,7 @@ function bindCompose(root, ctx) {
     if (fromPick && isGoogleAccount(fromAccountId(fromPick.value))) return toast("Gmail can't hold a message to send later from Mailroom. Send it now instead.");
     const problem = recipientProblem(form);
     if (problem) { problem.field.setAttribute("aria-invalid", "true"); problem.field.focus(); return toast(problem.text); }
-    const when = await pickTime("Send later", "The message waits on Microsoft's server, so Mailroom does not need to be open.", sendLaterPresets(), "Schedule");
+    const when = await pickTime("Send later", "The message waits on Microsoft's server, so Mailroom does not need to be open. Until then it is in Outbox, where you can cancel it.", sendLaterPresets(), "Schedule");
     if (!when) return;
     form.dataset.sendAt = utcStamp(when);
     form.requestSubmit();
@@ -18689,7 +18756,7 @@ const folderBusy = new Set();
 let syncNote = "";
 const folderRun = new Map();
 const bodyLoads = new Set();
-const APP_VERSION = "1.6.2";
+const APP_VERSION = "1.6.3";
 let appVersion = APP_VERSION;
 
 prepareDesktopAccounts();
@@ -20288,6 +20355,7 @@ function startMailPolling() {
   Object.keys(accounts).forEach(id => {
     // One repaint for the three, not one each.
     Promise.allSettled([loadCategories(id), loadAliases(id), loadSearchFolders(id)]).then(() => { if (view === "mail") render(); });
+    loadScheduled(id);
   });
   checkAutoReplies();
   checkForwardRules();

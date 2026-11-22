@@ -243,6 +243,12 @@
           "markdownDescription": "Enables the cached_folder command without any pre-configured scope."
         },
         {
+          "description": "Enables the cancel_scheduled command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-cancel-scheduled",
+          "markdownDescription": "Enables the cancel_scheduled command without any pre-configured scope."
+        },
+        {
           "description": "Enables the check_spelling command without any pre-configured scope.",
           "type": "string",
           "const": "allow-check-spelling",
@@ -621,6 +627,12 @@
           "markdownDescription": "Enables the saved_inbox command without any pre-configured scope."
         },
         {
+          "description": "Enables the scheduled_sends command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-scheduled-sends",
+          "markdownDescription": "Enables the scheduled_sends command without any pre-configured scope."
+        },
+        {
           "description": "Enables the search_cached command without any pre-configured scope.",
           "type": "string",
           "const": "allow-search-cached",
@@ -835,6 +847,12 @@
           "type": "string",
           "const": "deny-cached-folder",
           "markdownDescription": "Denies the cached_folder command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the cancel_scheduled command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-cancel-scheduled",
+          "markdownDescription": "Denies the cancel_scheduled command without any pre-configured scope."
         },
         {
           "description": "Denies the check_spelling command without any pre-configured scope.",
@@ -1213,6 +1231,12 @@
           "type": "string",
           "const": "deny-saved-inbox",
           "markdownDescription": "Denies the saved_inbox command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the scheduled_sends command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-scheduled-sends",
+          "markdownDescription": "Denies the scheduled_sends command without any pre-configured scope."
         },
         {
           "description": "Denies the search_cached command without any pre-configured scope.",

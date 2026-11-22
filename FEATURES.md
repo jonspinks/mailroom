@@ -42,7 +42,7 @@ compares them with this list, and opens an issue for anything new.
 | Outlook | Mailroom |
 |---|---|
 | Undo send | ✅ adjustable delay |
-| Schedule send | **M** Tomorrow morning, Monday morning, or a time |
+| Schedule send | **M** Tomorrow morning, Monday morning, or a time; waits in Outbox, where Cancel send keeps it as a draft |
 | Drafts on the server | ✅ saved while typing |
 | Pop-out compose | ✅ keeps the original and its files |
 | Reply with meeting | ✅ day, time and place read from the thread |
