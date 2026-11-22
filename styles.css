@@ -3009,6 +3009,32 @@
   .recip-chips { display: flex; flex-wrap: wrap; gap: 6px; min-width: 0; }
   .recip-chip { display: inline-block; max-width: 100%; padding: 2px 10px; border-radius: min(12px, var(--r-max)); background: var(--hover); color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; line-height: 20px; }
   .recip-chip.empty { color: var(--muted); background: transparent; padding-left: 0; }
+  /* To, Cc and Bcc as chips (1.7.1). The box takes the look the bare input
+     had in each layout; the input inside it only holds what is being typed. */
+  .recip-box { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; flex: 1 1 auto; min-width: 0; box-sizing: border-box; }
+  .recip-box > input { flex: 1 1 8ch !important; width: auto !important; min-width: 8ch !important; border: 0 !important; border-radius: 0 !important; background: transparent !important; box-shadow: none !important; outline: none !important; padding: 2px 0 !important; margin: 0; }
+  .field .recip-box { border: 1px solid var(--line-strong); border-radius: min(4px, var(--r-max)); background: var(--field); padding: 4px 8px; min-height: 34px; }
+  .field .recip-box:focus-within { border-color: var(--blue); }
+  .pop-form .recip-box { padding: 3px 0; }
+  .inline-reply .field .recip-box { border: 0; border-bottom: 1px solid var(--line); border-radius: 0; background: transparent; padding: 2px 0 3px; min-height: 0; }
+  .inline-reply .field .recip-box:focus-within { border-bottom-color: var(--blue); }
+  .pane-compose .field .recip-box,
+  .read-body > .inline-reply .field .recip-box { border: 0; border-radius: 0; background: transparent; padding: 3px 0; min-height: 0; }
+  .recip-box.drop-into { outline: 2px dashed var(--blue); outline-offset: 1px; border-radius: min(4px, var(--r-max)); }
+  .recip-token { display: inline-flex; align-items: center; gap: 2px; max-width: 100%; min-width: 0; padding: 0 2px 0 8px; border-radius: min(11px, var(--r-max)); background: var(--hover); color: var(--ink); font-size: 14px; font-weight: 400; line-height: 22px; white-space: nowrap; cursor: grab; user-select: none; -webkit-user-select: none; position: relative; }
+  .recip-token:hover { background: var(--line); }
+  .recip-token-name { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+  .recip-token-x { flex: none; display: inline-grid; place-items: center; width: 18px; height: 18px; padding: 0; border: 0; border-radius: 50%; background: transparent; color: var(--muted); cursor: pointer; }
+  .recip-token-x:hover { background: var(--line-strong); color: var(--ink); }
+  .recip-token.is-dragging { opacity: 0.35; }
+  .recip-box.all-picked .recip-token { background: var(--blue); color: #fff; }
+  .recip-box.all-picked .recip-token-x { color: inherit; }
+  .recip-token.drop-before::before,
+  .recip-token.drop-after::after { content: ""; position: absolute; top: 2px; bottom: 2px; width: 2px; border-radius: 1px; background: var(--blue); }
+  .recip-token.drop-before::before { left: -4px; }
+  .recip-token.drop-after::after { right: -4px; }
+  .recip-ghost { position: fixed; top: 0; left: 0; z-index: 1000; pointer-events: none; opacity: 0.92; box-shadow: 0 0 0 1px var(--line-strong), 0 6px 18px rgba(0, 0, 0, 0.18); background: var(--panel); }
+  body.is-recip-drag, body.is-recip-drag * { cursor: grabbing !important; user-select: none; }
   .inline-reply .who-row > .who-line-row { flex: 1 1 auto; }
   .compose-who b {
     display: inline-block;

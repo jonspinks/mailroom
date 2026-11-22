@@ -659,6 +659,62 @@ test("inline reply: clicking the names opens To and Cc for editing", { fake: fal
   same(to, ["someone@else.example"], "recipient can be changed inline");
 });
 
+test("recipients are chips that drag between To, Cc and Bcc", { fake: false }, async ({ p }) => {
+  await p.click("#compose"); await wait(300);
+  await p.click("#compose-to");
+  await p.keyboard.type("ann@one.example; bob@two.example, carl@thr");
+  const chips = sel => p.$$eval(sel + " .recip-token", els => els.map(e => e.dataset.email));
+  same(await chips("#to-field"), ["ann@one.example", "bob@two.example"], "finished addresses become chips");
+  same(await p.$eval("#compose-to", e => HTMLInputElement.prototype.__lookupGetter__("value").call(e)), "carl@thr", "the unfinished one stays as text");
+  await p.keyboard.type("ee.example");
+  await p.click("#compose-subject"); await wait(300);
+  same(await chips("#to-field"), ["ann@one.example", "bob@two.example", "carl@three.example"], "leaving the field finishes the last one");
+  same(await p.$eval("#compose-to", e => parseAddresses(e.value)), ["ann@one.example", "bob@two.example", "carl@three.example"], "value is still the whole list");
+  expect(await p.$eval("#cc-field", e => e.hidden), "Cc starts closed");
+
+  const drag = async (from, to, dx = 0) => {
+    const a = await (await p.$(from)).boundingBox();
+    await p.mouse.move(a.x + a.width / 2, a.y + a.height / 2);
+    await p.mouse.down();
+    await p.mouse.move(a.x + a.width / 2 + 10, a.y + a.height / 2 + 10, { steps: 3 });
+    await wait(50);
+    const b = await (await p.$(to)).boundingBox();
+    await p.mouse.move(b.x + (dx >= 0 ? b.width - 4 + dx : 2), b.y + b.height / 2, { steps: 5 });
+    await p.mouse.up(); await wait(100);
+  };
+  // While a chip moves, Cc and Bcc open to take it.
+  const a = await (await p.$('#to-field .recip-token[data-email="bob@two.example"]')).boundingBox();
+  await p.mouse.move(a.x + 10, a.y + a.height / 2); await p.mouse.down();
+  await p.mouse.move(a.x + 30, a.y + 20, { steps: 3 }); await wait(50);
+  expect(await p.$eval("#cc-field", e => !e.hidden) && await p.$eval("#bcc-field", e => !e.hidden), "Cc and Bcc open while dragging");
+  const c = await (await p.$("#compose-cc")).boundingBox();
+  await p.mouse.move(c.x + c.width / 2, c.y + c.height / 2, { steps: 5 });
+  expect(await p.$eval("#cc-field .recip-box", e => e.classList.contains("drop-into")), "Cc shows it will take the chip");
+  await p.mouse.up(); await wait(100);
+  same(await chips("#to-field"), ["ann@one.example", "carl@three.example"], "bob left To");
+  same(await chips("#cc-field"), ["bob@two.example"], "bob is on Cc");
+  expect(await p.$eval("#bcc-field", e => e.hidden), "the empty Bcc closes again");
+  expect(await p.$eval("#show-bcc", e => !e.hidden) && await p.$eval("#show-cc", e => e.hidden), "Cc/Bcc buttons follow");
+
+  // Onto a chip: before it when dropped on its left half.
+  await drag('#to-field .recip-token[data-email="carl@three.example"]', '#to-field .recip-token[data-email="ann@one.example"]', -1);
+  same(await chips("#to-field"), ["carl@three.example", "ann@one.example"], "reordered within To");
+  await drag('#cc-field .recip-token', '#to-field .recip-token[data-email="carl@three.example"]');
+  same(await chips("#to-field"), ["carl@three.example", "bob@two.example", "ann@one.example"], "back to To, after carl");
+  expect(await p.$eval("#cc-field", e => !e.hidden), "Cc that was open before stays open");
+
+  // A click that doesn't move is not a drag; ✕ removes; Backspace takes the last chip back.
+  await p.click('#to-field .recip-token[data-email="ann@one.example"] .recip-token-x');
+  same(await chips("#to-field"), ["carl@three.example", "bob@two.example"], "✕ removes the chip");
+  await p.click("#compose-to"); await p.keyboard.press("Backspace");
+  same(await chips("#to-field"), ["carl@three.example"], "Backspace takes the last chip off");
+  same(await p.$eval("#compose-to", e => e.value), "carl@three.example; bob@two.example", "… back into the text to change");
+  await p.keyboard.down("Control"); await p.keyboard.press("KeyA"); await p.keyboard.up("Control");
+  await p.keyboard.type("dee@four.example");
+  same(await p.$eval("#compose-to", e => parseAddresses(e.value)), ["dee@four.example"], "Ctrl+A and typing replaces every recipient");
+});
+
+
 test("a narrow window folds the folders away and brings them back", { fake: false }, async ({ p }) => {
   const state = () => p.evaluate(() => document.body.dataset.folders);
   const vp = p.viewport();
