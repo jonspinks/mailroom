@@ -1212,6 +1212,7 @@ async fn send_mail(
     importance: Option<String>,
     read_receipt: Option<bool>,
     from_address: Option<String>,
+    names: Option<std::collections::HashMap<String, String>>,
 ) -> Result<(), String> {
     in_background(move || {
         let send = if auth::is_google(email.trim()) { google::send } else { compose::send };
@@ -1226,6 +1227,7 @@ async fn send_mail(
                 importance: importance.unwrap_or_default(),
                 read_receipt: read_receipt.unwrap_or(false),
                 from_address: from_address.unwrap_or_default(),
+                names: lower_keys(names.unwrap_or_default()),
             },
             draft_id.as_deref().unwrap_or(""),
             reply_to.as_deref().unwrap_or(""),
@@ -1668,6 +1670,7 @@ async fn save_draft(
     importance: Option<String>,
     read_receipt: Option<bool>,
     from_address: Option<String>,
+    names: Option<std::collections::HashMap<String, String>>,
 ) -> Result<String, String> {
     in_background(move || {
         let save = if auth::is_google(email.trim()) { google::save_draft } else { compose::save_draft };
@@ -1685,6 +1688,7 @@ async fn save_draft(
                 importance: importance.unwrap_or_default(),
                 read_receipt: read_receipt.unwrap_or(false),
                 from_address: from_address.unwrap_or_default(),
+                names: lower_keys(names.unwrap_or_default()),
             },
         )
     })
@@ -2903,4 +2907,9 @@ mod picture_tests {
         assert!(picture_bytes("not base64!").is_err());
         assert!(picture_bytes(&"A".repeat(49 * 1024 * 1024)).is_err(), "too large");
     }
+}
+
+/// Recipient names keyed by lower-case address, whatever case the page used.
+fn lower_keys(names: std::collections::HashMap<String, String>) -> std::collections::HashMap<String, String> {
+    names.into_iter().map(|(address, name)| (address.trim().to_ascii_lowercase(), name)).collect()
 }

@@ -1772,6 +1772,17 @@ fn collect_images<'a>(part: &'a Value, out: &mut Vec<&'a Value>, depth: usize) {
 // ---- Writing mail ----------------------------------------------------------
 
 /// A header value, as RFC 2047 encoded words when it is not plain ASCII.
+/// A display name for an address header: a quoted string when it is plain
+/// ASCII, otherwise an RFC 2047 encoded word. name_for has already taken
+/// out quotes, backslashes, brackets and control characters.
+fn mime_name(name: &str) -> String {
+    if name.chars().all(|c| c.is_ascii() && !c.is_ascii_control()) {
+        format!("\"{name}\"")
+    } else {
+        encode_header(name)
+    }
+}
+
 pub(crate) fn encode_header(text: &str) -> String {
     let clean: String = text.chars().filter(|c| !c.is_control()).collect();
     if clean.is_ascii() {
@@ -1914,10 +1925,15 @@ pub fn build_mime(
             out.push_str(&format!("{name}: {value}\r\n"));
         }
     };
+    // Each recipient with its display name when there is one (#70).
+    let named = |list: &[String]| list.iter().map(|address| match mail.name_for(address) {
+        Some(name) => format!("{} <{address}>", mime_name(&name)),
+        None => address.clone(),
+    }).collect::<Vec<_>>().join(", ");
     head("From", from);
-    head("To", &to.join(", "));
-    head("Cc", &cc.join(", "));
-    head("Bcc", &bcc.join(", "));
+    head("To", &named(&to));
+    head("Cc", &named(&cc));
+    head("Bcc", &named(&bcc));
     head("Subject", &encode_header(subject));
     head("Date", &rfc2822_now());
     head("MIME-Version", "1.0");
@@ -2532,6 +2548,19 @@ mod tests {
     }
 
     #[test]
+    fn mime_recipients_carry_their_names() {
+        let mut names = std::collections::HashMap::new();
+        names.insert("ada@example.org".to_string(), "Ada Lovelace".to_string());
+        names.insert("zoe@example.org".to_string(), "Zoë Ångström".to_string());
+        let mail = OutgoingMail { to: "ada@example.org, zoe@example.org; plain@example.org".into(), body_html: String::new(), names, ..Default::default() };
+        let threading = Threading { thread_id: String::new(), in_reply_to: String::new(), references: String::new() };
+        let raw = String::from_utf8(build_mime("jon@gmail.com", &mail, "<p>x</p>", &[], &[], &threading, true).unwrap()).unwrap();
+        let to = raw.lines().find(|l| l.starts_with("To: ")).unwrap();
+        assert!(to.starts_with("To: \"Ada Lovelace\" <ada@example.org>, =?UTF-8?B?"), "{to}");
+        assert!(to.contains("<zoe@example.org>") && to.ends_with(", plain@example.org"), "{to}");
+    }
+
+    #[test]
     fn a_message_is_written_as_mime_with_its_thread() {
         let mail = OutgoingMail {
             subject: "Café plans".into(),
@@ -2542,6 +2571,7 @@ mod tests {
             importance: "high".into(),
             read_receipt: false,
             from_address: String::new(),
+            names: Default::default(),
         };
         let threading = Threading { thread_id: "t1".into(), in_reply_to: "<m1@x>".into(), references: "<m0@x> <m1@x>".into() };
         let files = vec![Attachment { name: "Plan ✓.pdf".into(), content_type: String::new(), bytes: b"%PDF-1.7".to_vec() }];

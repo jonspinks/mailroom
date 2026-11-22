@@ -7000,6 +7000,18 @@ function recipientLabel(email) {
   return person ? person.name : email;
 }
 
+// Display names for the people a message goes to, by address (#70), from
+// what Mailroom knows of them, as the compose chips show. Sent with the
+// message so they see "Ada Lovelace", not ada@example.org.
+function recipientNames(...lists) {
+  const out = {};
+  lists.forEach(list => parseAddresses(list || "").forEach(address => {
+    const name = String(recipientLabel(address) || "").trim();
+    if (name && name.toLowerCase() !== address.toLowerCase()) out[address.toLowerCase()] = name;
+  }));
+  return out;
+}
+
 function addressText(value) {
   return Array.isArray(value) ? value.join(" ") : String(value || "");
 }
@@ -7819,7 +7831,8 @@ function deliverPending(message) {
     sendAt: message.sendLater || null,
     importance: message.importance || "",
     readReceipt: !!message.readReceipt,
-    fromAddress: message.sendFrom || null
+    fromAddress: message.sendFrom || null,
+    names: recipientNames(message.to, message.cc, message.bcc)
   }).then(() => {
     if (!message.pendingSend) return;
     finishLocalSend(message);
@@ -16220,7 +16233,8 @@ async function performDraftSave(ctx, fields) {
       mode: threaded ? mode : "new",
       importance: fields.importance || "",
       readReceipt: !!fields.readReceipt,
-      fromAddress: sendFromAddress(fields.from) || null
+      fromAddress: sendFromAddress(fields.from) || null,
+      names: recipientNames(fields.to, fields.cc, fields.bcc)
     });
     if (id && d._closed) {
       // Sent or discarded while this save was on its way. A draft the send
@@ -18675,7 +18689,7 @@ const folderBusy = new Set();
 let syncNote = "";
 const folderRun = new Map();
 const bodyLoads = new Set();
-const APP_VERSION = "1.6.1";
+const APP_VERSION = "1.6.2";
 let appVersion = APP_VERSION;
 
 prepareDesktopAccounts();

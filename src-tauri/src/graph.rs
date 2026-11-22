@@ -1743,6 +1743,32 @@ pub struct OutgoingMail {
     pub read_receipt: bool,
     /// An alias to send as. Empty sends from the mailbox itself.
     pub from_address: String,
+    /// Display names for recipients, by lower-case address (#70), so people
+    /// see "Ada Lovelace" rather than ada@example.org. Optional.
+    pub names: std::collections::HashMap<String, String>,
+}
+
+impl OutgoingMail {
+    /// The cleaned display name for a recipient, if there is a usable one:
+    /// no angle brackets, quotes, backslashes or control characters, not the
+    /// address over again, and not too long.
+    pub fn name_for(&self, address: &str) -> Option<String> {
+        let raw = self.names.get(&address.trim().to_ascii_lowercase())?;
+        let name: String = raw.chars().filter(|c| !c.is_control() && !matches!(c, '<' | '>' | '"' | '\\')).collect();
+        let name = name.split_whitespace().collect::<Vec<_>>().join(" ");
+        if name.is_empty() || name.chars().count() > 120 || name.eq_ignore_ascii_case(address.trim()) {
+            return None;
+        }
+        Some(name)
+    }
+
+    /// A Graph recipient, with its name when there is one.
+    pub fn recipient_json(&self, address: String) -> serde_json::Value {
+        match self.name_for(&address) {
+            Some(name) => serde_json::json!({ "emailAddress": { "address": address, "name": name } }),
+            None => serde_json::json!({ "emailAddress": { "address": address } }),
+        }
+    }
 }
 
 /// Importance and a read receipt, as Graph message fields.
@@ -1947,11 +1973,7 @@ pub fn outgoing_request(mail: &OutgoingMail) -> Result<MailRequest, String> {
     if body_html.len() > 1_500_000 {
         return Err("That message is too large to send.".into());
     }
-    let recipients = |list: Vec<String>| {
-        list.into_iter()
-            .map(|address| serde_json::json!({ "emailAddress": { "address": address } }))
-            .collect::<Vec<_>>()
-    };
+    let recipients = |list: Vec<String>| list.into_iter().map(|address| mail.recipient_json(address)).collect::<Vec<_>>();
     let mut message = serde_json::json!({
         "subject": subject,
         "body": { "contentType": "HTML", "content": body_html },
@@ -3400,6 +3422,21 @@ mod tests {
 
     fn folder_page(items: serde_json::Value) -> serde_json::Value {
         serde_json::json!({ "value": items })
+    }
+
+    #[test]
+    fn recipients_carry_their_cleaned_display_names() {
+        let mut names = std::collections::HashMap::new();
+        names.insert("ada@example.org".to_string(), "  Ada\n  Lovelace <x> \"Countess\" ".to_string());
+        names.insert("bob@example.org".to_string(), "BOB@example.org".to_string());
+        let mail = OutgoingMail { to: "Ada@Example.org; bob@example.org; cy@example.org".into(), names, ..Default::default() };
+        assert_eq!(mail.name_for("ADA@example.org").as_deref(), Some("Ada Lovelace x Countess"));
+        assert_eq!(mail.name_for("bob@example.org"), None, "a name that is just the address is left out");
+        assert_eq!(mail.name_for("cy@example.org"), None);
+        let request = outgoing_request(&mail).unwrap();
+        let to = request.body["message"]["toRecipients"].as_array().unwrap().clone();
+        assert_eq!(to[0]["emailAddress"]["name"], "Ada Lovelace x Countess");
+        assert!(to[1]["emailAddress"].get("name").is_none());
     }
 
     #[test]

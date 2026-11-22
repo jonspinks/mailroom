@@ -164,11 +164,7 @@ pub fn draft_fields(mail: &OutgoingMail, body_html: &str, need_recipient: bool) 
     if body_html.len() > 1_500_000 {
         return Err("That message is too large to send.".into());
     }
-    let people = |list: Vec<String>| {
-        list.into_iter()
-            .map(|address| json!({ "emailAddress": { "address": address } }))
-            .collect::<Vec<_>>()
-    };
+    let people = |list: Vec<String>| list.into_iter().map(|address| mail.recipient_json(address)).collect::<Vec<_>>();
     let mut fields = json!({
         "subject": subject,
         "body": { "contentType": "HTML", "content": body_html },
