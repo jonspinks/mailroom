@@ -1581,7 +1581,7 @@ test("scheduled mail waits in Outbox with Cancel send, which keeps it as a draft
   same(await p.$("#scheduled-panel"), null, "not shown outside Outbox");
   await p.evaluate(a => openFolder(a, "outbox", "", "folder"), acct); await wait(300);
   const text = await p.$eval("#scheduled-panel", e => e.textContent);
-  expect(text.includes("Quarterly report") && text.includes("Ada Lovelace") && /goes .*Dec/.test(text), "Outbox lists it with who and when", text);
+  expect(text.includes("Quarterly report") && text.includes("Ada Lovelace") && /Goes .*Dec/.test(text), "Outbox lists it with who and when", text);
   // A refusal leaves it scheduled and says why.
   await p.evaluate(() => { window.__cancelError = "It has already been sent."; });
   await p.click("[data-cancel-scheduled]"); await wait(400);
