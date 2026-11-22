@@ -9,6 +9,10 @@ on:
   pull_request:
   workflow_dispatch:
 
+# Read the code, nothing more: the jobs only build and test.
+permissions:
+  contents: read
+
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -47,8 +51,11 @@ jobs:
         with:
           path: ~/apt-debs
           key: apt-ubuntu-24.04-webkit41-v1-${{ github.run_id }}
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      # Third-party actions are pinned to a commit (Dependabot updates them).
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: src-tauri
       - name: Tests

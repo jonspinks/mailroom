@@ -1,8 +1,11 @@
 name: CodeQL
 
-# GitHub's code scanning for the front end and the workflows, weekly and on
-# every pull request. Findings appear under Security > Code scanning.
+# GitHub's code scanning for the front end and the workflows: on every
+# merge to main (so Security > Code scanning shows main as it is, and fixed
+# alerts close), on every pull request, and weekly for new queries.
 on:
+  push:
+    branches: [main]
   schedule:
     - cron: "5 7 * * 1"
   pull_request:

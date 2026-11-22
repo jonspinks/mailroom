@@ -25,7 +25,8 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 1
-      - uses: anthropics/claude-code-action@v1
+      # Pinned to a commit: this step holds the Anthropic API key.
+      - uses: anthropics/claude-code-action@acfe7992852970efb4fee683d63d628e3e52df67 # v1
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
