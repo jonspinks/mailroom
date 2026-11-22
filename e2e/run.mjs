@@ -268,6 +268,52 @@ test("audit: queued mail is sent only from the mailbox it was written in", { fak
   }), ["dropped", "queued", "held"], "another mailbox's mail is dropped; old rows wait for you");
 });
 
+test("a send that may have gone through is held, never resent on its own (#78)", { fake: true }, async ({ p, calls, clear }) => {
+  const queue = (rid, extra) => p.evaluate((rid, extra) => {
+    const id = Object.keys(accounts)[0];
+    const rows = JSON.parse(localStorage.getItem("mailroom-outbox") || "[]");
+    rows.push(Object.assign({ id: rid, account: id, accountEmail: String(accounts[id].email).toLowerCase(), subject: "Quote " + rid, bodyHtml: "<p>x</p>", to: "a@maplehill.example", sendAt: Date.now() - 1000 }, extra || {}));
+    localStorage.setItem("mailroom-outbox", JSON.stringify(rows));
+    restoreOutbox();
+  }, rid, extra || {});
+  const state = rid => p.evaluate(rid => { const m = messages.find(x => x.id === rid); return m ? { error: m.sendError, sending: !!m.sending, box: messageBox(m) } : null; }, rid);
+  await clear();
+  // 1. Mailroom closed while it was sending.
+  await queue("out-quit", { sendStarted: Date.now() - 60000 });
+  await p.evaluate(() => tickPendingSends()); await wait(300);
+  expect(/may have been sent/.test((await state("out-quit")).error), "a mid-send quit is held as maybe sent", await state("out-quit"));
+  same(await calls("send_mail"), [], "and not sent again on start");
+  // 2. The server answers 503 to the send itself.
+  await p.evaluate(() => { window.__sendError = "Microsoft did not answer, so the message may have been sent. Look in Sent Items before sending it again."; });
+  await queue("out-503");
+  await p.evaluate(() => tickPendingSends()); await wait(300);
+  same((await calls("send_mail")).length, 1, "sent once");
+  await p.evaluate(() => { const m = messages.find(x => x.id === "out-503"); m.sendAt = 0; tickPendingSends(); }); await wait(300);
+  same((await calls("send_mail")).length, 1, "and never again on its own");
+  // 3. A throttle (429) was refused outright, so it is tried again.
+  await clear();
+  await p.evaluate(() => { window.__sendError = "Microsoft is busy. The message is still in Outbox."; });
+  await queue("out-429");
+  await p.evaluate(() => tickPendingSends()); await wait(300);
+  const busy = await state("out-429");
+  same([busy.error, busy.box], ["", "outbox"], "a throttled send waits to go again");
+  // 4. The held one reads as maybe sent, and Send again asks first.
+  await p.evaluate(() => { window.__sendError = null; account = messages.find(x => x.id === "out-503").account; box = "outbox"; selected = "out-503"; render(); }); await wait(300);
+  const hold = await p.$eval("#send-hold-text", e => e.textContent);
+  expect(!hold.startsWith("Not sent") && /may have been sent/.test(hold), "it says it may have been sent", hold);
+  await clear();
+  await p.click("#retry-send"); await wait(300);
+  expect(await p.$("#choose-layer"), "Send again asks first");
+  await p.keyboard.press("Escape"); await wait(300);
+  same(await calls("send_mail"), [], "cancelled, nothing is sent");
+  // 5. While a send is out, the Outbox row records it.
+  await p.evaluate(() => { window.__sendHang = true; });
+  await queue("out-live");
+  await p.evaluate(() => tickPendingSends()); await wait(300);
+  const row = await p.evaluate(() => JSON.parse(localStorage.getItem("mailroom-outbox")).find(r => r.id === "out-live"));
+  expect(row && row.sendStarted > 0, "the in-flight mark is saved before the call", row);
+});
+
 test("a thread shows the replies you sent, from Sent Items", { fake: true, setup: () => {
   const at = mins => new Date(Date.now() - mins * 60000).toISOString().replace(/\.\d+Z$/, "Z");
   window.__thread = [

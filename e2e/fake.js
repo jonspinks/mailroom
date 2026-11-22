@@ -165,7 +165,7 @@
     respond_invite: () => null,
     save_draft: (a) => { const id = a.draftId || ("srv-draft-" + (++window.__draftSerial)); return window.__slowSave ? new Promise(r => setTimeout(() => r(id), 1200)) : id; },
     forget_mail: () => null,
-    discard_draft: () => null, send_mail: () => (window.__failSend ? (window.__failSend--, Promise.reject("Microsoft refused that message while listing attachments: Could not find a property named 'contentId'.")) : null), apply_mail: () => (window.__applyFail ? Promise.reject(window.__applyFail) : []), notify_mail: () => null,
+    discard_draft: () => null, send_mail: () => (window.__sendHang ? new Promise(() => {}) : window.__sendError ? Promise.reject(window.__sendError) : window.__failSend ? (window.__failSend--, Promise.reject("Microsoft refused that message while listing attachments: Could not find a property named 'contentId'.")) : null), apply_mail: () => (window.__applyFail ? Promise.reject(window.__applyFail) : []), notify_mail: () => null,
     stage_file: (a) => { window.__staged = (window.__staged || 0) + 1; const r = { id: String(window.__staged).padStart(32, "0"), size: Math.floor(a.data.length * 3 / 4) }; return window.__slowStage ? new Promise(ok => setTimeout(() => ok(r), 1500)) : r; },
     // Omarchy: __omarchy is the look on an Omarchy desktop; null elsewhere.
     omarchy_look: () => window.__omarchy || null,

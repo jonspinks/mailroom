@@ -1948,8 +1948,9 @@ fn send_refusal((status, why): (u16, String)) -> String {
         401 | 403 => "Sign in again to send mail.".into(),
         400 | 413 if !why.is_empty() => format!("Google refused that message: {why}"),
         400 | 413 => "Google refused that message.".into(),
-        429 | 503 => "Gmail is busy. The message is still in Outbox.".into(),
-        // Any other server error may come after Gmail took the message.
+        429 => "Gmail is busy. The message is still in Outbox.".into(),
+        // Any server error, 503 included, may come after Gmail took the
+        // message, so it is not sent again on its own (#78).
         0 | 500..=599 => "Google did not answer, so the message may have been sent. Look in Sent before sending it again.".into(),
         _ => "The message could not be sent. It is still in Outbox.".into(),
     }
@@ -2100,6 +2101,14 @@ pub fn discard_draft(email: &str, draft_id: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_a_throttle_is_sent_again_on_its_own() {
+        assert!(send_refusal((429, String::new())).contains("still in Outbox"));
+        for status in [0, 500, 503, 504] {
+            assert!(send_refusal((status, String::new())).contains("may have been sent"), "{status}");
+        }
+    }
 
     fn b64(text: &str) -> String {
         URL_SAFE_NO_PAD.encode(text.as_bytes())

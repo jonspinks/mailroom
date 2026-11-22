@@ -2068,7 +2068,9 @@ pub fn send_mail(email: &str, mail: &OutgoingMail) -> Result<(), String> {
         401 | 403 => "Sign in again to send mail.".into(),
         400 | 413 if !reason.is_empty() => format!("Microsoft refused that message: {reason}"),
         400 | 413 => "Microsoft refused that message.".into(),
-        429 | 503 => "Microsoft is busy. The message is still in Outbox.".into(),
+        429 => "Microsoft is busy. The message is still in Outbox.".into(),
+        // A 503 can come after Graph accepted the send (#78), so it is not
+        // safe to send again on our own.
         500..=599 => MAYBE_SENT.into(),
         _ => "The message could not be sent. It is still in Outbox.".into(),
     })

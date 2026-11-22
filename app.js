@@ -7541,7 +7541,7 @@ function pendingLeft(message) {
 function pendingHoldHtml(message) {
   if (message.sendError) {
     // A failed send says why, and offers to try again or to edit it.
-    return `<p class="send-hold send-failed" id="send-hold" role="alert"><span id="send-hold-text">Not sent. ${esc(message.sendError)}</span><button type="button" id="retry-send">Send again</button><button type="button" id="undo-send">Edit</button></p>`;
+    return `<p class="send-hold send-failed" id="send-hold" role="alert"><span id="send-hold-text">${maybeSent(message.sendError) ? "" : "Not sent. "}${esc(message.sendError)}</span><button type="button" id="retry-send">Send again</button><button type="button" id="undo-send">Edit</button></p>`;
   }
   if (message.sending) {
     return `<p class="send-hold" id="send-hold" role="status"><span id="send-hold-text">Sending…</span></p>`;
@@ -7550,9 +7550,14 @@ function pendingHoldHtml(message) {
   return `<p class="send-hold" id="send-hold" role="status"><span id="send-hold-text">Sending in ${delayPhrase(left)}.</span><button type="button" id="undo-send">Undo</button></p>`;
 }
 
-function retryPending(id) {
+async function retryPending(id) {
   const message = messages.find(m => m.id === id && m.pendingSend);
   if (!message || message.sending) return;
+  // It may already have gone: sending again is a choice, not a reflex (#78).
+  if (maybeSent(message.sendError)) {
+    const sure = await chooseDialog("Send it again?", "It may already have been sent. If it is in Sent, sending again gives the recipients two copies.", [{ value: "yes", label: "Send again", primary: true }]);
+    if (sure !== "yes" || !message.pendingSend || message.sending) return;
+  }
   if (message.sendError === SEND_AGAIN && accountNeedsSignIn(message.account)) {
     toast(SEND_AGAIN);
     return;
@@ -7616,6 +7621,9 @@ function rememberOutbox() {
     bcc: m.bcc || "",
     sendAt: m.sendAt || 0,
     sendError: m.sendError || "",
+    // Set while the send call is out. Still set on the next start means
+    // Mailroom closed mid-send, so the message may have gone (#78).
+    sendStarted: m.sending ? (Number(m.sendStarted) || Date.now()) : 0,
     meeting: m.meeting || null,
     invite: m.invite || null,
     attachments: m.attachments || [],
@@ -7645,6 +7653,8 @@ function restoreOutbox() {
     // Saved before the mailbox was recorded: keep it, but held until you
     // send it again yourself.
     if (!row.accountEmail) row.sendError = row.sendError || "Check the account, then send it again.";
+    // Mailroom closed while this was sending: never send it again on its own.
+    if (row.sendStarted && !row.sendError) row.sendError = CLOSED_MID_SEND;
     const fromName = (accounts[row.account] && accounts[row.account].yourName) || "You";
     messages.push({
       id: row.id,
@@ -7737,6 +7747,12 @@ function finishLocalSend(message) {
 // the forward keeps every file rather than dropping them all.
 const forwardFilesUnknown = new Set();
 
+const CLOSED_MID_SEND = "Mailroom closed while this was sending, so it may have been sent. Look in Sent before sending it again.";
+
+function maybeSent(text) {
+  return /may have been sent/.test(String(text || ""));
+}
+
 function deliverPending(message) {
   if (!message || !message.pendingSend || message.sending || message.sendError) return;
   if (!inDesktop()) {
@@ -7753,7 +7769,10 @@ function deliverPending(message) {
     return;
   }
   message.sending = true;
+  message.sendStarted = Date.now();
   message.time = "Sending";
+  // Saved before the call, so a quit mid-send is known on the next start.
+  rememberOutbox();
   const when = document.querySelector('.row[data-id="' + CSS.escape(message.id) + '"] .when');
   if (when) when.textContent = "Sending";
   const holdText = document.getElementById("send-hold-text");
@@ -7787,6 +7806,7 @@ function deliverPending(message) {
     stopPendingTimerIfIdle();
   }).catch(err => {
     message.sending = false;
+    message.sendStarted = 0;
     const text = String(err && err.message || err || "The message could not be sent. It is still in Outbox.");
     if (text.indexOf("Microsoft is busy") === 0 || text.indexOf("Gmail is busy") === 0) {
       message.sendAt = Date.now() + 30000;
@@ -18349,7 +18369,7 @@ const folderBusy = new Set();
 let syncNote = "";
 const folderRun = new Map();
 const bodyLoads = new Set();
-const APP_VERSION = "1.5.0";
+const APP_VERSION = "1.5.1";
 let appVersion = APP_VERSION;
 
 prepareDesktopAccounts();
