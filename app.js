@@ -11149,6 +11149,8 @@ function visibleDates() {
     }
     return dates;
   }
+  // Day view (#71): just the day in focus.
+  if (calView === "day") return [new Date(calFocus.getFullYear(), calFocus.getMonth(), calFocus.getDate())];
   const start = startOfWeek(calFocus);
   const count = calView === "week" ? 7 : 5;
   return Array.from({ length: count }, (_, i) => {
@@ -11160,6 +11162,10 @@ function visibleDates() {
 
 function rangeTitle(dates) {
   if (calView === "month") return monthNames[calFocus.getMonth()] + " " + calFocus.getFullYear();
+  if (calView === "day") {
+    const d = dates[0];
+    return d.toLocaleDateString("en-GB", { weekday: "long" }) + " " + d.getDate() + " " + monthNames[d.getMonth()] + " " + d.getFullYear();
+  }
   const a = dates[0];
   const b = dates[dates.length - 1];
   if (a.getMonth() === b.getMonth() && a.getFullYear() === b.getFullYear()) {
@@ -11174,7 +11180,7 @@ function rangeTitle(dates) {
 function shiftCalendar(dir) {
   const d = new Date(calFocus.getFullYear(), calFocus.getMonth(), calFocus.getDate());
   if (calView === "month") d.setMonth(d.getMonth() + dir);
-  else d.setDate(d.getDate() + 7 * dir);
+  else d.setDate(d.getDate() + (calView === "day" ? 1 : 7) * dir);
   calFocus = d;
   render();
   refreshLiveCalendar();
@@ -11409,13 +11415,32 @@ function bindCalendarClicks(root) {
   });
 }
 
+// A week view's day heading opens that day (#71).
+function openCalendarDay(dayNum) {
+  calFocus = dateFromDay(dayNum);
+  calView = "day";
+  render();
+  refreshLiveCalendar();
+}
+document.addEventListener("click", ev => {
+  const head = ev.target.closest && ev.target.closest("[data-open-day]");
+  if (head) openCalendarDay(Number(head.dataset.openDay));
+});
+document.addEventListener("keydown", ev => {
+  if (ev.key !== "Enter" && ev.key !== " ") return;
+  const head = ev.target.closest && ev.target.closest("[data-open-day]");
+  if (!head) return;
+  ev.preventDefault();
+  openCalendarDay(Number(head.dataset.openDay));
+});
+
 function renderCalendar() {
   const kept = shownHour();
   if (kept != null) calTopHour = kept;
   const dates = visibleDates();
   const title = document.getElementById("cal-title");
   if (title) title.textContent = rangeTitle(dates);
-  const step = calView === "month" ? "month" : "week";
+  const step = calView === "month" ? "month" : calView === "day" ? "day" : "week";
   const prev = document.getElementById("cal-prev");
   const next = document.getElementById("cal-next");
   if (prev) {
@@ -11430,7 +11455,7 @@ function renderCalendar() {
     btn.setAttribute("aria-pressed", btn.dataset.calView === calView ? "true" : "false");
   });
   const cal = document.getElementById("cal");
-  document.querySelector(".calendar").style.setProperty("--cal-days", String(calView === "week" ? 7 : 5));
+  document.querySelector(".calendar").style.setProperty("--cal-days", String(calView === "week" ? 7 : calView === "day" ? 1 : 5));
   if (calView === "month") {
     const heads = dowShort.slice(1).concat(dowShort[0]).map(name => `<div class="month-dow">${name}</div>`).join("");
     const cells = dates.map(date => {
@@ -11454,7 +11479,9 @@ function renderCalendar() {
   const span = 24 * 60;
   const heads = dates.map(date => {
     const today = isToday(date);
-    return `<div class="dayhead${today ? " today" : ""}"><span class="dow">${dowShort[date.getDay()]}</span><span class="num">${date.getDate()}</span></div>`;
+    // In the week views a day's heading opens it in Day view, as Outlook does.
+    const opens = calView === "day" ? "" : ` data-open-day="${dayFromDate(date)}" role="button" tabindex="0" title="Open ${esc(date.toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long" }))}"`;
+    return `<div class="dayhead${today ? " today" : ""}"${opens}><span class="dow">${dowShort[date.getDay()]}</span><span class="num">${date.getDate()}</span></div>`;
   }).join("");
   // All-day events can take half a small window. When the busiest day's
   // stack would take more than a fifth of the calendar, each day shows two
@@ -12054,39 +12081,41 @@ function localFromUtc(stamp, allDay) {
   return { iso, minutes: when.getHours() * 60 + when.getMinutes() };
 }
 
-function spanStamps(seed, dayNum, whole, begin, finish) {
-  const seedWhole = seed.start == null;
-  if (whole !== seedWhole) return null;
-  if (!whole && (begin !== seed.start || finish !== seed.end)) return null;
-  const shift = dayNum - seed.day;
-  if (whole) {
+// The whole of a multi-day event, in the form's terms: first and last day
+// (the last inclusive, so an all-day event's exclusive end is a day back)
+// and start and end minutes. An end at midnight shows as 24:00 the day
+// before. Null when the stamps can't be read.
+function eventSpan(seed) {
+  if (seed.start == null) {
     const first = dayFromIso(String(seed.spanStart).slice(0, 10));
-    const last = dayFromIso(String(seed.spanEnd).slice(0, 10));
-    if (first == null || last == null) return null;
-    return { start: isoFromDay(first + shift), end: isoFromDay(last + shift) };
+    const after = dayFromIso(String(seed.spanEnd).slice(0, 10));
+    if (first == null || after == null) return null;
+    return { day: first, endDay: Math.max(first, after - 1) };
   }
-  const stamp = (raw) => {
-    const at = new Date(raw);
-    if (Number.isNaN(at.getTime())) return null;
-    const moved = new Date(at.getFullYear(), at.getMonth(), at.getDate() + shift, at.getHours(), at.getMinutes());
-    return localStamp(isoFromDay(dayFromDate(moved)), moved.getHours() * 60 + moved.getMinutes());
-  };
-  const start = stamp(seed.spanStart);
-  const end = stamp(seed.spanEnd);
-  return start && end ? { start, end } : null;
+  const a = new Date(seed.spanStart);
+  const b = new Date(seed.spanEnd);
+  if (Number.isNaN(a.getTime()) || Number.isNaN(b.getTime())) return null;
+  let endDay = dayFromDate(b);
+  let end = b.getHours() * 60 + b.getMinutes();
+  const day = dayFromDate(a);
+  if (end === 0 && endDay > day) { endDay -= 1; end = 24 * 60; }
+  return { day, endDay, start: a.getHours() * 60 + a.getMinutes(), end };
 }
 
 async function saveLiveEvent(job) {
   const { form, seed, owner, calId, title, dayNum, whole, begin, finish, people, reply, invite, fail } = job;
   const acct = accounts[owner];
   const iso = isoFromDay(dayNum);
+  // The last day the event touches (#71); the same day unless it spans.
+  const lastIso = isoFromDay(job.endDayNum == null ? dayNum : job.endDayNum);
   const zone = calendarZone();
   const data = new FormData(form);
   const fields = {
     subject: title,
     location: String(data.get("where") || "").trim(),
     start: whole ? iso : localStamp(iso, begin),
-    end: whole ? nextDayIso(iso) : localStamp(iso, finish),
+    // 24:00 is written as 00:00 the next day, which Graph and Google take.
+    end: whole ? nextDayIso(lastIso) : finish >= 24 * 60 ? localStamp(nextDayIso(lastIso), 0) : localStamp(lastIso, finish),
     timeZone: zone,
     allDay: whole,
     showAs: showAsOf({ showAs: data.get("showas") })
@@ -12096,8 +12125,8 @@ async function saveLiveEvent(job) {
   // one day of it. Saved as that, a title change would cut a three-day event
   // down to the day that was opened. With its times left alone it keeps its
   // whole length, moved by as many days as the date was.
-  const spanned = editing && seed.spanStart && seed.spanEnd && !seed.seriesMasterId ? spanStamps(seed, dayNum, whole, begin, finish) : null;
-  if (spanned) Object.assign(fields, spanned);
+  // The form holds both ends of a spanning event (#71), so what it says is
+  // saved as it is.
   const notes = String(data.get("notes") || "").trim();
   if (!editing || notes !== String(seed.notes || "").trim()) fields.notes = notes;
   const emails = list => list.map(p => String(p.email).toLowerCase()).sort().join(",");
@@ -12242,6 +12271,10 @@ async function openEventEditor(id, kind) {
     day: ev.day,
     start: ev.start,
     end: ev.end,
+    // The whole event's ends, for one over several days (#71). Without them
+    // the editor only saw the day that was clicked.
+    spanStart: ev.spanStart || "",
+    spanEnd: ev.spanEnd || "",
     allDay: kind === "all" || ev.start == null,
     showAs: ev.showAs,
     response: ev.response || "",
@@ -18357,6 +18390,11 @@ function openEventForm(seed) {
   const allDay = !!seed.allDay;
   let start = seed.start == null ? 13 * 60 : seed.start;
   let end = seed.end == null ? start + 60 : seed.end;
+  // An event over several days opens whole, whichever day was clicked: its
+  // first day and start, its last day and end (#71).
+  let endDay = day;
+  const span = editing && seed.spanStart && seed.spanEnd && !seed.seriesMasterId ? eventSpan(seed) : null;
+  if (span) ({ day, endDay, start, end } = Object.assign({ start, end }, span));
   if (seed.scope === "all" && seed.series) {
     const first = localFromUtc(seed.series.start, seed.series.allDay);
     const last = localFromUtc(seed.series.end, seed.series.allDay);
@@ -18408,10 +18446,13 @@ function openEventForm(seed) {
       <div class="event-row">
         ${ico(`<rect x="2.2" y="3.2" width="11.6" height="10.2" rx="1.2" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M2.2 6.4h11.6M5.2 2.2v2.2M10.8 2.2v2.2" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>`)}
         <div class="event-row-body event-when">
-          <input class="event-line" name="date" type="date" value="${isoFromDay(day)}" aria-label="Date">
+          <input class="event-line" name="date" type="date" value="${isoFromDay(day)}" aria-label="Start date">
           <div id="event-times"${allDay ? " hidden" : ""}>
             <input class="event-line" name="start" value="${fmt(start)}" aria-label="Start" inputmode="numeric" autocomplete="off">
-            <span class="event-to">to</span>
+          </div>
+          <span class="event-to">to</span>
+          <input class="event-line" name="enddate" type="date" value="${isoFromDay(endDay)}" aria-label="End date">
+          <div id="event-end-time"${allDay ? " hidden" : ""}>
             <input class="event-line" name="end" value="${fmt(end)}" aria-label="End" inputmode="numeric" autocomplete="off">
           </div>
           <label class="event-allday">All day<input name="allday" type="checkbox" aria-label="All day"${allDay ? " checked" : ""}></label>
@@ -18651,7 +18692,10 @@ function openEventForm(seed) {
   };
   calSelect.onchange = paintCalDot;
   paintCalDot();
-  form.querySelector("[name=allday]").onchange = (e) => { times.hidden = e.target.checked; };
+  form.querySelector("[name=allday]").onchange = (e) => {
+    times.hidden = e.target.checked;
+    document.getElementById("event-end-time").hidden = e.target.checked;
+  };
   const dateInput = form.querySelector("[name=date]");
   const repeatRow = document.getElementById("repeat-row");
   bindRepeat(form, dateInput);
@@ -18711,17 +18755,20 @@ function openEventForm(seed) {
     if (dayNum == null) return fail("Enter a date.");
     if (!picked || !owner) return;
     const whole = form.querySelector("[name=allday]").checked;
+    const endDayNum = dayFromIso(data.get("enddate")) ?? dayNum;
+    if (endDayNum < dayNum) return fail("The end date is before the start date.");
     let begin = parseClock(data.get("start"));
-    let finish = parseClock(data.get("end"));
-    // A day in the middle of a longer event runs to midnight, which the
-    // field shows as 00:00.
-    if (!whole && seed && seed.spanEnd && finish === 0 && seed.end === 24 * 60) finish = 24 * 60;
+    // An event that ends at midnight shows 24:00 as its end, which isn't a
+    // clock time, and one typed as 00:00 after a later start means the same.
+    // Both failed with "End must be after the start" before (2026-11-22).
+    let finish = /^\s*24:00\s*$/.test(String(data.get("end") || "")) ? 24 * 60 : parseClock(data.get("end"));
+    if (!whole && finish === 0 && (endDayNum > dayNum || (begin || 0) > 0)) finish = 24 * 60;
     if (!whole) {
       if (begin == null) begin = 13 * 60;
-      if (finish == null || finish <= begin) return fail("End must be after the start.");
+      if (finish == null || (endDayNum === dayNum && finish <= begin)) return fail("End must be after the start.");
     }
     if (serverCalendar(picked.id)) {
-      saveLiveEvent({ form, seed, owner: owner[0], calId: picked.id, title, dayNum, whole, begin, finish, people, reply, invite, fail });
+      saveLiveEvent({ form, seed, owner: owner[0], calId: picked.id, title, dayNum, endDayNum, whole, begin, finish, people, reply, invite, fail });
       return;
     }
     const previous = editing ? removeStoredEvent(seed.id) : null;
@@ -18790,7 +18837,7 @@ const folderBusy = new Set();
 let syncNote = "";
 const folderRun = new Map();
 const bodyLoads = new Set();
-const APP_VERSION = "1.6.5";
+const APP_VERSION = "1.6.6";
 let appVersion = APP_VERSION;
 
 prepareDesktopAccounts();

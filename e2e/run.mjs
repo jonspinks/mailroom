@@ -3561,22 +3561,62 @@ test("mail can't plant the reading pane's buttons, pin itself with a disguised s
   expect(!/fixed|sticky/.test(out), "a commented or escaped position is still removed", out);
 });
 
-test("editing a multi-day event keeps its length", { fake: true }, async ({ p }) => {
-  const r = await p.evaluate(() => {
-    const allDay = { id: "e1@2026-11-03", day: dayFromIso("2026-11-03"), spanStart: "2026-11-02", spanEnd: "2026-11-05" };
-    const night = { id: "e2@2026-11-03", day: dayFromIso("2026-11-03"), start: 0, end: 300, spanStart: "2026-11-02T22:00:00", spanEnd: "2026-11-03T05:00:00" };
-    return {
-      same: spanStamps(allDay, allDay.day, true, null, null),
-      moved: spanStamps(allDay, allDay.day + 7, true, null, null),
-      overnight: spanStamps(night, night.day, false, 0, 300),
-      retimed: spanStamps(night, night.day, false, 60, 300),
-      toTimed: spanStamps(allDay, allDay.day, false, 540, 600)
-    };
-  });
-  same(r.same, { start: "2026-11-02", end: "2026-11-05" }, "a title change leaves all three days");
-  same(r.moved, { start: "2026-11-09", end: "2026-11-12" }, "a new date moves the whole event");
-  same(r.overnight, { start: "2026-11-02T22:00:00", end: "2026-11-03T05:00:00" }, "an overnight event keeps both ends");
-  same([r.retimed, r.toTimed], [null, null], "changed times are saved as typed");
+test("events can span days: the editor has an end date, and opens a spanning event whole (#71)", { fake: true, tz: true }, async ({ p, calls, clear }) => {
+  await p.evaluate(() => setView("calendar")); await wait(800);
+  const acct = await p.evaluate(() => Object.keys(accounts)[0]);
+  // Saving re-reads the calendar from the fake server, which doesn't have
+  // these, so they are put back before each open.
+  const install = () => p.evaluate(a => installLiveEvents(a, [
+    { id: "trip", calendarId: "AAMkCal1", title: "Trip", start: "2026-11-24T22:00:00", end: "2026-11-26T09:30:00", allDay: false, showAs: "busy", isOrganizer: true, attendees: [] },
+    { id: "fair", calendarId: "AAMkCal1", title: "Fair", start: "2026-11-24", end: "2026-11-27", allDay: true, showAs: "busy", isOrganizer: true, attendees: [] },
+    { id: "late", calendarId: "AAMkCal1", title: "Late", start: "2026-11-24T22:00:00", end: "2026-11-25T00:00:00", allDay: false, showAs: "busy", isOrganizer: true, attendees: [] }
+  ]), acct);
+  const form = () => p.evaluate(() => { const f = document.getElementById("event-form"); const v = n => f.querySelector("[name=" + n + "]").value; return [v("date"), v("start"), v("enddate"), v("end"), f.querySelector("[name=allday]").checked]; });
+  // Opened the way a click opens it, through openEventEditor.
+  const open = async id => { await install(); await p.evaluate(id => { const timed = events.some(e => e.id === id); openEventEditor(id, timed ? "timed" : "all"); }, id); };
+  const save = async () => { await clear(); await p.click('#event-form button[type="submit"]'); await wait(500); const got = (await calls("save_event"))[0]; return got; };
+  // A timed event, opened on its middle day, shows from its first day to its last.
+  await open("trip@2026-11-25"); await wait(200);
+  same(await form(), ["2026-11-24", "22:00", "2026-11-26", "09:30", false], "both ends of the trip, whichever day was opened");
+  let saved = await save();
+  same([saved.fields.start, saved.fields.end], ["2026-11-24T22:00:00", "2026-11-26T09:30:00"], "saved unchanged, it keeps its length");
+  // Lengthen it by a day.
+  await open("trip@2026-11-25"); await wait(200);
+  await p.$eval("#event-form [name=enddate]", e => { e.value = "2026-11-27"; });
+  saved = await save();
+  same(saved.fields.end, "2026-11-27T09:30:00", "a later end date lengthens it");
+  // All day: the end date is the last day, inclusive.
+  await open("fair@2026-11-25"); await wait(200);
+  const fair = await form();
+  same([fair[0], fair[2], fair[4]], ["2026-11-24", "2026-11-26", true], "an all-day event shows its last day, not the day after");
+  saved = await save();
+  same([saved.fields.start, saved.fields.end, saved.fields.allDay], ["2026-11-24", "2026-11-27", true], "and saves Graph's exclusive end");
+  // An end at midnight shows as 24:00 that day and is saved as 00:00 the next.
+  await open("late"); await wait(200);
+  saved = await save();
+  same(saved.fields.end, "2026-11-25T00:00:00", "midnight is written as the next day's 00:00");
+  // An end date before the start is refused.
+  await open("trip@2026-11-25"); await wait(200);
+  await p.$eval("#event-form [name=enddate]", e => { e.value = "2026-11-23"; });
+  await clear();
+  await p.click('#event-form button[type="submit"]'); await wait(300);
+  expect((await p.$eval("#event-error", e => e.textContent)).includes("before the start"), "an end before the start is refused");
+  same(await calls("save_event"), [], "and nothing is saved");
+});
+
+test("Day view: one day, a day at a time, and a week's day heading opens it (#71)", { fake: true, tz: true }, async ({ p }) => {
+  await p.evaluate(() => { setView("calendar"); calView = "work"; calFocus = new Date(2026, 10, 25); render(); }); await wait(500);
+  await p.click('.dayhead[data-open-day="' + (await p.evaluate(() => dayFromDate(new Date(2026, 10, 26)))) + '"]'); await wait(400);
+  const got = await p.evaluate(() => ({ view: calView, cols: document.querySelectorAll(".dayhead .num").length, days: getComputedStyle(document.querySelector(".calendar")).getPropertyValue("--cal-days").trim(), title: document.querySelector("#cal-range, .cal-range, .range-title") ? (document.querySelector("#cal-range, .cal-range, .range-title").textContent) : rangeTitle(visibleDates()), pressed: document.querySelector('[data-cal-view="day"]').getAttribute("aria-pressed") }));
+  same([got.view, got.cols, got.days, got.pressed], ["day", 1, "1", "true"], "Day view shows one column, and its button is on");
+  same(got.title, "Thursday 26 November 2026", "titled with the whole date");
+  await p.click("#cal-next"); await wait(300);
+  same(await p.evaluate(() => rangeTitle(visibleDates())), "Friday 27 November 2026", "next goes a day on");
+  await p.click("#cal-prev"); await p.click("#cal-prev"); await wait(300);
+  same(await p.evaluate(() => rangeTitle(visibleDates())), "Wednesday 25 November 2026", "and back a day at a time");
+  same(await p.$('.dayhead[data-open-day]'), null, "in Day view the heading opens nothing");
+  await p.click('[data-cal-view="week"]'); await wait(300);
+  same(await p.evaluate(() => [calView, document.querySelectorAll(".dayhead .num").length]), ["week", 7], "the Week button goes back to seven days");
 });
 
 // ---------------------------------------------------------------- runner
