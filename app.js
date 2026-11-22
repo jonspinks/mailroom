@@ -2273,7 +2273,22 @@ function favoriteButton(acct, folder) {
   </button>`;
 }
 
-const hiddenCal = new Set();
+// Calendars you've hidden stay hidden after a restart (2026-11-22: a
+// Proton calendar in a Gmail account came back every time). Every change to
+// the set is saved, whichever of its callers makes it.
+class SavedSet extends Set {
+  constructor(key) {
+    let saved = [];
+    try { saved = JSON.parse(localStorage.getItem(key) || "[]"); } catch (e) {}
+    super(Array.isArray(saved) ? saved.filter(x => typeof x === "string") : []);
+    this.key = key;
+  }
+  save() { try { localStorage.setItem(this.key, JSON.stringify([...this])); } catch (e) {} }
+  add(value) { const had = this.has(value); super.add(value); if (!had && this.key) this.save(); return this; }
+  delete(value) { const gone = super.delete(value); if (gone) this.save(); return gone; }
+  clear() { super.clear(); this.save(); }
+}
+const hiddenCal = new SavedSet("mailroom-hidden-calendars");
 const dismissedLive = new Set();
 
 function nextAccountColor() {
@@ -11824,10 +11839,11 @@ function nextWeekday(target, hour) {
 }
 
 function sendLaterPresets() {
-  return [
-    { label: "Tomorrow morning", when: at(1, 8) },
-    { label: "Monday morning", when: nextWeekday(1, 8) }
-  ];
+  const presets = [{ label: "Tomorrow morning", when: at(1, 8) }];
+  // On a Sunday, tomorrow morning is Monday morning: offer it once.
+  const monday = nextWeekday(1, 8);
+  if (monday.getTime() !== presets[0].when.getTime()) presets.push({ label: "Monday morning", when: monday });
+  return presets;
 }
 
 function snoozePresets() {
@@ -11845,7 +11861,10 @@ function snoozePresets() {
 // Presets plus a date and time of your own. Resolves to a Date, or null.
 function pickTime(title, note, presets, verb) {
   return new Promise(resolve => {
-    const fmtWhen = d => d.toLocaleString("en-GB", { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+    // Within the week ahead the weekday says which day; past that, the date too.
+    const fmtWhen = d => d.toLocaleString("en-GB", d.getTime() - Date.now() < 6.5 * 86400000
+      ? { weekday: "short", hour: "2-digit", minute: "2-digit" }
+      : { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
     const local = d => { const z = new Date(d.getTime() - d.getTimezoneOffset() * 60000); return z.toISOString().slice(0, 16); };
     const layer = document.createElement("div");
     layer.id = "choose-layer";
@@ -18894,7 +18913,7 @@ const folderBusy = new Set();
 let syncNote = "";
 const folderRun = new Map();
 const bodyLoads = new Set();
-const APP_VERSION = "1.6.8";
+const APP_VERSION = "1.6.9";
 let appVersion = APP_VERSION;
 
 prepareDesktopAccounts();

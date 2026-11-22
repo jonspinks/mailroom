@@ -2027,8 +2027,11 @@
   .key-added .ghost { margin-left: auto; flex: none; }
   #compose-files .file[data-staging] { opacity: 0.55; }
   .send-later { margin-left: 2px; }
-  .time-preset { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
-  .time-preset small { color: var(--muted); }
+  .time-preset { display: flex; justify-content: space-between; align-items: center; gap: 12px; text-align: left; }
+  /* The name stays on one line; the time gives way first (2026-11-22:
+     "Tomorrow morning" wrapped in a narrow dialog). */
+  .time-preset span { white-space: nowrap; flex: none; }
+  .time-preset small { color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
   .cat-dots { display: inline-flex; gap: 2px; margin-left: 6px; align-items: center; }
   .cat-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; flex: none; }
   .cat-pill { display: inline-flex; align-items: center; gap: 5px; margin-left: 6px; padding: 0 7px; border-radius: min(9px, var(--r-max)); background: var(--hover); font-size: 11px; line-height: 18px; color: var(--ink); }
