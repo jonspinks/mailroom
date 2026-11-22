@@ -3656,6 +3656,22 @@ test("Day view: one day, a day at a time, and a week's day heading opens it (#71
   same(await p.evaluate(() => [calView, document.querySelectorAll(".dayhead .num").length]), ["week", 7], "the Week button goes back to seven days");
 });
 
+test("Work week on a Sunday shows the week ahead; events only share width where they overlap", { fake: true, tz: true }, async ({ p }) => {
+  const range = when => p.evaluate(w => { setView("calendar"); calView = "work"; calFocus = new Date(w); render(); const d = visibleDates(); return [d[0].toDateString(), d[d.length - 1].toDateString()]; }, when);
+  same(await range("2026-11-22T12:00:00"), ["Mon Nov 23 2026", "Fri Nov 27 2026"], "Sunday 22nd: the coming work week");
+  same(await range("2026-11-21T12:00:00"), ["Mon Nov 16 2026", "Fri Nov 20 2026"], "Saturday: still the week just ending");
+  same(await range("2026-11-25T12:00:00"), ["Mon Nov 23 2026", "Fri Nov 27 2026"], "a weekday: its own week");
+  same(await p.evaluate(() => { calView = "week"; calFocus = new Date("2026-11-22T12:00:00"); return visibleDates()[0].toDateString(); }), "Mon Nov 16 2026", "the full Week view is unchanged");
+  // Widths: a meeting alone in the morning keeps the full width though two clash at noon.
+  const laid = await p.evaluate(() => layout([
+    { id: "zoom", start: 360, end: 420 },
+    { id: "a", start: 720, end: 780 },
+    { id: "b", start: 750, end: 810 },
+    { id: "c", start: 900, end: 960 }
+  ]).map(e => [e.id, e.col, e.cols]));
+  same(laid, [["zoom", 0, 1], ["a", 0, 2], ["b", 1, 2], ["c", 0, 1]], "only the clashing pair goes side by side");
+});
+
 // ---------------------------------------------------------------- runner
 
 const { server, url } = await serve();

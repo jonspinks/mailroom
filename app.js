@@ -11175,6 +11175,9 @@ function visibleDates() {
   // Day view (#71): just the day in focus.
   if (calView === "day") return [new Date(calFocus.getFullYear(), calFocus.getMonth(), calFocus.getDate())];
   const start = startOfWeek(calFocus);
+  // On a Sunday the work week just gone is over, so Work week shows the one
+  // starting tomorrow (2026-11-22).
+  if (calView === "work" && calFocus.getDay() === 0) start.setDate(start.getDate() + 7);
   const count = calView === "week" ? 7 : 5;
   return Array.from({ length: count }, (_, i) => {
     const d = new Date(start);
@@ -11634,16 +11637,27 @@ function applyHourScale() {
   scroll.scrollTop = Math.min(calTopHour * hour, maxTop);
 }
 
+// Side by side only where events overlap. Each run of events that overlap
+// one another (directly or through a neighbour) shares its own columns, so
+// a meeting alone at 06:00 takes the full width even when two others clash
+// at noon. Before, every event on the day was as narrow as the day's
+// busiest moment, which hiding a calendar didn't change (2026-11-22).
 function layout(items) {
   const sorted = items.slice().sort((a, b) => a.start - b.start || a.end - b.end);
-  const cols = [];
+  let group = [];
+  let cols = [];
+  let groupEnd = -Infinity;
+  const close = () => { group.forEach(e => { e.cols = Math.max(1, cols.length); }); group = []; cols = []; };
   sorted.forEach(e => {
+    if (e.start >= groupEnd) { close(); groupEnd = -Infinity; }
     let c = cols.findIndex(end => end <= e.start);
     if (c < 0) { c = cols.length; cols.push(e.end); }
     else cols[c] = e.end;
     e.col = c;
+    group.push(e);
+    groupEnd = Math.max(groupEnd, e.end);
   });
-  sorted.forEach(e => { e.cols = Math.max(1, cols.length); });
+  close();
   return sorted;
 }
 
@@ -18880,7 +18894,7 @@ const folderBusy = new Set();
 let syncNote = "";
 const folderRun = new Map();
 const bodyLoads = new Set();
-const APP_VERSION = "1.6.7";
+const APP_VERSION = "1.6.8";
 let appVersion = APP_VERSION;
 
 prepareDesktopAccounts();
