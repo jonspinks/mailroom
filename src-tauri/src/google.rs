@@ -1931,7 +1931,11 @@ fn kept_files(files: Vec<LiveFile>, keep: Option<&[String]>) -> Vec<LiveFile> {
 
 /// The original's files a forward keeps: all of them, or those named.
 fn forwarded_files(client: &reqwest::blocking::Client, token: &str, reply_to: &str, keep: Option<&[String]>) -> Result<Vec<Attachment>, String> {
-    let value = full_message(client, token, reply_to)?;
+    // Gone (404) is said so the page can offer to send without the files;
+    // anything else may pass, so it stays a plain "try again" (#79).
+    let value = call(client, token, "GET", &format!("{GMAIL}/messages/{}?format=full", seg(reply_to)), None).map_err(|(status, _)| {
+        if status == 404 { crate::compose::ORIGINAL_GONE.to_string() } else { FORWARD_FILES_FAILED.to_string() }
+    })?;
     let mut bodies = Bodies::default();
     walk(&value["payload"], &mut bodies, 0);
     let mut out = Vec::new();
@@ -1948,8 +1952,9 @@ fn send_refusal((status, why): (u16, String)) -> String {
         401 | 403 => "Sign in again to send mail.".into(),
         400 | 413 if !why.is_empty() => format!("Google refused that message: {why}"),
         400 | 413 => "Google refused that message.".into(),
-        429 | 503 => "Gmail is busy. The message is still in Outbox.".into(),
-        // Any other server error may come after Gmail took the message.
+        429 => "Gmail is busy. The message is still in Outbox.".into(),
+        // Any server error, 503 included, may come after Gmail took the
+        // message, so it is not sent again on its own (#78).
         0 | 500..=599 => "Google did not answer, so the message may have been sent. Look in Sent before sending it again.".into(),
         _ => "The message could not be sent. It is still in Outbox.".into(),
     }
@@ -2010,7 +2015,7 @@ pub fn send(
     // failed fetch stops the send: better than a forward missing its files.
     let wants_files = mode == Mode::Forward && !reply_to.trim().is_empty() && keep_files.is_none_or(|keep| !keep.is_empty());
     let mut attached = if wants_files {
-        forwarded_files(&client, &token, reply_to, keep_files).map_err(|_| FORWARD_FILES_FAILED.to_string())?
+        forwarded_files(&client, &token, reply_to, keep_files).map_err(|err| if err == crate::compose::ORIGINAL_GONE { err } else { FORWARD_FILES_FAILED.to_string() })?
     } else {
         Vec::new()
     };
@@ -2100,6 +2105,14 @@ pub fn discard_draft(email: &str, draft_id: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_a_throttle_is_sent_again_on_its_own() {
+        assert!(send_refusal((429, String::new())).contains("still in Outbox"));
+        for status in [0, 500, 503, 504] {
+            assert!(send_refusal((status, String::new())).contains("may have been sent"), "{status}");
+        }
+    }
 
     fn b64(text: &str) -> String {
         URL_SAFE_NO_PAD.encode(text.as_bytes())

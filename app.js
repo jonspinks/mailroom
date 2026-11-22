@@ -7504,6 +7504,10 @@ function queueOutgoing(fields, delay) {
     draftHtml: fields.draftHtml || fields.bodyHtml || "",
     replyTo: fields.replyTo || "",
     replyMode: fields.replyMode || "",
+    // The original's id on the server, kept so the send can still thread
+    // (and a forward still carry its files) if the original is no longer
+    // loaded when the delay ends (#79).
+    replyServerId: (() => { const o = fields.replyTo && messages.find(m => m.id === fields.replyTo); return o && serverMessage(o) && o.account === accountId ? o.id : ""; })(),
     serverDraftId: fields.serverDraftId || "",
     sendLater: fields.sendAt || "",
     importance: fields.importance || "",
@@ -7541,7 +7545,7 @@ function pendingLeft(message) {
 function pendingHoldHtml(message) {
   if (message.sendError) {
     // A failed send says why, and offers to try again or to edit it.
-    return `<p class="send-hold send-failed" id="send-hold" role="alert"><span id="send-hold-text">Not sent. ${esc(message.sendError)}</span><button type="button" id="retry-send">Send again</button><button type="button" id="undo-send">Edit</button></p>`;
+    return `<p class="send-hold send-failed" id="send-hold" role="alert"><span id="send-hold-text">${maybeSent(message.sendError) ? "" : "Not sent. "}${esc(message.sendError)}</span><button type="button" id="retry-send">Send again</button><button type="button" id="undo-send">Edit</button></p>`;
   }
   if (message.sending) {
     return `<p class="send-hold" id="send-hold" role="status"><span id="send-hold-text">Sending…</span></p>`;
@@ -7550,13 +7554,21 @@ function pendingHoldHtml(message) {
   return `<p class="send-hold" id="send-hold" role="status"><span id="send-hold-text">Sending in ${delayPhrase(left)}.</span><button type="button" id="undo-send">Undo</button></p>`;
 }
 
-function retryPending(id) {
+async function retryPending(id) {
   const message = messages.find(m => m.id === id && m.pendingSend);
   if (!message || message.sending) return;
+  // It may already have gone: sending again is a choice, not a reflex (#78).
+  if (maybeSent(message.sendError)) {
+    const sure = await chooseDialog("Send it again?", "It may already have been sent. If it is in Sent, sending again gives the recipients two copies.", [{ value: "yes", label: "Send again", primary: true }]);
+    if (sure !== "yes" || !message.pendingSend || message.sending) return;
+  }
   if (message.sendError === SEND_AGAIN && accountNeedsSignIn(message.account)) {
     toast(SEND_AGAIN);
     return;
   }
+  // The original has gone: sending again means sending it without the
+  // original's files, as the message said.
+  if (originalGone(message.sendError)) message.withoutOriginal = true;
   message.sendError = "";
   message.sendAt = Date.now();
   message.time = "Sending";
@@ -7582,7 +7594,7 @@ function stopPendingTimerIfIdle() {
 }
 
 function bodyForSend(message) {
-  const html = String(message && message.bodyHtml || "");
+  const html = unparkRemoteHtml(message && message.bodyHtml);
   if (!html.includes("data-sig-src")) return html;
   const doc = new DOMParser().parseFromString(html, "text/html");
   doc.querySelectorAll(".body-sig[data-sig-src]").forEach(el => {
@@ -7616,11 +7628,16 @@ function rememberOutbox() {
     bcc: m.bcc || "",
     sendAt: m.sendAt || 0,
     sendError: m.sendError || "",
+    // Set while the send call is out. Still set on the next start means
+    // Mailroom closed mid-send, so the message may have gone (#78).
+    sendStarted: m.sending ? (Number(m.sendStarted) || Date.now()) : 0,
     meeting: m.meeting || null,
     invite: m.invite || null,
     attachments: m.attachments || [],
     replyTo: m.replyTo || "",
     replyMode: m.replyMode || "",
+    replyServerId: m.replyServerId || "",
+    withoutOriginal: !!m.withoutOriginal,
     serverDraftId: m.serverDraftId || "",
     sendLater: m.sendLater || "",
     importance: m.importance || "",
@@ -7645,6 +7662,8 @@ function restoreOutbox() {
     // Saved before the mailbox was recorded: keep it, but held until you
     // send it again yourself.
     if (!row.accountEmail) row.sendError = row.sendError || "Check the account, then send it again.";
+    // Mailroom closed while this was sending: never send it again on its own.
+    if (row.sendStarted && !row.sendError) row.sendError = CLOSED_MID_SEND;
     const fromName = (accounts[row.account] && accounts[row.account].yourName) || "You";
     messages.push({
       id: row.id,
@@ -7667,6 +7686,8 @@ function restoreOutbox() {
       attachments: Array.isArray(row.attachments) ? row.attachments : [],
       replyTo: row.replyTo || "",
       replyMode: row.replyMode || "",
+      replyServerId: row.replyServerId || "",
+      withoutOriginal: !!row.withoutOriginal,
       serverDraftId: row.serverDraftId || "",
       sendLater: row.sendLater || "",
       importance: row.importance || "",
@@ -7737,6 +7758,16 @@ function finishLocalSend(message) {
 // the forward keeps every file rather than dropping them all.
 const forwardFilesUnknown = new Set();
 
+const CLOSED_MID_SEND = "Mailroom closed while this was sending, so it may have been sent. Look in Sent before sending it again.";
+
+function originalGone(text) {
+  return /^The original has been moved or deleted/.test(String(text || ""));
+}
+
+function maybeSent(text) {
+  return /may have been sent/.test(String(text || ""));
+}
+
 function deliverPending(message) {
   if (!message || !message.pendingSend || message.sending || message.sendError) return;
   if (!inDesktop()) {
@@ -7753,7 +7784,10 @@ function deliverPending(message) {
     return;
   }
   message.sending = true;
+  message.sendStarted = Date.now();
   message.time = "Sending";
+  // Saved before the call, so a quit mid-send is known on the next start.
+  rememberOutbox();
   const when = document.querySelector('.row[data-id="' + CSS.escape(message.id) + '"] .when');
   if (when) when.textContent = "Sending";
   const holdText = document.getElementById("send-hold-text");
@@ -7763,7 +7797,12 @@ function deliverPending(message) {
     if (undoBtn) undoBtn.hidden = true;
   }
   const original = message.replyTo ? messages.find(m => m.id === message.replyTo) : null;
-  const threaded = !!(original && serverMessage(original) && original.account === message.account);
+  const loaded = !!(original && serverMessage(original) && original.account === message.account);
+  // Not loaded (deleted here, or another folder): the server still knows it
+  // by its id, and does the reply or forward with its files (#79). After
+  // "the original is gone", Send again sends it as a new message.
+  const originalId = message.withoutOriginal ? "" : (loaded ? original.id : (message.replyServerId || ""));
+  const threaded = !!originalId;
   const mode = threaded ? (message.replyMode || "reply") : "";
   tauriInvoke("send_mail", {
     email: acct.email,
@@ -7773,7 +7812,7 @@ function deliverPending(message) {
     cc: message.cc || "",
     bcc: message.bcc || "",
     draftId: message.serverDraftId || null,
-    replyTo: threaded ? original.id : null,
+    replyTo: threaded ? originalId : null,
     mode: mode || null,
     keepFiles: mode === "forward" && !(original && forwardFilesUnknown.has(original.id) && !(message.attachments || []).length) ? (message.attachments || []) : null,
     files: message.files || [],
@@ -7787,6 +7826,7 @@ function deliverPending(message) {
     stopPendingTimerIfIdle();
   }).catch(err => {
     message.sending = false;
+    message.sendStarted = 0;
     const text = String(err && err.message || err || "The message could not be sent. It is still in Outbox.");
     if (text.indexOf("Microsoft is busy") === 0 || text.indexOf("Gmail is busy") === 0) {
       message.sendAt = Date.now() + 30000;
@@ -9971,6 +10011,7 @@ function followMovedIds(moved) {
       if (m.id === from) m.id = to;
       // A reply or forward waiting to go still answers the moved message.
       if (m.replyTo === from) m.replyTo = to;
+      if (m.replyServerId === from) m.replyServerId = to;
     });
     [replyDraft, paneCompose].forEach(draft => { if (draft && draft.msgId === from) draft.msgId = to; });
     document.querySelectorAll("[data-msg]").forEach(el => { if (el.dataset.msg === from) el.dataset.msg = to; });
@@ -12231,7 +12272,9 @@ const MAIL_APP_ATTRS = new Set(["data-mail-style", "data-dark-ink", "data-mark-b
 // The only data- attributes a body keeps: the ones Mailroom writes into a
 // message it is composing. The reading pane's buttons are found by their
 // data- attributes, so any other one in a letter could pass for a button.
-const MAIL_KEEP_DATA = new Set(["data-quote-start", "data-sig", "data-sig-id", "data-sig-src", "data-picture-id", "data-size"]);
+// Attributes the editor parks remote addresses in (#72); see parkRemoteHtml.
+const PARKED_ATTRS = new Set(["src", "srcset", "poster", "background", "style"]);
+const MAIL_KEEP_DATA = new Set(["data-quote-start", "data-sig", "data-sig-id", "data-sig-src", "data-picture-id", "data-size", ...[...PARKED_ATTRS].map(name => "data-mr-" + name), "data-mr-parked"]);
 const MAIL_MEDIA_ATTRS = new Set(["src", "background", "poster", "lowsrc", "dynsrc"]);
 // Outlook marks where quoted history begins with one of these ids.
 const QUOTE_MARKER_IDS = /^(x_)?(divRplyFwdMsg|appendonsend|mail-editor-reference-message-container|OLK_SRC_BODY_SECTION)$/i;
@@ -12560,6 +12603,75 @@ function stripRemoteStyle(style) {
     return "none";
   });
   return { style: next, blocked, changed: changed || blocked };
+}
+
+// ---- Remote pictures in the editor (#72) ----
+// What is in the editor is what gets sent, so a draft's remote pictures are
+// parked rather than removed: the address moves to data-mr-<attr> for as
+// long as it is on screen, and goes back before anything leaves Mailroom
+// (send, server draft). Mailroom's own signature is left alone.
+
+function parkRemoteHtml(html) {
+  if (remotePictureMode() === "always") return html;
+  const doc = new DOMParser().parseFromString("<div>" + String(html || "") + "</div>", "text/html");
+  const root = doc.body.firstElementChild;
+  root.querySelectorAll("*").forEach(el => {
+    if (el.closest(".body-sig")) return;
+    let parked = false;
+    ["src", "poster", "background"].forEach(name => {
+      if (!isRemoteUrl(el.getAttribute(name))) return;
+      el.setAttribute("data-mr-" + name, el.getAttribute(name));
+      el.removeAttribute(name);
+      parked = true;
+    });
+    const srcset = el.getAttribute("srcset");
+    if (srcset && srcset.split(",").some(part => isRemoteUrl(part.trim().split(/\s+/)[0]))) {
+      el.setAttribute("data-mr-srcset", srcset);
+      el.removeAttribute("srcset");
+      parked = true;
+    }
+    if (el.hasAttribute("style")) {
+      const stripped = stripRemoteStyle(el.getAttribute("style"));
+      if (stripped.blocked) {
+        el.setAttribute("data-mr-style", el.getAttribute("style"));
+        el.setAttribute("style", stripped.style);
+        parked = true;
+      }
+    }
+    if (parked) {
+      el.setAttribute("data-mr-parked", "");
+      if (el.tagName === "IMG") el.setAttribute("title", "Picture not loaded. It is sent as it was.");
+    }
+  });
+  return root.innerHTML;
+}
+
+// Put parked addresses back: on a node, or on HTML text.
+function unparkRemote(root) {
+  root.querySelectorAll("[data-mr-parked]").forEach(el => {
+    PARKED_ATTRS.forEach(name => {
+      const key = "data-mr-" + name;
+      if (!el.hasAttribute(key)) return;
+      el.setAttribute(name, el.getAttribute(key));
+      el.removeAttribute(key);
+    });
+    if (el.tagName === "IMG" && el.getAttribute("title") === "Picture not loaded. It is sent as it was.") el.removeAttribute("title");
+    el.removeAttribute("data-mr-parked");
+  });
+  return root;
+}
+
+function unparkRemoteHtml(html) {
+  const text = String(html || "");
+  if (!text.includes("data-mr-parked")) return text;
+  const doc = new DOMParser().parseFromString("<div>" + text + "</div>", "text/html");
+  return unparkRemote(doc.body.firstElementChild).innerHTML;
+}
+
+// A local draft may hold parked pictures from an earlier showing: restore
+// them first, so the current setting decides afresh.
+function editorHtml(html) {
+  return parkRemoteHtml(unparkRemoteHtml(htmlFor(html)));
 }
 
 function remoteMailHtml(html, allow) {
@@ -15121,7 +15233,7 @@ function bindColourButtons(form, body, changed) {
 
 function outgoingHtml(html) {
   const doc = new DOMParser().parseFromString("<div>" + String(html || "") + "</div>", "text/html");
-  const root = doc.body.firstElementChild;
+  const root = unparkRemote(doc.body.firstElementChild);
   stripThemeColours(root);
   root.querySelectorAll("[data-dark-ink], [data-mark-bg]").forEach(el => {
     el.removeAttribute("data-dark-ink");
@@ -15307,7 +15419,7 @@ function composeMarkup({ mode, title, msgId, fromId, to, cc, bcc, attachments, s
       <div class="files" id="compose-files">${fileChips(attachments)}</div>
       ${inviteMarkup(meeting, to)}
       <div class="compose-canvas">
-        <div id="compose-body" class="html-body" contenteditable="true" role="textbox" aria-multiline="true">${htmlFor(bodyHtml || "<p><br></p>")}</div>
+        <div id="compose-body" class="html-body" contenteditable="true" role="textbox" aria-multiline="true">${editorHtml(bodyHtml || "<p><br></p>")}</div>
         ${kind === "reply" && includeHistory !== false ? historyMarkup(msgId, openHistory) : ""}
       </div>
     </form>`;
@@ -15373,7 +15485,7 @@ function composeMarkup({ mode, title, msgId, fromId, to, cc, bcc, attachments, s
       <div class="field compose-message">${mode === "pane" || bare ? "" : "Message"}
         ${inlineReply ? formatBarHtml({ attach: false, assistant: false, hidden: !formatOn }) : formatBar}
         <div class="compose-canvas">
-          <div id="compose-body" class="html-body" contenteditable="true" role="textbox" aria-multiline="true">${htmlFor(bodyHtml || "<p><br></p>")}</div>
+          <div id="compose-body" class="html-body" contenteditable="true" role="textbox" aria-multiline="true">${editorHtml(bodyHtml || "<p><br></p>")}</div>
           ${kind === "reply" && includeHistory !== false ? historyMarkup(msgId, openHistory) : ""}
         </div>
       </div>
@@ -15943,7 +16055,7 @@ async function performDraftSave(ctx, fields) {
     const id = await tauriInvoke("save_draft", {
       email: acct.email,
       subject: fields.subject || "",
-      bodyHtml: fields.bodyHtml || "",
+      bodyHtml: unparkRemoteHtml(fields.bodyHtml || ""),
       to: fields.to || "",
       cc: fields.cc || "",
       bcc: fields.bcc || "",
@@ -18349,7 +18461,7 @@ const folderBusy = new Set();
 let syncNote = "";
 const folderRun = new Map();
 const bodyLoads = new Set();
-const APP_VERSION = "1.5.0";
+const APP_VERSION = "1.5.1";
 let appVersion = APP_VERSION;
 
 prepareDesktopAccounts();

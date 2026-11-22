@@ -54,10 +54,11 @@ impl Failure {
         self.status == 404
     }
 
-    /// The send itself got no clear answer: no reply, or a server error
-    /// other than a throttle, so Microsoft may have sent the message.
+    /// The send itself got no clear answer: no reply, or any server error,
+    /// so Microsoft may have sent the message. A 503 counts: Graph can answer
+    /// 503 after it accepted the send (#78). Only a 429 throttle is a clear no.
     fn maybe_sent(&self) -> bool {
-        self.step == "sending" && matches!(self.status, 0 | 500..=502 | 504..=599)
+        self.step == "sending" && matches!(self.status, 0 | 500..=599)
     }
 
     /// Name the step that failed, for the error and the log.
@@ -191,13 +192,24 @@ fn new_draft(client: &reqwest::blocking::Client, token: &str, mode: Mode, reply_
 }
 
 /// Make the starting draft. If the original has gone (moved or deleted
-/// since), start a plain new message instead so nothing is lost.
-fn start_draft(client: &reqwest::blocking::Client, token: &str, mode: Mode, reply_to: &str) -> Result<String, Failure> {
+/// since), start a plain new message instead so nothing is lost, unless
+/// that would lose the original's files: a forward that keeps them stops
+/// instead (#79), and the page offers to send it without them.
+fn start_draft(client: &reqwest::blocking::Client, token: &str, mode: Mode, reply_to: &str, needs_original: bool) -> Result<String, Failure> {
     match new_draft(client, token, mode, reply_to) {
+        Err(failure) if failure.gone() && mode != Mode::New && needs_original => Err(Failure { step: "original gone", ..failure }),
         Err(failure) if failure.gone() && mode != Mode::New => new_draft(client, token, Mode::New, ""),
         other => other,
     }
 }
+
+/// A forward carries the original's attachments unless every one was taken
+/// off (an empty keep list). Unknown (None) counts as carrying them.
+fn forward_needs_original(mode: Mode, keep_files: Option<&[String]>) -> bool {
+    mode == Mode::Forward && keep_files.is_none_or(|names| !names.is_empty())
+}
+
+pub const ORIGINAL_GONE: &str = "The original has been moved or deleted, so its attachments could not be forwarded. The message is still in Outbox: Send again sends it without them, or Edit it to attach them yourself.";
 
 fn save_message(failure: Failure) -> String {
     match failure.status {
@@ -221,7 +233,7 @@ pub fn save_draft(email: &str, draft_id: &str, reply_to: &str, mode: Mode, mail:
             Err(failure) => return Err(save_message(failure)),
         }
     }
-    let id = start_draft(&client, &token, mode, reply_to).map_err(save_message)?;
+    let id = start_draft(&client, &token, mode, reply_to, false).map_err(save_message)?;
     call(&client, &token, "PATCH", &message_url(&id), Some(&fields)).map_err(save_message)?;
     Ok(id)
 }
@@ -246,6 +258,9 @@ fn send_message(failure: Failure) -> String {
         let step = if failure.step.is_empty() { String::new() } else { format!(" while {}", failure.step) };
         if failure.detail.is_empty() { format!("{base}{step}.") } else { format!("{base}{step}: {}", failure.detail) }
     };
+    if failure.step == "original gone" {
+        return ORIGINAL_GONE.into();
+    }
     match failure.status {
         401 | 403 => SEND_AGAIN.into(),
         410 => "An attached file is missing. Attach it again.".into(),
@@ -254,6 +269,7 @@ fn send_message(failure: Failure) -> String {
         _ if failure.maybe_sent() => {
             "Microsoft did not answer, so the message may have been sent. Look in Sent Items before sending it again.".into()
         }
+        // Before the send step (saving, attaching), nothing went out yet.
         429 | 503 => "Microsoft is busy. The message is still in Outbox.".into(),
         _ => why("The message could not be sent"),
     }
@@ -436,9 +452,10 @@ pub fn send(
     }
     let token = auth::access_token_for(email)?;
     let client = graph::http_client()?;
+    let needs_original = forward_needs_original(mode, keep_files);
 
     let (id, made_here) = if saved.is_empty() {
-        (start_draft(&client, &token, mode, reply_to).map_err(|f| send_message(f.at("starting the message")))?, true)
+        (start_draft(&client, &token, mode, reply_to, needs_original).map_err(|f| send_message(f.at("starting the message")))?, true)
     } else {
         (saved.to_string(), false)
     };
@@ -503,7 +520,7 @@ pub fn send(
         // The saved draft was sent or removed elsewhere. Send a fresh one,
         // but only when the draft itself was missing, not some later part.
         Err(failure) if failure.gone() && failure.step == "saving the message" && !made_here => {
-            let fresh = start_draft(&client, &token, mode, reply_to).map_err(|f| send_message(f.at("starting the message")))?;
+            let fresh = start_draft(&client, &token, mode, reply_to, needs_original).map_err(|f| send_message(f.at("starting the message")))?;
             attempt(&fresh).map_err(|failure| {
                 if !failure.maybe_sent() {
                     let _ = call(&client, &token, "DELETE", &message_url(&fresh), None);
@@ -691,12 +708,24 @@ mod tests {
     }
 
     #[test]
+    fn a_forward_whose_original_has_gone_stops_rather_than_drop_its_files() {
+        let keep = vec!["plan.pdf".to_string()];
+        assert!(forward_needs_original(Mode::Forward, None), "unknown files count as carried");
+        assert!(forward_needs_original(Mode::Forward, Some(&keep)));
+        assert!(!forward_needs_original(Mode::Forward, Some(&[])), "every file taken off: nothing to lose");
+        assert!(!forward_needs_original(Mode::Reply, None), "a reply carries no files, so it can start fresh");
+        let gone = Failure { step: "original gone", ..Failure::new(404) }.at("starting the message");
+        assert_eq!(send_message(gone), ORIGINAL_GONE);
+        assert!(ORIGINAL_GONE.starts_with("The original has been moved or deleted"), "the page matches this start");
+    }
+
+    #[test]
     fn a_send_without_a_clear_answer_may_have_gone() {
-        for status in [0, 500, 502, 504] {
+        for status in [0, 500, 502, 503, 504] {
             assert!(Failure::new(status).at("sending").maybe_sent(), "{status}");
         }
         // A throttle or a refusal means the send was not taken.
-        for status in [400, 404, 429, 503] {
+        for status in [400, 404, 429] {
             assert!(!Failure::new(status).at("sending").maybe_sent(), "{status}");
         }
         assert!(!Failure::new(0).at("attaching a file").maybe_sent());

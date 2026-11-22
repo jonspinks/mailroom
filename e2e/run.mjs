@@ -268,6 +268,110 @@ test("audit: queued mail is sent only from the mailbox it was written in", { fak
   }), ["dropped", "queued", "held"], "another mailbox's mail is dropped; old rows wait for you");
 });
 
+test("a send that may have gone through is held, never resent on its own (#78)", { fake: true }, async ({ p, calls, clear }) => {
+  const queue = (rid, extra) => p.evaluate((rid, extra) => {
+    const id = Object.keys(accounts)[0];
+    const rows = JSON.parse(localStorage.getItem("mailroom-outbox") || "[]");
+    rows.push(Object.assign({ id: rid, account: id, accountEmail: String(accounts[id].email).toLowerCase(), subject: "Quote " + rid, bodyHtml: "<p>x</p>", to: "a@maplehill.example", sendAt: Date.now() - 1000 }, extra || {}));
+    localStorage.setItem("mailroom-outbox", JSON.stringify(rows));
+    restoreOutbox();
+  }, rid, extra || {});
+  const state = rid => p.evaluate(rid => { const m = messages.find(x => x.id === rid); return m ? { error: m.sendError, sending: !!m.sending, box: messageBox(m) } : null; }, rid);
+  await clear();
+  // 1. Mailroom closed while it was sending.
+  await queue("out-quit", { sendStarted: Date.now() - 60000 });
+  await p.evaluate(() => tickPendingSends()); await wait(300);
+  expect(/may have been sent/.test((await state("out-quit")).error), "a mid-send quit is held as maybe sent", await state("out-quit"));
+  same(await calls("send_mail"), [], "and not sent again on start");
+  // 2. The server answers 503 to the send itself.
+  await p.evaluate(() => { window.__sendError = "Microsoft did not answer, so the message may have been sent. Look in Sent Items before sending it again."; });
+  await queue("out-503");
+  await p.evaluate(() => tickPendingSends()); await wait(300);
+  same((await calls("send_mail")).length, 1, "sent once");
+  await p.evaluate(() => { const m = messages.find(x => x.id === "out-503"); m.sendAt = 0; tickPendingSends(); }); await wait(300);
+  same((await calls("send_mail")).length, 1, "and never again on its own");
+  // 3. A throttle (429) was refused outright, so it is tried again.
+  await clear();
+  await p.evaluate(() => { window.__sendError = "Microsoft is busy. The message is still in Outbox."; });
+  await queue("out-429");
+  await p.evaluate(() => tickPendingSends()); await wait(300);
+  const busy = await state("out-429");
+  same([busy.error, busy.box], ["", "outbox"], "a throttled send waits to go again");
+  // 4. The held one reads as maybe sent, and Send again asks first.
+  await p.evaluate(() => { window.__sendError = null; account = messages.find(x => x.id === "out-503").account; box = "outbox"; selected = "out-503"; render(); }); await wait(300);
+  const hold = await p.$eval("#send-hold-text", e => e.textContent);
+  expect(!hold.startsWith("Not sent") && /may have been sent/.test(hold), "it says it may have been sent", hold);
+  await clear();
+  await p.click("#retry-send"); await wait(300);
+  expect(await p.$("#choose-layer"), "Send again asks first");
+  await p.keyboard.press("Escape"); await wait(300);
+  same(await calls("send_mail"), [], "cancelled, nothing is sent");
+  // 5. While a send is out, the Outbox row records it.
+  await p.evaluate(() => { window.__sendHang = true; });
+  await queue("out-live");
+  await p.evaluate(() => tickPendingSends()); await wait(300);
+  const row = await p.evaluate(() => JSON.parse(localStorage.getItem("mailroom-outbox")).find(r => r.id === "out-live"));
+  expect(row && row.sendStarted > 0, "the in-flight mark is saved before the call", row);
+});
+
+test("a forward whose original is gone still forwards by id, or says so and waits (#79)", { fake: true }, async ({ p, calls, clear }) => {
+  await clear();
+  // Forward m3 (with files), queue it, then the original leaves the loaded mail.
+  const queued = await p.evaluate(() => {
+    const m3 = messages.find(m => m.id === "m3");
+    queueOutgoing({ to: "a@maplehill.example", subject: "FW: Site plans", bodyHtml: "<p>see below</p>", replyTo: "m3", replyMode: "forward", attachments: ["plan.pdf"], from: m3.account }, 60);
+    messages.splice(messages.findIndex(m => m.id === "m3"), 1);
+    const out = messages.find(m => m.pendingSend);
+    out.sendAt = 0;
+    return out && { id: out.id, server: out.replyServerId };
+  });
+  same(queued && queued.server, "m3", "the original's server id is kept with the queued forward");
+  // The server says the original is gone: it waits, and says so.
+  await p.evaluate(() => { window.__sendError = "The original has been moved or deleted, so its attachments could not be forwarded. The message is still in Outbox: Send again sends it without them, or Edit it to attach them yourself."; });
+  await p.evaluate(() => tickPendingSends()); await wait(300);
+  const first = (await calls("send_mail"))[0];
+  same([first.replyTo, first.mode, first.keepFiles], ["m3", "forward", ["plan.pdf"]], "sent by id, so the server forwards it with its files");
+  const held = await p.evaluate(id => messages.find(x => x.id === id).sendError, queued.id);
+  expect(/^The original has been moved or deleted/.test(held), "held with the reason", held);
+  await clear();
+  // Send again sends it as a new message, without the original.
+  await clear();
+  await p.evaluate(id => { window.__sendError = null; retryPending(id); }, queued.id); await wait(300);
+  await p.evaluate(() => tickPendingSends()); await wait(300);
+  const again = (await calls("send_mail"))[0];
+  same([again && again.replyTo, again && again.mode], [null, null], "Send again sends it without the original");
+});
+
+test("a draft's remote pictures are parked in the editor but sent as they were (#72)", { fake: true }, async ({ p, calls, clear }) => {
+  const tracker = "https://tracker.example/p.gif";
+  const hits = [];
+  p.on("request", req => { if (req.url().startsWith("https://tracker.example/")) hits.push(req.url()); });
+  await p.click('.row[data-id="m1"]'); await wait(400);
+  await p.click("#reply"); await wait(400);
+  await p.evaluate(src => {
+    document.querySelector("#reading #compose-form").remove();
+    replyDraft.bodyHtml = '<p>Thanks</p><blockquote><p>Quoted</p><img id="trk" src="' + src + '" width="1" height="1"><div style="background-image: url(' + src + ')">x</div></blockquote>';
+    reading.dataset.paint = ""; render();
+  }, tracker); await wait(600);
+  const shown = await p.evaluate(() => { const img = document.querySelector("#compose-body img"); const div = document.querySelector("#compose-body div[data-mr-style]"); return { src: img && img.getAttribute("src"), parked: img && img.getAttribute("data-mr-src"), style: div && div.getAttribute("style") }; });
+  same(shown.src, null, "the picture has no address while on screen");
+  same(shown.parked, tracker, "it is parked on the element");
+  expect(!/tracker/.test(shown.style || ""), "a background picture is parked too", shown.style);
+  same(hits, [], "and nothing was fetched from the tracker");
+  // Saved to the server and sent: exactly as it was.
+  await clear();
+  await p.evaluate(() => { const f = document.querySelector("#reading #compose-form"); f.querySelector("#compose-body").dispatchEvent(new Event("input", { bubbles: true })); });
+  await wait(2500);
+  const saved = (await calls("save_draft")).pop();
+  expect(!!saved, "the draft was saved to the server");
+  if (saved) expect(saved.bodyHtml.includes('src="' + tracker + '"') && !saved.bodyHtml.includes("data-mr-"), "the server draft keeps the address", saved.bodyHtml);
+  const out = await p.evaluate(() => { const f = document.querySelector("#reading #compose-form"); return bodyForSend({ bodyHtml: sentBody(f) }); });
+  expect(out.includes('src="' + tracker + '"') && out.includes("background-image") && !out.includes("data-mr-"), "the sent mail keeps every picture", out);
+  // With remote pictures always allowed, the editor shows them.
+  await p.evaluate(() => { localStorage.setItem("mailroom-remote-pictures", "always"); captureReplyDraft(); document.querySelector("#reading #compose-form").remove(); reading.dataset.paint = ""; render(); }); await wait(400);
+  same(await p.$eval("#compose-body img", e => e.getAttribute("src")), tracker, "allowed, the picture loads in the editor");
+});
+
 test("a thread shows the replies you sent, from Sent Items", { fake: true, setup: () => {
   const at = mins => new Date(Date.now() - mins * 60000).toISOString().replace(/\.\d+Z$/, "Z");
   window.__thread = [
