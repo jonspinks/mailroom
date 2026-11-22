@@ -10539,11 +10539,148 @@ function openLaunchRequest(request) {
     toast(LINK_BAD);
     return;
   }
+  if (request.kind === "ics") {
+    showCalendarFile(request);
+    return;
+  }
+  if (request.kind === "badics") {
+    toast((request.file ? request.file + ": " : "") + "Mailroom found no events in that calendar file.");
+    return;
+  }
   if (request.kind !== "compose") return;
   const list = (value) => (Array.isArray(value) ? value : []).filter(item => typeof item === "string").slice(0, 50).join("; ");
   const text = typeof request.body === "string" ? request.body.slice(0, 100000) : "";
   const bodyHtml = text ? text.split("\n").map(line => "<p>" + (esc(line) || "<br>") + "</p>").join("") : "<p><br></p>";
   openCompose({ fields: { to: list(request.to), cc: list(request.cc), bcc: list(request.bcc), subject: String(request.subject || "").slice(0, 1000), bodyHtml } });
+}
+
+// ---- Opening a .ics file: add its events to a calendar you pick ----
+// Times in a file are UTC, floating (local), or a clock in a named zone:
+// an IANA name, or, from Outlook, a Windows one, mapped here for the common
+// ones. A zone that can't be read is taken as local and said so.
+const WINDOWS_ZONES = {
+  "eastern standard time": "America/New_York", "central standard time": "America/Chicago", "mountain standard time": "America/Denver",
+  "us mountain standard time": "America/Phoenix", "pacific standard time": "America/Los_Angeles", "atlantic standard time": "America/Halifax",
+  "newfoundland standard time": "America/St_Johns", "alaskan standard time": "America/Anchorage", "hawaiian standard time": "Pacific/Honolulu",
+  "gmt standard time": "Europe/London", "greenwich standard time": "Atlantic/Reykjavik", "utc": "UTC", "coordinated universal time": "UTC",
+  "w. europe standard time": "Europe/Berlin", "romance standard time": "Europe/Paris", "central europe standard time": "Europe/Budapest",
+  "central european standard time": "Europe/Warsaw", "e. europe standard time": "Europe/Chisinau", "fle standard time": "Europe/Kiev",
+  "gtb standard time": "Europe/Bucharest", "russian standard time": "Europe/Moscow", "arabian standard time": "Asia/Dubai",
+  "arab standard time": "Asia/Riyadh", "israel standard time": "Asia/Jerusalem", "india standard time": "Asia/Kolkata",
+  "china standard time": "Asia/Shanghai", "singapore standard time": "Asia/Singapore", "tokyo standard time": "Asia/Tokyo",
+  "korea standard time": "Asia/Seoul", "aus eastern standard time": "Australia/Sydney", "e. australia standard time": "Australia/Brisbane",
+  "w. australia standard time": "Australia/Perth", "new zealand standard time": "Pacific/Auckland", "south africa standard time": "Africa/Johannesburg",
+  "sa pacific standard time": "America/Bogota", "e. south america standard time": "America/Sao_Paulo", "canada central standard time": "America/Regina"
+};
+
+function knownZone(name) {
+  const raw = String(name || "").trim().replace(/^\/+/, "");
+  if (!raw) return null;
+  const zone = WINDOWS_ZONES[raw.toLowerCase()] || raw;
+  try { new Intl.DateTimeFormat("en-US", { timeZone: zone }); return zone; } catch (e) { return null; }
+}
+
+function zoneOffsetMs(zone, utcMs) {
+  const parts = {};
+  new Intl.DateTimeFormat("en-US", { timeZone: zone, hourCycle: "h23", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit" })
+    .formatToParts(new Date(utcMs)).forEach(p => { parts[p.type] = Number(p.value); });
+  return Date.UTC(parts.year, parts.month - 1, parts.day, parts.hour % 24, parts.minute, parts.second) - utcMs;
+}
+
+// A file's event as local wall-clock stamps, the form the event editor saves.
+function fileEventLocal(ev) {
+  if (ev.allDay) return { allDay: true, start: String(ev.start).slice(0, 10), end: String(ev.end).slice(0, 10), guessed: false };
+  const wall = s => { const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/.exec(String(s)); return m ? Date.UTC(+m[1], m[2] - 1, +m[3], +m[4], +m[5]) : NaN; };
+  const asLocal = ms => { const d = new Date(ms); return localStamp(isoFromDay(dayFromDate(d)), d.getHours() * 60 + d.getMinutes()); };
+  const convert = s => {
+    const w = wall(s);
+    if (Number.isNaN(w)) return null;
+    if (ev.zone === "UTC") return asLocal(w);
+    const zone = knownZone(ev.zone);
+    if (!zone) return String(s).slice(0, 16) + ":00";
+    let at = w - zoneOffsetMs(zone, w);
+    const again = w - zoneOffsetMs(zone, at);
+    if (again !== at) at = again;
+    return asLocal(at);
+  };
+  const start = convert(ev.start);
+  const end = convert(ev.end);
+  return { allDay: false, start, end, guessed: !!ev.zone && ev.zone !== "UTC" && !knownZone(ev.zone) };
+}
+
+function fileEventWhen(local) {
+  const day = iso => new Date(iso.slice(0, 10) + "T12:00:00").toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short", year: "numeric" });
+  if (local.allDay) {
+    const last = isoFromDay(dayFromIso(local.end) - 1);
+    return last === local.start ? day(local.start) + ", all day" : day(local.start) + " – " + day(last) + ", all day";
+  }
+  const clock = iso => iso.slice(11, 16);
+  return local.start.slice(0, 10) === local.end.slice(0, 10)
+    ? day(local.start) + ", " + clock(local.start) + "–" + clock(local.end)
+    : day(local.start) + " " + clock(local.start) + " – " + day(local.end) + " " + clock(local.end);
+}
+
+function showCalendarFile(request) {
+  const events = (Array.isArray(request.events) ? request.events : []).slice(0, 50).map(ev => Object.assign({}, ev, { local: fileEventLocal(ev) }))
+    .filter(ev => ev.local.start && ev.local.end);
+  if (!events.length) return toast("Mailroom found no events it could read in that calendar file.");
+  const calendars = [];
+  Object.keys(accounts).forEach(id => (accounts[id].calendars || []).forEach(cal => {
+    if (cal.canEdit !== false && serverCalendar(cal.id)) calendars.push({ id: cal.id, name: cal.name, account: id });
+  }));
+  if (!calendars.length) return toast("Sign in to an account with a calendar to add these events.");
+  const chosen = calendars.some(c => c.id === defaultCalendarId) ? defaultCalendarId : calendars[0].id;
+  const groups = Object.keys(accounts).filter(id => calendars.some(c => c.account === id)).map(id => `<optgroup label="${esc(accounts[id].name)}">${calendars.filter(c => c.account === id).map(c => `<option value="${esc(c.id)}"${c.id === chosen ? " selected" : ""}>${esc(c.name)}</option>`).join("")}</optgroup>`).join("");
+  const many = events.length > 1;
+  popRoot.innerHTML = `<div class="backdrop dim" id="backdrop"></div>
+    <form class="dialog ics-dialog" role="dialog" aria-modal="true" aria-labelledby="ics-title">
+      <h2 id="ics-title">Add to calendar</h2>
+      <p class="field-hint">${esc(request.file || "Calendar file")}${many ? " · " + events.length + " events" : ""}</p>
+      <div class="ics-list">${events.map((ev, i) => `<label class="ics-event">${many ? `<input type="checkbox" data-ics="${i}" checked>` : `<input type="hidden" data-ics="${i}">`}<span><b>${esc(ev.summary)}</b><small>${esc(fileEventWhen(ev.local))}${ev.location ? " · " + esc(ev.location) : ""}</small>${ev.repeats ? `<small class="ics-note">Repeats in the file; Mailroom adds the first one.</small>` : ""}${ev.local.guessed ? `<small class="ics-note">Its time zone (${esc(ev.zone)}) isn't one Mailroom knows, so the times are as written.</small>` : ""}</span></label>`).join("")}</div>
+      <label class="field">Calendar<select id="ics-calendar" aria-label="Calendar">${groups}</select></label>
+      <p class="form-error" id="ics-error" hidden></p>
+      <div class="dialog-actions"><button class="ghost" type="button" id="ics-cancel">Cancel</button><button class="primary" type="submit" id="ics-add">${many ? "Add events" : "Add event"}</button></div>
+    </form>`;
+  const form = popRoot.querySelector(".ics-dialog");
+  popRoot.querySelector("#backdrop").onclick = closePop;
+  popRoot.querySelector("#ics-cancel").onclick = closePop;
+  form.onkeydown = ev => { if (ev.key === "Escape") closePop(); };
+  form.onsubmit = async ev => {
+    ev.preventDefault();
+    const calId = form.querySelector("#ics-calendar").value;
+    const owner = accountForCalendar(calId);
+    const acct = owner && accounts[owner[0]];
+    const picked = [...form.querySelectorAll("[data-ics]")].filter(box => box.type === "hidden" || box.checked).map(box => events[Number(box.dataset.ics)]);
+    const error = form.querySelector("#ics-error");
+    if (!picked.length) { error.hidden = false; error.textContent = "Choose an event to add."; return; }
+    if (!acct) return;
+    const button = form.querySelector("#ics-add");
+    button.disabled = true;
+    let added = 0;
+    let problem = "";
+    for (const item of picked) {
+      try {
+        await tauriInvoke("save_event", { email: acct.email, eventId: null, calendarId: calId, fields: {
+          subject: String(item.summary || "").slice(0, 500), location: String(item.location || "").slice(0, 500), notes: String(item.notes || ""),
+          start: item.local.start, end: item.local.end, timeZone: calendarZone(), allDay: item.local.allDay, showAs: "busy"
+        } });
+        added += 1;
+      } catch (err) {
+        problem = String(err && err.message || err || "That event could not be added.");
+      }
+    }
+    if (!added) { button.disabled = false; error.hidden = false; error.textContent = problem; return; }
+    closePop();
+    const cal = calendars.find(c => c.id === calId);
+    toast((added === 1 ? "Added to " : "Added " + added + " events to ") + (cal ? cal.name : "the calendar") + (problem ? ". " + problem : ""));
+    hiddenCal.delete(calId);
+    const first = dayFromIso(picked[0].local.start.slice(0, 10));
+    if (first != null) calFocus = dateFromDay(first);
+    setView("calendar");
+    refreshLiveCalendar();
+  };
+  const first = form.querySelector("#ics-add");
+  if (first) first.focus();
 }
 
 async function takeLaunchRequest() {
@@ -18913,7 +19050,7 @@ const folderBusy = new Set();
 let syncNote = "";
 const folderRun = new Map();
 const bodyLoads = new Set();
-const APP_VERSION = "1.6.10";
+const APP_VERSION = "1.6.11";
 let appVersion = APP_VERSION;
 
 prepareDesktopAccounts();
