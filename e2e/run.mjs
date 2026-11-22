@@ -1473,6 +1473,59 @@ test("a rule that forwards mail elsewhere shows a warning until it is off or dis
   expect((await banner()).includes("new@elsewhere.example"), "a changed address warns again", await banner());
 });
 
+test("folders can be made, renamed and deleted from the folder menu; Outlook's own cannot (#59)", { fake: true }, async ({ p, calls, clear, menu }) => {
+  await wait(400);
+  const acct = await p.evaluate(() => Object.keys(accounts)[0]);
+  const folderMenu = async key => { await p.evaluate((a, k) => showFolderMenu(100, 100, a, k), acct, key); await wait(150); return menu(); };
+  const names = () => p.evaluate(a => accounts[a].liveFolders.map(f => "  ".repeat(f.depth) + f.name), acct);
+  const inbox = await folderMenu("inbox");
+  expect(inbox.includes("New folder") && inbox.includes("New subfolder"), "Inbox can hold folders", inbox);
+  expect(!inbox.includes("Rename…") && !inbox.includes("Delete folder"), "but Inbox can't be renamed or deleted", inbox);
+  await p.evaluate(() => hideRowMenu());
+  const jobs = await folderMenu("f-jobs");
+  expect(jobs.includes("Rename…") && jobs.includes("Delete folder"), "a folder you made can", jobs);
+  await p.evaluate(() => hideRowMenu());
+  // A new subfolder of Jobs lands inside Jobs, after Kiln project.
+  await clear();
+  await folderMenu("f-jobs");
+  await p.click('#row-menu [data-act="new-subfolder"]'); await wait(200);
+  expect((await p.$eval(".name-dialog h2", e => e.textContent)) === "New folder in Jobs", "the dialog names the parent");
+  await p.type("#name-dialog-input", "Quotes");
+  await p.keyboard.press("Enter"); await wait(400);
+  same((await calls("create_folder")).map(c => [c.name, c.parentId]), [["Quotes", "f-jobs"]], "made inside Jobs on the server");
+  const after = await names();
+  same(after.slice(after.indexOf("Jobs"), after.indexOf("Jobs") + 3), ["Jobs", "  Kiln project", "  Quotes"], "and shown there straight away");
+  // Rename it.
+  await clear();
+  await folderMenu("f-new-quotes");
+  await p.click('#row-menu [data-act="rename-folder"]'); await wait(200);
+  same(await p.$eval("#name-dialog-input", e => e.value), "Quotes", "the old name to edit");
+  await p.evaluate(() => { document.querySelector("#name-dialog-input").value = "Quotes 2026"; });
+  await p.click(".name-dialog button[type=submit]"); await wait(400);
+  same((await calls("rename_folder")).map(c => [c.folderId, c.name]), [["f-new-quotes", "Quotes 2026"]], "renamed on the server");
+  expect((await names()).includes("  Quotes 2026"), "and in the list");
+  // Delete Jobs: it goes with what is inside it, and leaves Favorites too.
+  await p.evaluate(a => { addFavorite(a, "f-kiln"); openFolder(a, "f-kiln", "f-kiln", "folder"); }, acct); await wait(300);
+  await clear();
+  await folderMenu("f-jobs");
+  await p.click('#row-menu [data-act="delete-folder"]'); await wait(200);
+  const note = await p.$eval(".choose-dialog .dialog-note", e => e.textContent);
+  expect(/Deleted Items/.test(note) && /2 folders inside it/.test(note), "the warning says where it goes and what goes with it", note);
+  await p.click('.choose-dialog [data-choose="yes"]'); await wait(400);
+  same((await calls("delete_folder")).map(c => c.folderId), ["f-jobs"], "deleted on the server");
+  const left = await names();
+  expect(!left.some(n => /Jobs|Kiln|Quotes/.test(n)), "Jobs and its subfolders leave the list", left);
+  same(await p.evaluate(a => [box, favorites.some(f => f.account === a && f.box === "f-kiln")], acct), ["inbox", false], "the open folder falls back to Inbox, and the favorite goes");
+  // A refusal is shown, and nothing changes.
+  await p.evaluate(() => { window.__folderError = "There is already a folder with that name there."; });
+  await folderMenu("inbox");
+  await p.click('#row-menu [data-act="new-folder"]'); await wait(200);
+  await p.type("#name-dialog-input", "Archive");
+  await p.keyboard.press("Enter"); await wait(400);
+  expect((await p.$eval("#toast", e => e.textContent)).includes("already a folder"), "the reason is shown");
+  same(await names(), left, "and the list is unchanged");
+});
+
 // ---------------------------------------------------------------- calendar
 
 test("calendar: new repeating event, edit sends only changes, series and invites", { fake: true, tz: true }, async ({ p, calls, clear }) => {

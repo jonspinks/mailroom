@@ -77,7 +77,7 @@ compares them with this list, and opens an issue for anything new.
 | Favourites | ✅ any folder, category or search folder |
 | Search | ✅ mail, people and calendar in one box; dates in plain words; top results first |
 | Search folders | **M** |
-| Create, rename, delete folders | ➖ |
+| Create, rename, delete folders | ✅ from the folder right-click menu, subfolders too; Outlook's own folders stay put (Gmail: labels) |
 | Sweep | ➖ |
 
 ## Calendar

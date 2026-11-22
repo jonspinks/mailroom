@@ -1526,6 +1526,107 @@ pub fn ensure_folder(email: &str, name: &str) -> Result<String, String> {
     made["id"].as_str().map(String::from).ok_or_else(|| "Gmail did not make the folder.".into())
 }
 
+// ---- Folders as labels: create, rename, delete (#59) ----
+// Gmail nests labels by name ("Jobs/Kiln"), so a subfolder is a label whose
+// name starts with its parent's and a "/". Only labels people made
+// (Label_…) can be changed; Gmail's own are left alone.
+
+fn label_name_of(labels: &Value, id: &str) -> Option<String> {
+    labels["labels"].as_array()?.iter().find(|l| l["id"].as_str() == Some(id)).and_then(|l| l["name"].as_str()).map(String::from)
+}
+
+/// The labels nested under `full` (any depth), as (id, name).
+fn sublabels(labels: &Value, full: &str) -> Vec<(String, String)> {
+    let prefix = format!("{full}/");
+    labels["labels"].as_array().into_iter().flatten().filter_map(|l| {
+        let name = l["name"].as_str()?;
+        let id = l["id"].as_str()?;
+        (name.starts_with(&prefix) && is_user_label(id)).then(|| (id.to_string(), name.to_string()))
+    }).collect()
+}
+
+/// The new full name for a label renamed to `name`: same parent, new last part.
+fn renamed_label(old_full: &str, name: &str) -> String {
+    match old_full.rfind('/') {
+        Some(cut) => format!("{}/{}", &old_full[..cut], name),
+        None => name.to_string(),
+    }
+}
+
+fn label_part(name: &str) -> Result<&str, String> {
+    let name = crate::mailbox::folder_name(name)?;
+    if name.contains('/') {
+        return Err("Gmail uses / to put a label inside another. Pick the parent folder instead.".into());
+    }
+    Ok(name)
+}
+
+fn user_label(labels: &Value, id: &str) -> Result<String, String> {
+    if !is_user_label(id.trim()) {
+        return Err("Gmail's own folders can't be changed.".into());
+    }
+    label_name_of(labels, id.trim()).ok_or_else(|| "That folder is no longer there.".to_string())
+}
+
+fn label_refusal((status, why): (u16, String)) -> String {
+    match status {
+        409 => "There is already a folder with that name there.".into(),
+        404 => "That folder is no longer there.".into(),
+        _ => refused((status, why)),
+    }
+}
+
+pub fn create_folder(email: &str, name: &str, parent_id: &str) -> Result<String, String> {
+    let part = label_part(name)?;
+    let token = auth::access_token_for(email)?;
+    let client = graph::http_client()?;
+    let full = if parent_id.trim().is_empty() {
+        part.to_string()
+    } else {
+        let labels = get(&client, &token, &format!("{GMAIL}/labels"))?;
+        format!("{}/{}", user_label(&labels, parent_id)?, part)
+    };
+    let made = call(&client, &token, "POST", &format!("{GMAIL}/labels"), Some(&json!({ "name": full, "labelListVisibility": "labelShow", "messageListVisibility": "show" })))
+        .map_err(label_refusal)?;
+    made["id"].as_str().map(String::from).ok_or_else(|| "Gmail did not make the folder.".into())
+}
+
+/// Rename a label and carry its sublabels along, which Gmail doesn't do.
+pub fn rename_folder(email: &str, folder_id: &str, name: &str) -> Result<(), String> {
+    let part = label_part(name)?;
+    let token = auth::access_token_for(email)?;
+    let client = graph::http_client()?;
+    let labels = get(&client, &token, &format!("{GMAIL}/labels"))?;
+    let old = user_label(&labels, folder_id)?;
+    let new = renamed_label(&old, part);
+    if new == old {
+        return Ok(());
+    }
+    let patch = |id: &str, to: &str| call(&client, &token, "PATCH", &format!("{GMAIL}/labels/{}", seg(id)), Some(&json!({ "name": to }))).map_err(label_refusal);
+    patch(folder_id.trim(), &new)?;
+    for (id, child) in sublabels(&labels, &old) {
+        patch(&id, &format!("{new}{}", &child[old.len()..]))?;
+    }
+    Ok(())
+}
+
+/// Delete a label and its sublabels. The mail itself stays, in All Mail.
+pub fn delete_folder(email: &str, folder_id: &str) -> Result<(), String> {
+    let token = auth::access_token_for(email)?;
+    let client = graph::http_client()?;
+    let labels = get(&client, &token, &format!("{GMAIL}/labels"))?;
+    let full = user_label(&labels, folder_id)?;
+    let mut doomed: Vec<String> = sublabels(&labels, &full).into_iter().map(|(id, _)| id).collect();
+    doomed.push(folder_id.trim().to_string());
+    for id in doomed {
+        match call(&client, &token, "DELETE", &format!("{GMAIL}/labels/{}", seg(&id)), None) {
+            Ok(_) | Err((404, _)) => {}
+            Err(failure) => return Err(label_refusal(failure)),
+        }
+    }
+    Ok(())
+}
+
 /// Some headers of a message, for unsubscribing.
 pub fn headers(email: &str, message_id: &str, names: &[&str]) -> Result<Vec<(String, String)>, String> {
     let id = message_id.trim();
@@ -2105,6 +2206,26 @@ pub fn discard_draft(email: &str, draft_id: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn labels_nest_by_name_and_only_user_labels_change() {
+        let labels = json!({ "labels": [
+            { "id": "INBOX", "name": "INBOX" },
+            { "id": "Label_1", "name": "Jobs" },
+            { "id": "Label_2", "name": "Jobs/Kiln" },
+            { "id": "Label_3", "name": "Jobs/Kiln/2026" },
+            { "id": "Label_4", "name": "Jobsworth" }
+        ]});
+        let mut kids = sublabels(&labels, "Jobs");
+        kids.sort();
+        assert_eq!(kids, vec![("Label_2".to_string(), "Jobs/Kiln".to_string()), ("Label_3".to_string(), "Jobs/Kiln/2026".to_string())], "Jobsworth is not inside Jobs");
+        assert_eq!(renamed_label("Jobs/Kiln", "Kilns"), "Jobs/Kilns");
+        assert_eq!(renamed_label("Jobs", "Work"), "Work");
+        assert!(user_label(&labels, "INBOX").is_err(), "Gmail's own labels are left alone");
+        assert_eq!(user_label(&labels, "Label_2").unwrap(), "Jobs/Kiln");
+        assert!(label_part("a/b").is_err());
+        assert_eq!(label_part(" Quotes ").unwrap(), "Quotes");
+    }
 
     #[test]
     fn only_a_throttle_is_sent_again_on_its_own() {

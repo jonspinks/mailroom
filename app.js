@@ -10628,6 +10628,105 @@ async function emptyFolder(acct, folder) {
   toast(label + " is empty");
 }
 
+// ---- Create, rename and delete folders (#59) ----
+// Only folders people made can be renamed or deleted: never Outlook's own
+// (Inbox, Sent, Junk…) or Gmail's own labels.
+function liveFolderOf(acct, key) {
+  return ((accounts[acct] && accounts[acct].liveFolders) || []).find(f => f.key === key) || null;
+}
+
+function ownFolder(acct, key) {
+  if (!accounts[acct] || isCategoryBox(key) || isSearchBox(key) || boxNames[key]) return false;
+  if (!liveFolderOf(acct, key) || folderKind(key, acct) !== "folder") return false;
+  return isGoogleAccount(acct) ? String(key).startsWith("Label_") : true;
+}
+
+// Outlook takes subfolders almost anywhere (Inbox too); Gmail only under
+// labels people made.
+function holdsFolders(acct, key) {
+  if (!accounts[acct] || !liveFolderOf(acct, key) || key === "outbox" || key === "drafts") return false;
+  return isGoogleAccount(acct) ? ownFolder(acct, key) : true;
+}
+
+// The folder and everything inside it, in list order.
+function folderBranch(acct, key) {
+  const list = (accounts[acct] && accounts[acct].liveFolders) || [];
+  const start = list.findIndex(f => f.key === key);
+  if (start < 0) return [];
+  const out = [list[start]];
+  for (let i = start + 1; i < list.length && list[i].depth > list[start].depth; i++) out.push(list[i]);
+  return out;
+}
+
+async function newFolder(acct, parentKey) {
+  const owner = accounts[acct];
+  if (!owner || !owner.email) return;
+  const parent = parentKey ? liveFolderOf(acct, parentKey) : null;
+  const name = await nameDialog(parent ? "New folder in " + parent.name : "New folder", isGoogleAccount(acct) ? "Gmail keeps folders as labels." : "", "", "Create");
+  if (!name) return;
+  let id = "";
+  try {
+    id = await tauriInvoke("create_folder", { email: owner.email, name, parentId: parent ? parent.id : null, parent_id: parent ? parent.id : null });
+  } catch (err) {
+    return toast(String(err && err.message || err || "The folder could not be made."));
+  }
+  if (!id) return;
+  const list = owner.liveFolders || (owner.liveFolders = []);
+  const made = { id, parentId: parent ? parent.id : "", name, key: id, unread: 0, total: 0, depth: parent ? parent.depth + 1 : 0 };
+  if (parent) {
+    const branch = folderBranch(acct, parent.key);
+    list.splice(list.indexOf(branch[branch.length - 1]) + 1, 0, made);
+  } else list.push(made);
+  render();
+  toast("Made the folder " + name);
+}
+
+async function renameFolder(acct, key) {
+  const owner = accounts[acct];
+  const folder = liveFolderOf(acct, key);
+  if (!owner || !folder || !ownFolder(acct, key)) return;
+  const name = await nameDialog("Rename folder", "", folder.name, "Rename");
+  if (!name || name === folder.name) return;
+  try {
+    await tauriInvoke("rename_folder", { email: owner.email, folderId: folder.id, folder_id: folder.id, name });
+  } catch (err) {
+    return toast(String(err && err.message || err || "The folder could not be renamed."));
+  }
+  folder.name = name;
+  favorites.forEach(item => { if (item.account === acct && item.box === key) item.name = name; });
+  rememberFavorites();
+  render();
+  toast("Renamed to " + name);
+}
+
+async function deleteFolder(acct, key) {
+  const owner = accounts[acct];
+  const folder = liveFolderOf(acct, key);
+  if (!owner || !folder || !ownFolder(acct, key)) return;
+  const branch = folderBranch(acct, key);
+  const inside = branch.length > 1 ? " and the " + (branch.length - 1) + (branch.length === 2 ? " folder" : " folders") + " inside it" : "";
+  const note = isGoogleAccount(acct)
+    ? "The label" + inside + " goes. The mail itself stays in All Mail."
+    : "It goes to Deleted Items with its mail" + inside + ", as in Outlook.";
+  const sure = await chooseDialog("Delete the folder " + folder.name + "?", note, [{ value: "yes", label: "Delete", danger: true }]);
+  if (sure !== "yes") return;
+  try {
+    await tauriInvoke("delete_folder", { email: owner.email, folderId: folder.id, folder_id: folder.id });
+  } catch (err) {
+    return toast(String(err && err.message || err || "The folder could not be deleted."));
+  }
+  const gone = new Set(branch.map(f => f.key));
+  owner.liveFolders = owner.liveFolders.filter(f => !gone.has(f.key));
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].account === acct && gone.has(messageBox(messages[i]))) messages.splice(i, 1);
+  }
+  favorites = favorites.filter(item => item.account !== acct || !gone.has(item.box));
+  rememberFavorites();
+  if (account === acct && gone.has(box)) openFolder(acct, "inbox", folderIdFor(acct, "inbox"), "folder");
+  else render();
+  toast("Deleted the folder " + folder.name);
+}
+
 function showFolderMenu(x, y, acct, folder) {
   hideThemeMenu();
   const on = isFavorite(acct, folder);
@@ -10649,10 +10748,17 @@ function showFolderMenu(x, y, acct, folder) {
   const counting = folder === "outbox" ? "" : folderCountMode(acct, folder) === "unread"
     ? `<button type="button" role="menuitem" data-act="count-total">Show total number of items</button>`
     : `<button type="button" role="menuitem" data-act="count-unread">Show unread messages count</button>`;
+  const own = acct !== "all" && ownFolder(acct, folder);
+  const folderItems = acct === "all" || !accounts[acct] ? "" : `
+    <div class="menu-rule"></div>
+    <button type="button" role="menuitem" data-act="new-folder">New folder</button>${holdsFolders(acct, folder) ? `
+    <button type="button" role="menuitem" data-act="new-subfolder">New subfolder</button>` : ""}${own ? `
+    <button type="button" role="menuitem" data-act="rename-folder">Rename…</button>
+    <button type="button" role="menuitem" data-act="delete-folder">Delete folder</button>` : ""}`;
   menu.innerHTML = `<button type="button" role="menuitem" data-act="${on ? "unfav" : "fav"}">${on ? "Remove from favorites" : "Add to favorites"}</button>${counting}${markable ? `
     <button type="button" role="menuitem" data-act="readall">Mark all as read</button>` : ""}${emptiable ? `
     <div class="menu-rule"></div>
-    <button type="button" role="menuitem" data-act="empty">Empty ${esc(boxLabel(folder, acct))}</button>` : ""}`;
+    <button type="button" role="menuitem" data-act="empty">Empty ${esc(boxLabel(folder, acct))}</button>` : ""}${folderItems}`;
   menu.dataset.id = acct;
   menu.dataset.kind = folder;
   menu.dataset.child = "";
@@ -10767,6 +10873,10 @@ document.getElementById("row-menu").onclick = (ev) => {
     else if (btn.dataset.act === "unfav") removeFavorite(id, eventKind);
     else if (btn.dataset.act === "delete-search") deleteSearchFolder(id, eventKind);
     else if (btn.dataset.act === "fav") addFavorite(id, eventKind);
+    else if (btn.dataset.act === "new-folder") newFolder(id, "");
+    else if (btn.dataset.act === "new-subfolder") newFolder(id, eventKind);
+    else if (btn.dataset.act === "rename-folder") renameFolder(id, eventKind);
+    else if (btn.dataset.act === "delete-folder") deleteFolder(id, eventKind);
     return;
   }
   if (menuKind === "event") {
@@ -11477,6 +11587,46 @@ function chooseDialog(title, note, choices) {
     });
     const first = layer.querySelector("[data-choose]");
     if (first) first.focus();
+  });
+}
+
+// A one-line name, as chooseDialog asks a choice. Resolves to the trimmed
+// text, or null when cancelled.
+function nameDialog(title, note, value, okLabel) {
+  return new Promise(resolve => {
+    const layer = document.createElement("div");
+    layer.id = "choose-layer";
+    layer.innerHTML = `
+      <div class="backdrop dim" data-choose-dismiss></div>
+      <form class="dialog choose-dialog name-dialog" role="dialog" aria-modal="true" aria-label="${esc(title)}">
+        <h2>${esc(title)}</h2>
+        ${note ? `<p class="dialog-note">${esc(note)}</p>` : ""}
+        <input id="name-dialog-input" autocomplete="off" spellcheck="false" aria-label="Name" value="${esc(value || "")}">
+        <div class="dialog-actions"><button class="ghost" type="button" data-choose-dismiss>Cancel</button><button class="primary" type="submit">${esc(okLabel || "OK")}</button></div>
+      </form>`;
+    document.body.appendChild(layer);
+    const input = layer.querySelector("#name-dialog-input");
+    const done = (text) => {
+      document.removeEventListener("keydown", onKey, true);
+      layer.remove();
+      resolve(text);
+    };
+    function onKey(ev) {
+      if (ev.key !== "Escape") return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      done(null);
+    }
+    document.addEventListener("keydown", onKey, true);
+    layer.querySelector("form").addEventListener("submit", ev => {
+      ev.preventDefault();
+      const text = input.value.trim();
+      if (text) done(text);
+      else input.focus();
+    });
+    layer.addEventListener("click", ev => { if (ev.target.closest("[data-choose-dismiss]")) done(null); });
+    input.focus();
+    input.select();
   });
 }
 
@@ -18461,7 +18611,7 @@ const folderBusy = new Set();
 let syncNote = "";
 const folderRun = new Map();
 const bodyLoads = new Set();
-const APP_VERSION = "1.5.1";
+const APP_VERSION = "1.5.2";
 let appVersion = APP_VERSION;
 
 prepareDesktopAccounts();

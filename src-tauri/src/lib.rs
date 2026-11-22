@@ -1552,6 +1552,43 @@ async fn ensure_folder(email: String, name: String) -> Result<String, String> {
     .await
 }
 
+/// Make a folder (a label on Gmail), at the top or inside `parent_id`.
+#[tauri::command]
+async fn create_folder(email: String, name: String, parent_id: Option<String>) -> Result<String, String> {
+    in_background(move || {
+        let parent = parent_id.unwrap_or_default();
+        if auth::is_google(email.trim()) {
+            return google::create_folder(email.trim(), &name, &parent);
+        }
+        mailbox::create_folder(email.trim(), &name, &parent)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn rename_folder(email: String, folder_id: String, name: String) -> Result<(), String> {
+    in_background(move || {
+        if auth::is_google(email.trim()) {
+            return google::rename_folder(email.trim(), &folder_id, &name);
+        }
+        mailbox::rename_folder(email.trim(), &folder_id, &name)
+    })
+    .await
+}
+
+/// Delete a folder: to Deleted Items on Microsoft; on Gmail the label goes
+/// and the mail stays in All Mail.
+#[tauri::command]
+async fn delete_folder(email: String, folder_id: String) -> Result<(), String> {
+    in_background(move || {
+        if auth::is_google(email.trim()) {
+            return google::delete_folder(email.trim(), &folder_id);
+        }
+        mailbox::delete_folder(email.trim(), &folder_id)
+    })
+    .await
+}
+
 /// Keep a picked file until its message is sent. The page gets an id back.
 #[tauri::command]
 async fn stage_file(data: String) -> Result<attach::Staged, String> {
@@ -2456,6 +2493,9 @@ pub fn run() {
             auto_reply,
             set_auto_reply,
             ensure_folder,
+            create_folder,
+            rename_folder,
+            delete_folder,
             people,
             mail_rules,
             save_rule,
