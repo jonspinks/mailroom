@@ -1666,6 +1666,43 @@ test("Send later on Gmail: Mailroom holds it in Outbox until the time (#69)", { 
   same(sent && [sent.subject, sent.sendAt], ["Gmail later", null], "sent at its time, with no server-side schedule");
 });
 
+test("opening a message repaints once for its answers, not once per answer (#74)", { fake: true, setup: () => {
+  // As live: each answer lands a little after the last.
+  window.__delays = { cached_body: 5, message_files: 15, inline_images: 25, sender_verified: 35, unsubscribe_options: 45 };
+  window.__unsub = { m3: { oneClick: "https://list.example/u", web: "", mailto: "", mailtoSubject: "" } };
+} }, async ({ p }) => {
+  await wait(500);
+  await p.evaluate(() => { window.__paints = 0; new MutationObserver(() => { window.__paints++; }).observe(document.getElementById("reading"), { childList: true }); });
+  await p.click('.row[data-id="m3"]'); await wait(1200);
+  const paints = await p.evaluate(() => window.__paints);
+  expect(paints <= 2, "the open and one gathered paint (it was 4)", paints);
+  const shown = await p.evaluate(() => ({ body: document.querySelector("#reading").textContent.includes("Site plans body"), unsub: !!document.querySelector("#reading [data-unsub], #reading .unsubscribe-bar, #reading .unsub-bar"), files: document.querySelector("#reading").textContent.includes("plan.pdf") }));
+  same(shown, { body: true, unsub: true, files: true }, "and every answer is on screen");
+});
+
+test("sanitised mail is reused, and settings read on paint stay current (#77)", { fake: true }, async ({ p }) => {
+  const r = await p.evaluate(() => {
+    let parses = 0;
+    const real = window.htmlFor;
+    window.htmlFor = s => { parses++; return real(s); };
+    const html = '<p>Hello <img src="https://t.example/p.gif"></p>';
+    const a = remoteMailHtml(html, false);
+    const b = remoteMailHtml(html, false);
+    const c = remoteMailHtml(html, true);
+    window.htmlFor = real;
+    return { parses, same: a.html === b.html && a.blocked === b.blocked, blocked: a.blocked, allowed: !c.blocked };
+  });
+  same(r, { parses: 2, same: true, blocked: true, allowed: true }, "the same body is sanitised once per picture setting");
+  const modes = await p.evaluate(() => {
+    const out = [remotePictureMode()];
+    localStorage.setItem("mailroom-remote-pictures", "always"); out.push(remotePictureMode());
+    localStorage.removeItem("mailroom-remote-pictures"); out.push(remotePictureMode());
+    window.dispatchEvent(new StorageEvent("storage", { key: "mailroom-assist-pop" }));
+    return out;
+  });
+  same(modes, ["safe", "always", "safe"], "a change to the setting is seen straight away");
+});
+
 // ---------------------------------------------------------------- calendar
 
 test("calendar: new repeating event, edit sends only changes, series and invites", { fake: true, tz: true }, async ({ p, calls, clear }) => {
