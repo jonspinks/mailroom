@@ -78,7 +78,7 @@ compares them with this list, and opens an issue for anything new.
 | Search | ✅ mail, people and calendar in one box; dates in plain words; top results first |
 | Search folders | **M** |
 | Create, rename, delete folders | ✅ from the folder right-click menu, subfolders too; Outlook's own folders stay put (Gmail: labels) |
-| Sweep | ➖ |
+| Sweep | ✅ delete a sender's mail in a folder: all, all and later ones (**M** rule), all but the latest, or older than 10 days; one Undo |
 
 ## Calendar
 
