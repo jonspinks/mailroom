@@ -1639,6 +1639,33 @@ test("undoing a Gmail archive from a view that isn't a label puts the Inbox labe
   same(await p.evaluate(() => messageBox(messages.find(x => x.id === "m1"))), "starred", "and it shows where it was");
 });
 
+test("Send later on Gmail: Mailroom holds it in Outbox until the time (#69)", { fake: true, setup: () => { window.__google = true; } }, async ({ p, calls, clear }) => {
+  await wait(600);
+  const acct = await p.evaluate(() => Object.keys(accounts)[0]);
+  same(await p.evaluate(a => isGoogleAccount(a), acct), true, "a Gmail account");
+  await clear();
+  const due = await p.evaluate(a => {
+    const at = new Date(Date.now() + 3 * 3600 * 1000);
+    queueOutgoing({ to: "a@maplehill.example", subject: "Gmail later", bodyHtml: "<p>x</p>", from: a, sendAt: utcStamp(at) }, 0);
+    return at.getTime();
+  }, acct); await wait(300);
+  await p.evaluate(() => tickPendingSends()); await wait(300);
+  const held = await p.evaluate(() => { const m = messages.find(x => x.subject === "Gmail later"); return m && { box: messageBox(m), time: m.time, heldUntil: m.heldUntil, sendLater: m.sendLater }; });
+  same([held.box, held.time, held.sendLater], ["outbox", "Scheduled", ""], "held in Outbox as Scheduled, not handed to Gmail");
+  expect(Math.abs(held.heldUntil - due) < 2000, "until the chosen time", held);
+  same(await calls("send_mail"), [], "nothing sent yet");
+  const saved = await p.evaluate(() => JSON.parse(localStorage.getItem("mailroom-outbox")).find(r => r.subject === "Gmail later"));
+  expect(saved && saved.heldUntil > 0, "kept across a restart", saved);
+  // Open it: the hold bar says when, and offers Cancel send.
+  await p.evaluate(() => { const m = messages.find(x => x.subject === "Gmail later"); box = "outbox"; selected = m.id; render(); }); await wait(300);
+  const bar = await p.$eval("#send-hold", e => e.textContent);
+  expect(/Scheduled for .*Mailroom sends it then/.test(bar) && bar.includes("Cancel send"), "the bar says when, and how to stop it", bar);
+  // When the time comes it goes, as a plain send.
+  await p.evaluate(() => { const m = messages.find(x => x.subject === "Gmail later"); m.sendAt = Date.now() - 1000; tickPendingSends(); }); await wait(400);
+  const sent = (await calls("send_mail"))[0];
+  same(sent && [sent.subject, sent.sendAt], ["Gmail later", null], "sent at its time, with no server-side schedule");
+});
+
 // ---------------------------------------------------------------- calendar
 
 test("calendar: new repeating event, edit sends only changes, series and invites", { fake: true, tz: true }, async ({ p, calls, clear }) => {

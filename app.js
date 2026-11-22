@@ -7491,8 +7491,11 @@ function recordSent(fields) {
 function queueOutgoing(fields, delay) {
   const accountId = fromAccountId(fields && fields.from);
   if (!fields || !accountId) return null;
-  // A scheduled message goes to the server now; Microsoft holds it.
-  const wait = fields.sendAt ? 0 : (Number.isInteger(delay) && delay >= 0 && delay <= SEND_DELAY_MAX ? delay : sendDelay);
+  // A scheduled message goes to the server now; Microsoft holds it. Gmail
+  // can't, so Mailroom holds that one in its Outbox until the time (#69).
+  const heldUntil = fields.sendAt && isGoogleAccount(accountId) ? (Date.parse(fields.sendAt) || 0) : 0;
+  const wait = heldUntil ? Math.max(1, Math.ceil((heldUntil - Date.now()) / 1000))
+    : fields.sendAt ? 0 : (Number.isInteger(delay) && delay >= 0 && delay <= SEND_DELAY_MAX ? delay : sendDelay);
   const text = plainFromHtml(fields.bodyHtml);
   const person = contacts.find(c => c.email === fields.to);
   const now = Date.now();
@@ -7516,7 +7519,7 @@ function queueOutgoing(fields, delay) {
     color: "#394146",
     subject: fields.subject || "(No subject)",
     preview: text.slice(0, 90) || (fields.meeting ? describeSlot(fields.meeting) : (wait > 0 ? "Sending" : "Sent")),
-    time: wait > 0 ? delayPhrase(wait) : "Now",
+    time: heldUntil ? "Scheduled" : wait > 0 ? delayPhrase(wait) : "Now",
     date: localDateKey(todayDate()),
     attachments: fields.attachments || [],
     unread: false,
@@ -7534,7 +7537,8 @@ function queueOutgoing(fields, delay) {
     // loaded when the delay ends (#79).
     replyServerId: (() => { const o = fields.replyTo && messages.find(m => m.id === fields.replyTo); return o && serverMessage(o) && o.account === accountId ? o.id : ""; })(),
     serverDraftId: fields.serverDraftId || "",
-    sendLater: fields.sendAt || "",
+    sendLater: heldUntil ? "" : (fields.sendAt || ""),
+    heldUntil,
     importance: fields.importance || "",
     readReceipt: !!fields.readReceipt,
     followUp: Number(fields.followUp) || 0,
@@ -7567,6 +7571,13 @@ function pendingLeft(message) {
   return Math.max(0, Math.ceil((message.sendAt - Date.now()) / 1000));
 }
 
+// What a waiting message says: a countdown for the send delay, or the day
+// and time for a Gmail message Mailroom is holding (#69).
+function holdText(message, left) {
+  if (message.heldUntil) return "Scheduled for " + scheduledWhen(new Date(message.heldUntil).toISOString()) + ". Mailroom sends it then, if it is open.";
+  return "Sending in " + delayPhrase(left) + ".";
+}
+
 function pendingHoldHtml(message) {
   if (message.sendError) {
     // A failed send says why, and offers to try again or to edit it.
@@ -7576,7 +7587,7 @@ function pendingHoldHtml(message) {
     return `<p class="send-hold" id="send-hold" role="status"><span id="send-hold-text">Sending…</span></p>`;
   }
   const left = pendingLeft(message);
-  return `<p class="send-hold" id="send-hold" role="status"><span id="send-hold-text">Sending in ${delayPhrase(left)}.</span><button type="button" id="undo-send">Undo</button></p>`;
+  return `<p class="send-hold" id="send-hold" role="status"><span id="send-hold-text">${esc(holdText(message, left))}</span><button type="button" id="undo-send">${message.heldUntil ? "Cancel send" : "Undo"}</button></p>`;
 }
 
 async function retryPending(id) {
@@ -7665,6 +7676,7 @@ function rememberOutbox() {
     withoutOriginal: !!m.withoutOriginal,
     serverDraftId: m.serverDraftId || "",
     sendLater: m.sendLater || "",
+    heldUntil: Number(m.heldUntil) || 0,
     importance: m.importance || "",
     readReceipt: !!m.readReceipt,
     followUp: Number(m.followUp) || 0,
@@ -7715,6 +7727,7 @@ function restoreOutbox() {
       withoutOriginal: !!row.withoutOriginal,
       serverDraftId: row.serverDraftId || "",
       sendLater: row.sendLater || "",
+      heldUntil: Number(row.heldUntil) || 0,
       importance: row.importance || "",
       readReceipt: !!row.readReceipt,
       followUp: Number(row.followUp) || 0,
@@ -7962,9 +7975,9 @@ function tickPendingSends() {
     }
     if (message.sending || message.sendError) return;
     const left = Math.max(0, Math.ceil((message.sendAt - now) / 1000));
-    message.time = left > 0 ? delayPhrase(left) : "Sending";
+    message.time = left > 0 ? (message.heldUntil ? "Scheduled" : delayPhrase(left)) : "Sending";
     const label = document.getElementById("send-hold-text");
-    if (label && selected === message.id) label.textContent = "Sending in " + delayPhrase(left) + ".";
+    if (label && selected === message.id) label.textContent = holdText(message, left);
     const when = document.querySelector('.row[data-id="' + CSS.escape(message.id) + '"] .when');
     if (when) when.textContent = message.time;
     if (now >= message.sendAt) {
@@ -8004,7 +8017,8 @@ function undoPending(id) {
   document.body.dataset.open = "1";
   stopPendingTimerIfIdle();
   rememberOutbox();
-  toast("Send undone");
+  toast(message.heldUntil ? "Send cancelled. It is in Drafts." : "Send undone");
+  message.heldUntil = 0;
   render();
 }
 
@@ -17298,11 +17312,14 @@ function bindCompose(root, ctx) {
   }
   const laterBtn = form.querySelector("#send-later");
   if (laterBtn) laterBtn.onclick = async () => {
-    const fromPick = form.querySelector("#compose-from");
-    if (fromPick && isGoogleAccount(fromAccountId(fromPick.value))) return toast("Gmail can't hold a message to send later from Mailroom. Send it now instead.");
     const problem = recipientProblem(form);
     if (problem) { problem.field.setAttribute("aria-invalid", "true"); problem.field.focus(); return toast(problem.text); }
-    const when = await pickTime("Send later", "The message waits on Microsoft's server, so Mailroom does not need to be open. Until then it is in Outbox, where you can cancel it.", sendLaterPresets(), "Schedule");
+    // Gmail has no scheduled send, so Mailroom holds the message itself (#69).
+    const gmail = isGoogleAccount(fromAccountId(formFromValue(form)));
+    const note = gmail
+      ? "Gmail can't hold a message, so Mailroom keeps it in Outbox and sends it then. Mailroom has to be open at that time; if it isn't, the message goes when Mailroom next opens."
+      : "The message waits on Microsoft's server, so Mailroom does not need to be open. Until then it is in Outbox, where you can cancel it.";
+    const when = await pickTime("Send later", note, sendLaterPresets(), "Schedule");
     if (!when) return;
     form.dataset.sendAt = utcStamp(when);
     form.requestSubmit();
@@ -18773,7 +18790,7 @@ const folderBusy = new Set();
 let syncNote = "";
 const folderRun = new Map();
 const bodyLoads = new Set();
-const APP_VERSION = "1.6.4";
+const APP_VERSION = "1.6.5";
 let appVersion = APP_VERSION;
 
 prepareDesktopAccounts();
