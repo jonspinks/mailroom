@@ -1561,6 +1561,18 @@ test("Sweep clears a sender's mail from the folder, once or for good (#60)", { f
   same(await p.evaluate(() => sweepSource([{ email: "jon@example.com", box: "inbox", account: Object.keys(accounts)[0] }])), null, "your own messages are never swept");
 });
 
+test("sent mail carries the recipients' display names (#70)", { fake: true }, async ({ p, calls, clear }) => {
+  await p.click('.row[data-id="m1"]'); await wait(400);
+  // Ada (m1's sender) is known by name; the second address is not.
+  await clear();
+  await p.evaluate(() => {
+    const id = Object.keys(accounts)[0];
+    queueOutgoing({ to: "ADA@example.org; stranger@elsewhere.example", cc: "maya@example.org", subject: "Kiln", bodyHtml: "<p>Tuesday</p>", from: id }, 0);
+  }); await wait(600);
+  const sent = (await calls("send_mail"))[0];
+  same(sent && sent.names, { "ada@example.org": "Ada Lovelace", "maya@example.org": "Maya Chen" }, "names for the people Mailroom knows, keyed by address; none made up");
+});
+
 // ---------------------------------------------------------------- calendar
 
 test("calendar: new repeating event, edit sends only changes, series and invites", { fake: true, tz: true }, async ({ p, calls, clear }) => {
