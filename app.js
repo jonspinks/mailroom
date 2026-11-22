@@ -7594,7 +7594,7 @@ function stopPendingTimerIfIdle() {
 }
 
 function bodyForSend(message) {
-  const html = String(message && message.bodyHtml || "");
+  const html = unparkRemoteHtml(message && message.bodyHtml);
   if (!html.includes("data-sig-src")) return html;
   const doc = new DOMParser().parseFromString(html, "text/html");
   doc.querySelectorAll(".body-sig[data-sig-src]").forEach(el => {
@@ -12272,7 +12272,9 @@ const MAIL_APP_ATTRS = new Set(["data-mail-style", "data-dark-ink", "data-mark-b
 // The only data- attributes a body keeps: the ones Mailroom writes into a
 // message it is composing. The reading pane's buttons are found by their
 // data- attributes, so any other one in a letter could pass for a button.
-const MAIL_KEEP_DATA = new Set(["data-quote-start", "data-sig", "data-sig-id", "data-sig-src", "data-picture-id", "data-size"]);
+// Attributes the editor parks remote addresses in (#72); see parkRemoteHtml.
+const PARKED_ATTRS = new Set(["src", "srcset", "poster", "background", "style"]);
+const MAIL_KEEP_DATA = new Set(["data-quote-start", "data-sig", "data-sig-id", "data-sig-src", "data-picture-id", "data-size", ...[...PARKED_ATTRS].map(name => "data-mr-" + name), "data-mr-parked"]);
 const MAIL_MEDIA_ATTRS = new Set(["src", "background", "poster", "lowsrc", "dynsrc"]);
 // Outlook marks where quoted history begins with one of these ids.
 const QUOTE_MARKER_IDS = /^(x_)?(divRplyFwdMsg|appendonsend|mail-editor-reference-message-container|OLK_SRC_BODY_SECTION)$/i;
@@ -12601,6 +12603,75 @@ function stripRemoteStyle(style) {
     return "none";
   });
   return { style: next, blocked, changed: changed || blocked };
+}
+
+// ---- Remote pictures in the editor (#72) ----
+// What is in the editor is what gets sent, so a draft's remote pictures are
+// parked rather than removed: the address moves to data-mr-<attr> for as
+// long as it is on screen, and goes back before anything leaves Mailroom
+// (send, server draft). Mailroom's own signature is left alone.
+
+function parkRemoteHtml(html) {
+  if (remotePictureMode() === "always") return html;
+  const doc = new DOMParser().parseFromString("<div>" + String(html || "") + "</div>", "text/html");
+  const root = doc.body.firstElementChild;
+  root.querySelectorAll("*").forEach(el => {
+    if (el.closest(".body-sig")) return;
+    let parked = false;
+    ["src", "poster", "background"].forEach(name => {
+      if (!isRemoteUrl(el.getAttribute(name))) return;
+      el.setAttribute("data-mr-" + name, el.getAttribute(name));
+      el.removeAttribute(name);
+      parked = true;
+    });
+    const srcset = el.getAttribute("srcset");
+    if (srcset && srcset.split(",").some(part => isRemoteUrl(part.trim().split(/\s+/)[0]))) {
+      el.setAttribute("data-mr-srcset", srcset);
+      el.removeAttribute("srcset");
+      parked = true;
+    }
+    if (el.hasAttribute("style")) {
+      const stripped = stripRemoteStyle(el.getAttribute("style"));
+      if (stripped.blocked) {
+        el.setAttribute("data-mr-style", el.getAttribute("style"));
+        el.setAttribute("style", stripped.style);
+        parked = true;
+      }
+    }
+    if (parked) {
+      el.setAttribute("data-mr-parked", "");
+      if (el.tagName === "IMG") el.setAttribute("title", "Picture not loaded. It is sent as it was.");
+    }
+  });
+  return root.innerHTML;
+}
+
+// Put parked addresses back: on a node, or on HTML text.
+function unparkRemote(root) {
+  root.querySelectorAll("[data-mr-parked]").forEach(el => {
+    PARKED_ATTRS.forEach(name => {
+      const key = "data-mr-" + name;
+      if (!el.hasAttribute(key)) return;
+      el.setAttribute(name, el.getAttribute(key));
+      el.removeAttribute(key);
+    });
+    if (el.tagName === "IMG" && el.getAttribute("title") === "Picture not loaded. It is sent as it was.") el.removeAttribute("title");
+    el.removeAttribute("data-mr-parked");
+  });
+  return root;
+}
+
+function unparkRemoteHtml(html) {
+  const text = String(html || "");
+  if (!text.includes("data-mr-parked")) return text;
+  const doc = new DOMParser().parseFromString("<div>" + text + "</div>", "text/html");
+  return unparkRemote(doc.body.firstElementChild).innerHTML;
+}
+
+// A local draft may hold parked pictures from an earlier showing: restore
+// them first, so the current setting decides afresh.
+function editorHtml(html) {
+  return parkRemoteHtml(unparkRemoteHtml(htmlFor(html)));
 }
 
 function remoteMailHtml(html, allow) {
@@ -15162,7 +15233,7 @@ function bindColourButtons(form, body, changed) {
 
 function outgoingHtml(html) {
   const doc = new DOMParser().parseFromString("<div>" + String(html || "") + "</div>", "text/html");
-  const root = doc.body.firstElementChild;
+  const root = unparkRemote(doc.body.firstElementChild);
   stripThemeColours(root);
   root.querySelectorAll("[data-dark-ink], [data-mark-bg]").forEach(el => {
     el.removeAttribute("data-dark-ink");
@@ -15348,7 +15419,7 @@ function composeMarkup({ mode, title, msgId, fromId, to, cc, bcc, attachments, s
       <div class="files" id="compose-files">${fileChips(attachments)}</div>
       ${inviteMarkup(meeting, to)}
       <div class="compose-canvas">
-        <div id="compose-body" class="html-body" contenteditable="true" role="textbox" aria-multiline="true">${htmlFor(bodyHtml || "<p><br></p>")}</div>
+        <div id="compose-body" class="html-body" contenteditable="true" role="textbox" aria-multiline="true">${editorHtml(bodyHtml || "<p><br></p>")}</div>
         ${kind === "reply" && includeHistory !== false ? historyMarkup(msgId, openHistory) : ""}
       </div>
     </form>`;
@@ -15414,7 +15485,7 @@ function composeMarkup({ mode, title, msgId, fromId, to, cc, bcc, attachments, s
       <div class="field compose-message">${mode === "pane" || bare ? "" : "Message"}
         ${inlineReply ? formatBarHtml({ attach: false, assistant: false, hidden: !formatOn }) : formatBar}
         <div class="compose-canvas">
-          <div id="compose-body" class="html-body" contenteditable="true" role="textbox" aria-multiline="true">${htmlFor(bodyHtml || "<p><br></p>")}</div>
+          <div id="compose-body" class="html-body" contenteditable="true" role="textbox" aria-multiline="true">${editorHtml(bodyHtml || "<p><br></p>")}</div>
           ${kind === "reply" && includeHistory !== false ? historyMarkup(msgId, openHistory) : ""}
         </div>
       </div>
@@ -15984,7 +16055,7 @@ async function performDraftSave(ctx, fields) {
     const id = await tauriInvoke("save_draft", {
       email: acct.email,
       subject: fields.subject || "",
-      bodyHtml: fields.bodyHtml || "",
+      bodyHtml: unparkRemoteHtml(fields.bodyHtml || ""),
       to: fields.to || "",
       cc: fields.cc || "",
       bcc: fields.bcc || "",

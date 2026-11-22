@@ -1509,6 +1509,9 @@
     padding: 0;
   }
   .letter img.blocked-picture, .history-body img.blocked-picture { display: none; }
+  /* A draft's remote pictures, parked while on screen (#72). */
+  #compose-body { contain: paint; }
+  #compose-body img[data-mr-parked] { display: inline-block; min-width: 28px; min-height: 20px; outline: 1px dashed var(--line); background: var(--hover); vertical-align: middle; }
   .letter { margin-top: 18px; line-height: 20px; font-size: 15px; font-weight: 400; }
   body[data-read-size="compact"] .letter { margin-top: 12px; line-height: 19px; font-size: 14px; }
   body[data-read-size="compact"] .letter-fit p { margin-block: 0 8px; }

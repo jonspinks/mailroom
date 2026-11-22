@@ -342,6 +342,36 @@ test("a forward whose original is gone still forwards by id, or says so and wait
   same([again && again.replyTo, again && again.mode], [null, null], "Send again sends it without the original");
 });
 
+test("a draft's remote pictures are parked in the editor but sent as they were (#72)", { fake: true }, async ({ p, calls, clear }) => {
+  const tracker = "https://tracker.example/p.gif";
+  const hits = [];
+  p.on("request", req => { if (req.url().startsWith("https://tracker.example/")) hits.push(req.url()); });
+  await p.click('.row[data-id="m1"]'); await wait(400);
+  await p.click("#reply"); await wait(400);
+  await p.evaluate(src => {
+    document.querySelector("#reading #compose-form").remove();
+    replyDraft.bodyHtml = '<p>Thanks</p><blockquote><p>Quoted</p><img id="trk" src="' + src + '" width="1" height="1"><div style="background-image: url(' + src + ')">x</div></blockquote>';
+    reading.dataset.paint = ""; render();
+  }, tracker); await wait(600);
+  const shown = await p.evaluate(() => { const img = document.querySelector("#compose-body img"); const div = document.querySelector("#compose-body div[data-mr-style]"); return { src: img && img.getAttribute("src"), parked: img && img.getAttribute("data-mr-src"), style: div && div.getAttribute("style") }; });
+  same(shown.src, null, "the picture has no address while on screen");
+  same(shown.parked, tracker, "it is parked on the element");
+  expect(!/tracker/.test(shown.style || ""), "a background picture is parked too", shown.style);
+  same(hits, [], "and nothing was fetched from the tracker");
+  // Saved to the server and sent: exactly as it was.
+  await clear();
+  await p.evaluate(() => { const f = document.querySelector("#reading #compose-form"); f.querySelector("#compose-body").dispatchEvent(new Event("input", { bubbles: true })); });
+  await wait(2500);
+  const saved = (await calls("save_draft")).pop();
+  expect(!!saved, "the draft was saved to the server");
+  if (saved) expect(saved.bodyHtml.includes('src="' + tracker + '"') && !saved.bodyHtml.includes("data-mr-"), "the server draft keeps the address", saved.bodyHtml);
+  const out = await p.evaluate(() => { const f = document.querySelector("#reading #compose-form"); return bodyForSend({ bodyHtml: sentBody(f) }); });
+  expect(out.includes('src="' + tracker + '"') && out.includes("background-image") && !out.includes("data-mr-"), "the sent mail keeps every picture", out);
+  // With remote pictures always allowed, the editor shows them.
+  await p.evaluate(() => { localStorage.setItem("mailroom-remote-pictures", "always"); captureReplyDraft(); document.querySelector("#reading #compose-form").remove(); reading.dataset.paint = ""; render(); }); await wait(400);
+  same(await p.$eval("#compose-body img", e => e.getAttribute("src")), tracker, "allowed, the picture loads in the editor");
+});
+
 test("a thread shows the replies you sent, from Sent Items", { fake: true, setup: () => {
   const at = mins => new Date(Date.now() - mins * 60000).toISOString().replace(/\.\d+Z$/, "Z");
   window.__thread = [
