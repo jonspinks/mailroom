@@ -2382,7 +2382,7 @@ dependencies = [
 
 [[package]]
 name = "mailroom"
-version = "1.6.3"
+version = "1.6.4"
 dependencies = [
  "base64 0.23.1",
  "dbus-secret-service",

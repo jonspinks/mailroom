@@ -6399,6 +6399,17 @@ function typingIn(el) {
   return !!(el && (el.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName)));
 }
 
+// While you write, mail shortcuts are off (2026-11-22: typing "e" after
+// clicking a ribbon button archived the conversation being replied to).
+// They stay off for any key that lands in a compose form (its buttons,
+// chips and ribbon, not only the text fields), and for keys that land
+// nowhere in particular while a compose is open in the reading pane.
+function composingAt(el) {
+  if (el && el.closest && el.closest("#compose-form")) return true;
+  const loose = !el || el === document.body || el === document.documentElement;
+  return loose && !!document.querySelector("#reading #compose-form");
+}
+
 function currentConversation() {
   return selected ? conversationFor(selected) : null;
 }
@@ -6623,6 +6634,7 @@ document.addEventListener("keydown", (ev) => {
   }
   if (sideWindow) return;
   if (typingIn(ev.target) || ev.altKey) return;
+  if (composingAt(ev.target)) return;
   if (document.getElementById("choose-layer") || document.getElementById("discard-confirm")) return;
   if (popRoot.firstElementChild) {
     // Only the shortcuts list closes here; a compose dialog keeps its text.
@@ -17618,6 +17630,11 @@ async function undoLastMove() {
         if (move.serverKind === "junk" && from === "inbox") return moveConversation({ messages: group }, from, "notjunk");
         if (move.serverKind === "junk") pushMailAction(group, "unblock");
         if (move.serverKind === "notjunk") return moveConversation({ messages: group }, from, "junk");
+        // Gmail archives by taking the Inbox label off, so undoing it puts
+        // that back. A move "back" to a view such as Starred or Important,
+        // which isn't a label mail can be moved to, was refused ("Mail can't
+        // be moved there", 2026-11-22). Labels of your own still move back.
+        if (move.serverKind === "archive" && isGoogleAccount(group[0].account) && !String(from).startsWith("Label_")) return moveConversation({ messages: group }, from, "inbox");
         moveConversation({ messages: group }, from);
       });
     });
@@ -18756,7 +18773,7 @@ const folderBusy = new Set();
 let syncNote = "";
 const folderRun = new Map();
 const bodyLoads = new Set();
-const APP_VERSION = "1.6.3";
+const APP_VERSION = "1.6.4";
 let appVersion = APP_VERSION;
 
 prepareDesktopAccounts();
