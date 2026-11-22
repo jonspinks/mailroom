@@ -1526,6 +1526,41 @@ test("folders can be made, renamed and deleted from the folder menu; Outlook's o
   same(await names(), left, "and the list is unchanged");
 });
 
+test("Sweep clears a sender's mail from the folder, once or for good (#60)", { fake: true, setup: () => {
+  const at = days => new Date(Date.now() - days * 86400000 - 60000).toISOString().replace(/\.\d+Z$/, "Z");
+  [["news-0", 0], ["news-12", 12], ["news-20", 20]].forEach(([id, days]) => window.__inbox.push({ id, thread: "conv-" + id, subject: "Deals " + id, fromName: "Deals", fromEmail: "deals@list.example", received: at(days), preview: "Offers", bodyHtml: "<p>Offers</p>", unread: false, flagged: false, hasAttachments: false, files: [], to: [], cc: [], bcc: [], categories: [] }));
+} }, async ({ p, calls, clear, rightClick, menu }) => {
+  await p.evaluate(() => { mailSyncDays = 60; }); await wait(300);
+  const inTrash = () => p.evaluate(() => messages.filter(m => /^news-/.test(m.id) && messageBox(m) === "trash").map(m => m.id).sort());
+  await rightClick('.row[data-id="news-0"]');
+  expect((await menu()).includes("Sweep…"), "the row menu offers Sweep", await menu());
+  await p.click('#row-menu [data-act="sweep"]'); await wait(300);
+  const offered = await p.$$eval(".choose-dialog [data-choose]", e => e.map(x => x.textContent));
+  same(offered, ["Delete all 3 messages", "Delete all, and any that come later", "Keep only the latest, delete 2 messages", "Delete the 2 messages older than 10 days"], "the four sweeps, with counts");
+  expect((await p.$eval(".choose-dialog h2", e => e.textContent)).includes("deals@list.example"), "naming the sender");
+  // Older than 10 days: two go, with one Undo for both.
+  await clear();
+  await p.click('.choose-dialog [data-choose="older"]'); await wait(400);
+  same(await inTrash(), ["news-12", "news-20"], "the two old ones go to Deleted Items");
+  same((await calls("apply_mail")).filter(a => a.kind === "trash").map(a => a.messageIds.slice().sort()), [["news-12", "news-20"]], "in one server call");
+  await p.evaluate(() => undoLastMove()); await wait(400);
+  same(await inTrash(), [], "and one Undo brings both back");
+  // Keep only the latest.
+  await p.evaluate(() => { sweep(messages.find(m => m.id === "news-0")); }); await wait(300);
+  await p.click('.choose-dialog [data-choose="latest"]'); await wait(400);
+  same(await inTrash(), ["news-12", "news-20"], "keeping only the newest");
+  await p.evaluate(() => undoLastMove()); await wait(400);
+  // And future ones: an inbox rule first, then the sweep.
+  await clear();
+  await p.evaluate(() => { sweep(messages.find(m => m.id === "news-0")); }); await wait(300);
+  await p.click('.choose-dialog [data-choose="future"]'); await wait(500);
+  const rule = (await calls("save_rule"))[0];
+  same(rule && [rule.rule.from, rule.rule.delete, rule.rule.enabled], [["deals@list.example"], true, true], "a rule deletes their later mail on the server");
+  same(await inTrash(), ["news-0", "news-12", "news-20"], "and every one here goes now");
+  // Nothing to sweep from your own mail.
+  same(await p.evaluate(() => sweepSource([{ email: "jon@example.com", box: "inbox", account: Object.keys(accounts)[0] }])), null, "your own messages are never swept");
+});
+
 // ---------------------------------------------------------------- calendar
 
 test("calendar: new repeating event, edit sends only changes, series and invites", { fake: true, tz: true }, async ({ p, calls, clear }) => {

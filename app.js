@@ -9008,6 +9008,7 @@ function renderReading() {
   const restoreIcon = `<svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true"><path d="M7 5.5H4.2V2.8" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/><path d="M4.6 6a6 6 0 11.4 6.2" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>`;
   const tagIcon = `<svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true"><path d="M3.6 4.6v4.6l7 7 5.2-5.2-7-7H4.4a.8.8 0 0 0-.8.6z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><circle cx="7" cy="7.2" r="1.1" fill="currentColor"/></svg>`;
   const snoozeIcon = `<svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10.8" r="6" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M8.2 8.6h3.6l-3.6 4.2h3.6M4.4 3.6 2.8 5.2M15.6 3.6l1.6 1.6" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+  const sweepIcon = `<svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true"><path d="M13.6 2.8 9.4 9.6" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><path d="M7.2 9.2l4.4 2.6-1.9 4.6c-.2.4-.6.6-1 .4L4 14.2c-.4-.2-.5-.7-.2-1l3.4-4z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><path d="M6 13.6l1.6-1.8M8.2 15.2l1-2" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>`;
   const moveIcon = `<svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true"><path d="M2.8 5.3c0-.6.4-1 1-1h3.6l1.5 1.6h7.3c.6 0 1 .4 1 1v8c0 .6-.4 1-1 1H3.8c-.6 0-1-.4-1-1V5.3z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><path d="M7.5 11h5M10.8 8.8 13 11l-2.2 2.2" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
   const junkIcon = `<svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="6.2" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M5.6 14.4l8.8-8.8" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>`;
   const inboxIcon = `<svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true"><path d="M3 11.2h14l-1.8 4.6H4.8L3 11.2z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><path d="M10 3.2v7M7.4 7.6L10 10.2l2.6-2.6" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
@@ -9041,6 +9042,7 @@ function renderReading() {
         ${where !== "drafts" && where !== "outbox" ? icon("move-to", "Move to…", moveIcon) : ""}
         ${where !== "drafts" && where !== "outbox" && !isGoogleAccount(conv.latest.account) ? icon("categorize", "Categorize", tagIcon) : ""}
         ${where === "inbox" || where === "archive" ? icon("snooze", "Snooze", snoozeIcon) : ""}
+        ${sweepSource(conv.messages.filter(m => messageBox(m) === where)) ? icon("sweep", "Sweep…", sweepIcon) : ""}
         ${where !== "trash" ? icon("delete", "Delete", deleteIcon) : ""}
         ${conv.messages.some(canReportJunk) ? icon("report-junk", "Report junk", junkIcon) : ""}
         ${icon("flag", "Flag", flagIcon)}
@@ -9249,6 +9251,8 @@ function renderReading() {
   if (filesBtn) filesBtn.onclick = () => { const r = filesBtn.getBoundingClientRect(); showFilesMenu(r.left, r.bottom + 4, threadShown(conv)); };
   const catBtn = document.getElementById("categorize");
   if (catBtn) catBtn.onclick = () => { const r = catBtn.getBoundingClientRect(); showCategoryMenu(r.left, r.bottom + 4, conv.messages.filter(m => messageBox(m) === where)); };
+  const sweepBtn = document.getElementById("sweep");
+  if (sweepBtn) sweepBtn.onclick = () => sweep(sweepSource(conv.messages.filter(m => messageBox(m) === where)));
   const snoozeBtn = document.getElementById("snooze");
   if (snoozeBtn) snoozeBtn.onclick = () => snoozeMessages(conv.messages.filter(m => messageBox(m) === where));
   const moveTo = document.getElementById("move-to");
@@ -10787,7 +10791,8 @@ function showRowMenu(x, y, id, child) {
     <button type="button" role="menuitem" data-act="read">Mark as read</button>
     <button type="button" role="menuitem" data-act="move">Move to…</button>
     ${google ? "" : `<button type="button" role="menuitem" data-act="categorize">Categorize…</button>`}
-    <button type="button" role="menuitem" data-act="snooze">Snooze…</button>
+    <button type="button" role="menuitem" data-act="snooze">Snooze…</button>${sweepSource(targets) ? `
+    <button type="button" role="menuitem" data-act="sweep">Sweep…</button>` : ""}
     ${google ? "" : `<button type="button" role="menuitem" data-act="rule">Create rule…</button>`}${focusedInbox && !google && rowTargets(id, child).some(m => serverMessage(m) && messageBox(m) === "inbox") ? (() => {
       const to = rowTargets(id, child).every(m => focusOf(m) === "other") ? "focused" : "other";
       const label = to === "other" ? "Other" : "Focused";
@@ -10912,6 +10917,7 @@ document.getElementById("row-menu").onclick = (ev) => {
   else if (btn.dataset.act === "not-junk") notJunk(rowTargets(id, child));
   else if (btn.dataset.act === "move") showMoveDialog(rowTargets(id, child));
   else if (btn.dataset.act === "snooze") snoozeMessages(rowTargets(id, child));
+  else if (btn.dataset.act === "sweep") sweep(sweepSource(rowTargets(id, child)));
   else if (btn.dataset.act === "rule") createRuleFrom(id);
   else if (btn.dataset.act === "categorize") showCategoryMenu(Number(menu.dataset.x) || 200, Number(menu.dataset.y) || 200, rowTargets(id, child));
   else if (btn.dataset.act === "unread") markUnread(id);
@@ -17444,6 +17450,64 @@ function toast(text, action) {
 let lastMove = null;
 let undoing = false;
 
+// ---- Sweep (#60), after Outlook's ----
+// From one message: clear out a sender's mail in this folder. The deletes go
+// to Deleted Items in one step, so a single Undo brings them all back. Only
+// "and future messages" keeps going, as an inbox rule (Microsoft only:
+// Gmail filters need a scope Mailroom doesn't ask for). The other two run
+// once, which the dialog says.
+const SWEEP_DAYS = 10;
+
+function sweepable(msg) {
+  if (!msg || !msg.email || msg.draft || msg.pendingSend) return false;
+  const where = messageBox(msg);
+  if (where === "trash" || where === "sent" || where === "drafts" || where === "outbox") return false;
+  return !ownAddresses().has(String(msg.email).toLowerCase());
+}
+
+// The message a conversation is swept from: its newest one someone else sent.
+function sweepSource(list) {
+  const theirs = (list || []).filter(sweepable);
+  if (!theirs.length) return null;
+  return theirs.reduce((a, b) => (messageInstant(b) > messageInstant(a) ? b : a));
+}
+
+function sweepMail(msg) {
+  return messages.filter(m => m.account === msg.account && messageBox(m) === messageBox(msg)
+    && String(m.email || "").toLowerCase() === String(msg.email).toLowerCase() && !m.pendingSend && !m.draft);
+}
+
+async function sweep(msg) {
+  if (!sweepable(msg)) return;
+  const all = sweepMail(msg);
+  if (!all.length) return;
+  const who = msg.from && msg.from !== msg.email ? msg.from + " (" + msg.email + ")" : msg.email;
+  const where = boxLabel(messageBox(msg), msg.account);
+  const newest = all.reduce((a, b) => (messageInstant(b) > messageInstant(a) ? b : a));
+  const cutoff = Date.now() - SWEEP_DAYS * 86400000;
+  const older = all.filter(m => { const at = messageInstant(m); return at && at.getTime() < cutoff; });
+  const count = n => n + (n === 1 ? " message" : " messages");
+  const rules = !isGoogleAccount(msg.account) && serverMessage(msg);
+  const choices = [{ value: "all", label: "Delete all " + count(all.length), danger: true }];
+  if (rules) choices.push({ value: "future", label: "Delete all, and any that come later" });
+  if (all.length > 1) choices.push({ value: "latest", label: "Keep only the latest, delete " + count(all.length - 1) });
+  if (older.length) choices.push({ value: "older", label: "Delete the " + count(older.length) + " older than " + SWEEP_DAYS + " days" });
+  const pick = await chooseDialog("Sweep mail from " + who, "In " + where + ". It goes to Deleted Items, and Undo brings it back." + (rules ? " Only “any that come later” keeps going, as an inbox rule." : ""), choices);
+  if (!pick) return;
+  const doomed = pick === "latest" ? all.filter(m => m !== newest) : pick === "older" ? older : all;
+  if (pick === "future") {
+    const rule = { name: "Sweep: " + msg.email, enabled: true, from: [msg.email], subject: [], moveTo: "", markRead: false, delete: true, stop: false };
+    try {
+      await tauriInvoke("save_rule", { email: accounts[msg.account].email, rule });
+    } catch (err) {
+      return toast(String(err && err.message || err || "The rule could not be made, so nothing was swept."));
+    }
+  }
+  if (!doomed.length) return;
+  moveConversation({ messages: doomed }, "trash");
+  toastMove("Swept " + count(doomed.length) + " from " + (msg.from || msg.email) + (pick === "future" ? ", and later ones will be too" : ""));
+}
+
 function toastMove(text) {
   toast(text, lastMove ? { label: "Undo", run: undoLastMove } : null);
 }
@@ -18611,7 +18675,7 @@ const folderBusy = new Set();
 let syncNote = "";
 const folderRun = new Map();
 const bodyLoads = new Set();
-const APP_VERSION = "1.5.2";
+const APP_VERSION = "1.5.3";
 let appVersion = APP_VERSION;
 
 prepareDesktopAccounts();
