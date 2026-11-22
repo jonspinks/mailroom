@@ -54,6 +54,7 @@ compares them with this list, and opens an issue for anything new.
 | Editor (spelling) | ✅ Hunspell dictionaries, checked before send |
 | Importance, read receipt | ✅ |
 | Recipient suggestions | ✅ people you mail, plus the directory (**M**) |
+| Recipients as chips | ✅ drag between To, Cc and Bcc; Ctrl+A, Backspace and double-click to change |
 | Copilot drafting | ✅ "Help me write" with your own Claude or Grok key |
 | Copilot summarise / ask | ✅ "Ask across mail", including PDF attachments |
 | @mentions | ➖ |

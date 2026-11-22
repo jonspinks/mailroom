@@ -16621,10 +16621,301 @@ function discardServerDraft(draft) {
   tauriInvoke("discard_draft", { email: acct.email, draftId: id }).catch(() => {});
 }
 
+// To, Cc and Bcc show each finished address as a chip (1.7.1), as Outlook
+// does, and a chip drags between the three fields. The text box after the
+// chips holds only what is still being typed. The field's own `value` stays
+// the whole list ("Ann <ann@x>; bob@y; typed"), read and written as before,
+// so sending, drafts, suggestions and checks see no difference.
+const RECIPIENT_INPUTS = ["#compose-to", "#compose-cc", "#compose-bcc"];
+const NATIVE_INPUT_VALUE = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value");
+
+function recipientChipHtml(email) {
+  const name = recipientLabel(email);
+  const shown = name && name.toLowerCase() !== String(email).toLowerCase() ? name : email;
+  return `<span class="recip-token" data-email="${esc(email)}" title="${esc(email)}"><span class="recip-token-name">${esc(shown)}</span><button type="button" class="recip-token-x" tabindex="-1" aria-label="Remove ${esc(shown)}"><svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><path d="M2 2l6 6M8 2l-6 6" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg></button></span>`;
+}
+
+function paintRecipientChips(input) {
+  const box = input.parentElement;
+  box.querySelectorAll(".recip-token").forEach(el => el.remove());
+  input.insertAdjacentHTML("beforebegin", input._recips.map(recipientChipHtml).join(""));
+}
+
+function addRecipientChip(input, email, at) {
+  const key = email.toLowerCase();
+  if (input._recips.some(e => e.toLowerCase() === key)) return false;
+  if (at == null || at < 0 || at > input._recips.length) input._recips.push(email);
+  else input._recips.splice(at, 0, email);
+  return true;
+}
+
+// Turns the finished addresses at the start of what was typed into chips:
+// each one followed by ; or , and, once the field is left, the last one too.
+// What is left (an unfinished or mistyped address) stays as typed.
+function absorbTypedRecipients(input, final) {
+  const raw = NATIVE_INPUT_VALUE.get.call(input);
+  const parts = addressParts(raw);
+  let pos = 0, took = 0;
+  for (let i = 0; i < parts.length; i++) {
+    const at = raw.indexOf(parts[i], pos);
+    if (at < 0) break;
+    let end = at + parts[i].length;
+    const sep = raw.slice(end).match(/^\s*[;,]\s*/);
+    if (!sep && !(final && i === parts.length - 1)) break;
+    const email = addressEmail(parts[i]);
+    if (!ADDRESS_SHAPE.test(email)) break;
+    addRecipientChip(input, email);
+    pos = end + (sep ? sep[0].length : 0);
+    took += 1;
+  }
+  if (!took) return false;
+  NATIVE_INPUT_VALUE.set.call(input, raw.slice(pos).replace(/^\s+/, ""));
+  paintRecipientChips(input);
+  return true;
+}
+
+function makeRecipientField(input) {
+  const box = document.createElement("div");
+  box.className = "recip-box";
+  input.before(box);
+  box.appendChild(input);
+  input._recips = [];
+  Object.defineProperty(input, "value", {
+    configurable: true,
+    get() {
+      const typed = NATIVE_INPUT_VALUE.get.call(this);
+      const list = recipientFieldValue(this._recips.join("; "));
+      return list ? list + "; " + typed : typed;
+    },
+    set(next) {
+      // Anything set from code is a finished list: every whole address
+      // becomes a chip, and the rest is left as typed text to be fixed.
+      this._recips = [];
+      const left = [];
+      addressParts(String(next == null ? "" : next)).forEach(part => {
+        const email = addressEmail(part);
+        if (left.length || !ADDRESS_SHAPE.test(email)) left.push(part);
+        else addRecipientChip(this, email);
+      });
+      NATIVE_INPUT_VALUE.set.call(this, left.join("; "));
+      paintRecipientChips(this);
+    }
+  });
+  input.value = NATIVE_INPUT_VALUE.get.call(input);
+}
+
+function bindRecipientChips(form) {
+  const inputs = RECIPIENT_INPUTS.map(sel => form.querySelector(sel)).filter(Boolean);
+  if (!inputs.length || inputs[0]._recips) return;
+  inputs.forEach(makeRecipientField);
+  const changed = input => input.dispatchEvent(new Event("input", { bubbles: true }));
+  inputs.forEach(input => {
+    const box = input.parentElement;
+    // Registered before the suggestions, so they only see the typed part.
+    input.addEventListener("input", ev => {
+      if (!ev.isTrusted) return;
+      const typed = NATIVE_INPUT_VALUE.get.call(input);
+      if (/[;,]/.test(typed)) absorbTypedRecipients(input, false);
+      else if (/^\s/.test(typed)) NATIVE_INPUT_VALUE.set.call(input, typed.replace(/^\s+/, ""));
+    });
+    input.addEventListener("blur", () => {
+      // A suggestion being clicked takes the typed text itself.
+      setTimeout(() => { if (document.activeElement !== input && absorbTypedRecipients(input, true)) changed(input); }, 200);
+    });
+    // Ctrl+A takes the chips too, as in Outlook: typing, Backspace, Delete
+    // or Cut then replaces the lot, and Copy copies the lot.
+    const unpick = () => box.classList.remove("all-picked");
+    const dropPicked = () => {
+      if (!box.classList.contains("all-picked")) return false;
+      unpick();
+      if (!input._recips.length) return false;
+      input._recips = [];
+      paintRecipientChips(input);
+      return true;
+    };
+    input.addEventListener("keydown", ev => {
+      if ((ev.ctrlKey || ev.metaKey) && !ev.altKey && ev.key.toLowerCase() === "a") {
+        if (input._recips.length) box.classList.add("all-picked");
+        return;
+      }
+      if (!box.classList.contains("all-picked")) return;
+      const typing = ev.key.length === 1 && !ev.ctrlKey && !ev.metaKey && !ev.altKey;
+      if (typing || ev.key === "Backspace" || ev.key === "Delete") {
+        if (input.selectionStart === 0 && input.selectionEnd === NATIVE_INPUT_VALUE.get.call(input).length) {
+          if (dropPicked() && !typing) { ev.preventDefault(); NATIVE_INPUT_VALUE.set.call(input, ""); changed(input); }
+        } else unpick();
+      } else if (!["Control", "Meta", "Shift", "c", "C", "x", "X"].includes(ev.key)) unpick();
+    }, true);
+    input.addEventListener("input", () => unpick());
+    ["blur", "mousedown"].forEach(name => input.addEventListener(name, unpick));
+    input.addEventListener("copy", ev => {
+      if (!box.classList.contains("all-picked")) return;
+      ev.preventDefault();
+      ev.clipboardData.setData("text/plain", input.value.replace(/;\s*$/, ""));
+    });
+    input.addEventListener("cut", ev => {
+      if (!box.classList.contains("all-picked")) return;
+      ev.preventDefault();
+      ev.clipboardData.setData("text/plain", input.value.replace(/;\s*$/, ""));
+      dropPicked();
+      NATIVE_INPUT_VALUE.set.call(input, "");
+      changed(input);
+    });
+    // Backspace at the start of the box takes the last chip back as text.
+    input.addEventListener("keydown", ev => {
+      if (ev.defaultPrevented || ev.key !== "Backspace" || !input._recips.length || input.selectionStart !== 0 || input.selectionEnd !== 0) return;
+      ev.preventDefault();
+      const email = input._recips.pop();
+      const typed = NATIVE_INPUT_VALUE.get.call(input);
+      NATIVE_INPUT_VALUE.set.call(input, email + (typed ? "; " + typed : ""));
+      paintRecipientChips(input);
+      input.setSelectionRange(email.length, email.length);
+      changed(input);
+    });
+    box.addEventListener("click", ev => {
+      const x = ev.target.closest(".recip-token-x");
+      if (x) {
+        ev.preventDefault();
+        const email = x.closest(".recip-token").dataset.email;
+        input._recips = input._recips.filter(e => e !== email);
+        paintRecipientChips(input);
+        changed(input);
+        input.focus();
+        return;
+      }
+      if (ev.target === box) input.focus();
+    });
+    // Double-clicking a chip puts its address back into the text to change.
+    box.addEventListener("dblclick", ev => {
+      const chip = ev.target.closest(".recip-token");
+      if (!chip) return;
+      const email = chip.dataset.email;
+      input._recips = input._recips.filter(e => e !== email);
+      const typed = NATIVE_INPUT_VALUE.get.call(input);
+      NATIVE_INPUT_VALUE.set.call(input, typed ? typed + "; " + email : email);
+      paintRecipientChips(input);
+      input.focus();
+      changed(input);
+    });
+  });
+
+  // Dragging a chip. Cc and Bcc open while it moves so either can take it,
+  // and close again afterwards if they are still empty.
+  let drag = null;
+  const fieldOf = input => input.closest("#to-field, #cc-field, #bcc-field, .pop-row");
+  const buttonFor = { "#compose-cc": "#show-cc", "#compose-bcc": "#show-bcc" };
+  const clearMarks = () => {
+    form.querySelectorAll(".recip-box.drop-into").forEach(el => el.classList.remove("drop-into"));
+    form.querySelectorAll(".recip-token.drop-before, .recip-token.drop-after").forEach(el => el.classList.remove("drop-before", "drop-after"));
+  };
+  function openShut(start) {
+    inputs.slice(1).forEach(input => {
+      const field = fieldOf(input);
+      const sel = "#" + input.id;
+      const button = form.querySelector(buttonFor[sel]);
+      if (start) {
+        if (!field || !field.hidden) return;
+        field.hidden = false;
+        field.dataset.dragOpened = "1";
+        if (button) button.hidden = true;
+      } else if (field && field.dataset.dragOpened) {
+        delete field.dataset.dragOpened;
+        if (input._recips.length || NATIVE_INPUT_VALUE.get.call(input).trim()) return;
+        field.hidden = true;
+        if (button) button.hidden = false;
+      }
+    });
+  }
+  function target(ev) {
+    const hit = document.elementFromPoint(ev.clientX, ev.clientY);
+    const field = hit && hit.closest ? hit.closest("#to-field, #cc-field, #bcc-field, .pop-row") : null;
+    const input = field && inputs.find(i => field.contains(i));
+    if (!input) return null;
+    let at = input._recips.length, mark = null, before = false;
+    const chips = [...input.parentElement.querySelectorAll(".recip-token")];
+    for (let i = 0; i < chips.length; i++) {
+      const r = chips[i].getBoundingClientRect();
+      if (ev.clientY < r.top || ev.clientY > r.bottom) continue;
+      if (ev.clientX < r.left + r.width / 2) { at = i; mark = chips[i]; before = true; break; }
+      if (ev.clientX <= r.right) { at = i + 1; mark = chips[i]; break; }
+    }
+    return { input, at, mark, before };
+  }
+  function move(ev) {
+    if (!drag) return;
+    if (!drag.moved) {
+      if (Math.hypot(ev.clientX - drag.x, ev.clientY - drag.y) < 4) return;
+      drag.moved = true;
+      drag.chip.classList.add("is-dragging");
+      document.body.classList.add("is-recip-drag");
+      drag.ghost = drag.chip.cloneNode(true);
+      drag.ghost.classList.remove("is-dragging");
+      drag.ghost.classList.add("recip-ghost");
+      document.body.appendChild(drag.ghost);
+      openShut(true);
+    }
+    drag.ghost.style.transform = `translate(${ev.clientX + 8}px, ${ev.clientY + 6}px)`;
+    clearMarks();
+    drag.over = target(ev);
+    if (!drag.over) return;
+    drag.over.input.parentElement.classList.add("drop-into");
+    if (drag.over.mark) drag.over.mark.classList.add(drag.over.before ? "drop-before" : "drop-after");
+  }
+  function end(commit) {
+    const d = drag;
+    if (!d) return;
+    drag = null;
+    document.removeEventListener("pointermove", move);
+    document.removeEventListener("pointerup", up);
+    document.removeEventListener("pointercancel", cancel);
+    window.removeEventListener("blur", cancel);
+    clearMarks();
+    if (!d.moved) return;
+    d.chip.classList.remove("is-dragging");
+    document.body.classList.remove("is-recip-drag");
+    if (d.ghost) d.ghost.remove();
+    if (commit && d.over) {
+      const { input, at } = d.over;
+      const from = d.input._recips.indexOf(d.email);
+      if (from >= 0) {
+        d.input._recips.splice(from, 1);
+        // Moving along its own field: the gap it left shifts the rest.
+        const place = input === d.input && at > from ? at - 1 : at;
+        if (!addRecipientChip(input, d.email, place) && input === d.input) d.input._recips.splice(from, 0, d.email);
+        paintRecipientChips(d.input);
+        if (input !== d.input) paintRecipientChips(input);
+        changed(d.input);
+        if (input !== d.input) changed(input);
+      }
+    }
+    openShut(false);
+    // The pointer comes up over a label: don't let its click steal focus.
+    const swallow = e => { e.preventDefault(); e.stopPropagation(); };
+    form.addEventListener("click", swallow, { capture: true, once: true });
+    setTimeout(() => form.removeEventListener("click", swallow, { capture: true }), 0);
+  }
+  const up = () => end(true);
+  const cancel = () => end(false);
+  form.addEventListener("pointerdown", ev => {
+    const chip = ev.target.closest(".recip-token");
+    if (!chip || ev.button !== 0 || ev.target.closest(".recip-token-x") || drag) return;
+    const input = inputs.find(i => i.parentElement.contains(chip));
+    if (!input) return;
+    ev.preventDefault();
+    drag = { chip, input, email: chip.dataset.email, x: ev.clientX, y: ev.clientY, moved: false, over: null, ghost: null };
+    document.addEventListener("pointermove", move);
+    document.addEventListener("pointerup", up);
+    document.addEventListener("pointercancel", cancel);
+    window.addEventListener("blur", cancel);
+  });
+  form.addEventListener("keydown", ev => { if (drag && ev.key === "Escape") { ev.stopPropagation(); end(false); } }, true);
+}
+
 function bindCompose(root, ctx) {
   const form = root.querySelector("#compose-form");
   const fromSelect = form.querySelector("#compose-from");
   const toInput = form.querySelector("#compose-to");
+  bindRecipientChips(form);
   const subjectInput = form.querySelector("#compose-subject");
   const body = form.querySelector("#compose-body");
   function chosenFrom() {
@@ -19050,7 +19341,7 @@ const folderBusy = new Set();
 let syncNote = "";
 const folderRun = new Map();
 const bodyLoads = new Set();
-const APP_VERSION = "1.7.0";
+const APP_VERSION = "1.7.1";
 let appVersion = APP_VERSION;
 
 prepareDesktopAccounts();
