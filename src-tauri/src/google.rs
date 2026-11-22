@@ -1931,7 +1931,11 @@ fn kept_files(files: Vec<LiveFile>, keep: Option<&[String]>) -> Vec<LiveFile> {
 
 /// The original's files a forward keeps: all of them, or those named.
 fn forwarded_files(client: &reqwest::blocking::Client, token: &str, reply_to: &str, keep: Option<&[String]>) -> Result<Vec<Attachment>, String> {
-    let value = full_message(client, token, reply_to)?;
+    // Gone (404) is said so the page can offer to send without the files;
+    // anything else may pass, so it stays a plain "try again" (#79).
+    let value = call(client, token, "GET", &format!("{GMAIL}/messages/{}?format=full", seg(reply_to)), None).map_err(|(status, _)| {
+        if status == 404 { crate::compose::ORIGINAL_GONE.to_string() } else { FORWARD_FILES_FAILED.to_string() }
+    })?;
     let mut bodies = Bodies::default();
     walk(&value["payload"], &mut bodies, 0);
     let mut out = Vec::new();
@@ -2011,7 +2015,7 @@ pub fn send(
     // failed fetch stops the send: better than a forward missing its files.
     let wants_files = mode == Mode::Forward && !reply_to.trim().is_empty() && keep_files.is_none_or(|keep| !keep.is_empty());
     let mut attached = if wants_files {
-        forwarded_files(&client, &token, reply_to, keep_files).map_err(|_| FORWARD_FILES_FAILED.to_string())?
+        forwarded_files(&client, &token, reply_to, keep_files).map_err(|err| if err == crate::compose::ORIGINAL_GONE { err } else { FORWARD_FILES_FAILED.to_string() })?
     } else {
         Vec::new()
     };

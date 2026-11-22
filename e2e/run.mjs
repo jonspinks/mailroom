@@ -314,6 +314,34 @@ test("a send that may have gone through is held, never resent on its own (#78)",
   expect(row && row.sendStarted > 0, "the in-flight mark is saved before the call", row);
 });
 
+test("a forward whose original is gone still forwards by id, or says so and waits (#79)", { fake: true }, async ({ p, calls, clear }) => {
+  await clear();
+  // Forward m3 (with files), queue it, then the original leaves the loaded mail.
+  const queued = await p.evaluate(() => {
+    const m3 = messages.find(m => m.id === "m3");
+    queueOutgoing({ to: "a@maplehill.example", subject: "FW: Site plans", bodyHtml: "<p>see below</p>", replyTo: "m3", replyMode: "forward", attachments: ["plan.pdf"], from: m3.account }, 60);
+    messages.splice(messages.findIndex(m => m.id === "m3"), 1);
+    const out = messages.find(m => m.pendingSend);
+    out.sendAt = 0;
+    return out && { id: out.id, server: out.replyServerId };
+  });
+  same(queued && queued.server, "m3", "the original's server id is kept with the queued forward");
+  // The server says the original is gone: it waits, and says so.
+  await p.evaluate(() => { window.__sendError = "The original has been moved or deleted, so its attachments could not be forwarded. The message is still in Outbox: Send again sends it without them, or Edit it to attach them yourself."; });
+  await p.evaluate(() => tickPendingSends()); await wait(300);
+  const first = (await calls("send_mail"))[0];
+  same([first.replyTo, first.mode, first.keepFiles], ["m3", "forward", ["plan.pdf"]], "sent by id, so the server forwards it with its files");
+  const held = await p.evaluate(id => messages.find(x => x.id === id).sendError, queued.id);
+  expect(/^The original has been moved or deleted/.test(held), "held with the reason", held);
+  await clear();
+  // Send again sends it as a new message, without the original.
+  await clear();
+  await p.evaluate(id => { window.__sendError = null; retryPending(id); }, queued.id); await wait(300);
+  await p.evaluate(() => tickPendingSends()); await wait(300);
+  const again = (await calls("send_mail"))[0];
+  same([again && again.replyTo, again && again.mode], [null, null], "Send again sends it without the original");
+});
+
 test("a thread shows the replies you sent, from Sent Items", { fake: true, setup: () => {
   const at = mins => new Date(Date.now() - mins * 60000).toISOString().replace(/\.\d+Z$/, "Z");
   window.__thread = [

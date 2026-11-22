@@ -7504,6 +7504,10 @@ function queueOutgoing(fields, delay) {
     draftHtml: fields.draftHtml || fields.bodyHtml || "",
     replyTo: fields.replyTo || "",
     replyMode: fields.replyMode || "",
+    // The original's id on the server, kept so the send can still thread
+    // (and a forward still carry its files) if the original is no longer
+    // loaded when the delay ends (#79).
+    replyServerId: (() => { const o = fields.replyTo && messages.find(m => m.id === fields.replyTo); return o && serverMessage(o) && o.account === accountId ? o.id : ""; })(),
     serverDraftId: fields.serverDraftId || "",
     sendLater: fields.sendAt || "",
     importance: fields.importance || "",
@@ -7562,6 +7566,9 @@ async function retryPending(id) {
     toast(SEND_AGAIN);
     return;
   }
+  // The original has gone: sending again means sending it without the
+  // original's files, as the message said.
+  if (originalGone(message.sendError)) message.withoutOriginal = true;
   message.sendError = "";
   message.sendAt = Date.now();
   message.time = "Sending";
@@ -7629,6 +7636,8 @@ function rememberOutbox() {
     attachments: m.attachments || [],
     replyTo: m.replyTo || "",
     replyMode: m.replyMode || "",
+    replyServerId: m.replyServerId || "",
+    withoutOriginal: !!m.withoutOriginal,
     serverDraftId: m.serverDraftId || "",
     sendLater: m.sendLater || "",
     importance: m.importance || "",
@@ -7677,6 +7686,8 @@ function restoreOutbox() {
       attachments: Array.isArray(row.attachments) ? row.attachments : [],
       replyTo: row.replyTo || "",
       replyMode: row.replyMode || "",
+      replyServerId: row.replyServerId || "",
+      withoutOriginal: !!row.withoutOriginal,
       serverDraftId: row.serverDraftId || "",
       sendLater: row.sendLater || "",
       importance: row.importance || "",
@@ -7749,6 +7760,10 @@ const forwardFilesUnknown = new Set();
 
 const CLOSED_MID_SEND = "Mailroom closed while this was sending, so it may have been sent. Look in Sent before sending it again.";
 
+function originalGone(text) {
+  return /^The original has been moved or deleted/.test(String(text || ""));
+}
+
 function maybeSent(text) {
   return /may have been sent/.test(String(text || ""));
 }
@@ -7782,7 +7797,12 @@ function deliverPending(message) {
     if (undoBtn) undoBtn.hidden = true;
   }
   const original = message.replyTo ? messages.find(m => m.id === message.replyTo) : null;
-  const threaded = !!(original && serverMessage(original) && original.account === message.account);
+  const loaded = !!(original && serverMessage(original) && original.account === message.account);
+  // Not loaded (deleted here, or another folder): the server still knows it
+  // by its id, and does the reply or forward with its files (#79). After
+  // "the original is gone", Send again sends it as a new message.
+  const originalId = message.withoutOriginal ? "" : (loaded ? original.id : (message.replyServerId || ""));
+  const threaded = !!originalId;
   const mode = threaded ? (message.replyMode || "reply") : "";
   tauriInvoke("send_mail", {
     email: acct.email,
@@ -7792,7 +7812,7 @@ function deliverPending(message) {
     cc: message.cc || "",
     bcc: message.bcc || "",
     draftId: message.serverDraftId || null,
-    replyTo: threaded ? original.id : null,
+    replyTo: threaded ? originalId : null,
     mode: mode || null,
     keepFiles: mode === "forward" && !(original && forwardFilesUnknown.has(original.id) && !(message.attachments || []).length) ? (message.attachments || []) : null,
     files: message.files || [],
@@ -9991,6 +10011,7 @@ function followMovedIds(moved) {
       if (m.id === from) m.id = to;
       // A reply or forward waiting to go still answers the moved message.
       if (m.replyTo === from) m.replyTo = to;
+      if (m.replyServerId === from) m.replyServerId = to;
     });
     [replyDraft, paneCompose].forEach(draft => { if (draft && draft.msgId === from) draft.msgId = to; });
     document.querySelectorAll("[data-msg]").forEach(el => { if (el.dataset.msg === from) el.dataset.msg = to; });
