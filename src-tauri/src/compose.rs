@@ -641,11 +641,14 @@ pub fn respond(email: &str, event_id: &str, response: &str, comment: &str) -> Re
 }
 
 // ---- Scheduled sends (#68) ----
-// Send later sets PidTagDeferredSendTime (0x3FEF) and sends; Exchange then
-// holds the message in the Outbox until that time. Listing the Outbox for
-// items carrying it shows what is waiting; cancelling copies one back to
-// Drafts (an unsubmitted copy, which never sends on its own) and deletes
-// the held one, which stops the send.
+// Send later sets PidTagDeferredSendTime (0x3FEF) and sends. Exchange Online
+// keeps the message in Drafts until then, as Outlook on the web shows it;
+// older Exchange kept it in the Outbox, so both are read. What marks it as
+// waiting to go, rather than a draft that happens to carry a time, is the
+// submit flag (MSGFLAG_SUBMIT, 0x4) in PidTagMessageFlags (0x0E07): checked
+// live on 2026-11-22, a scheduled draft had flags 1037, a plain one 1033.
+// Cancelling copies it back to Drafts, which makes an ordinary draft, and
+// deletes the held one, which stops the send.
 
 #[derive(Clone, Debug, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -658,15 +661,28 @@ pub struct Scheduled {
 }
 
 const DEFERRED: &str = "SystemTime 0x3FEF";
+const MESSAGE_FLAGS: &str = "Integer 0x0E07";
+const MSGFLAG_SUBMIT: i64 = 0x4;
 
-/// The scheduled messages in an Outbox listing, soonest first.
+fn extended<'a>(item: &'a Value, id: &str) -> Option<&'a str> {
+    let id = id.to_ascii_lowercase().replace("0x0e07", "0xe07");
+    item["singleValueExtendedProperties"].as_array()?.iter()
+        .find(|p| p["id"].as_str().is_some_and(|k| k.to_ascii_lowercase().replace("0x0e07", "0xe07") == id))
+        .and_then(|p| p["value"].as_str())
+}
+
+fn submitted(item: &Value) -> bool {
+    extended(item, MESSAGE_FLAGS).and_then(|v| v.trim().parse::<i64>().ok()).is_some_and(|flags| flags & MSGFLAG_SUBMIT != 0)
+}
+
+/// The scheduled messages in a folder listing, soonest first.
 fn scheduled_from(listing: &Value) -> Vec<Scheduled> {
     let mut out: Vec<Scheduled> = listing["value"].as_array().into_iter().flatten().filter_map(|item| {
         let id = item["id"].as_str()?.to_string();
-        let send_at = item["singleValueExtendedProperties"].as_array()?.iter()
-            .find(|p| p["id"].as_str().is_some_and(|k| k.eq_ignore_ascii_case(DEFERRED)))
-            .and_then(|p| p["value"].as_str())?
-            .to_string();
+        let send_at = extended(item, DEFERRED)?.to_string();
+        if !submitted(item) {
+            return None;
+        }
         let to = item["toRecipients"].as_array().into_iter().flatten()
             .filter_map(|r| r["emailAddress"]["address"].as_str().map(String::from))
             .collect();
@@ -676,21 +692,31 @@ fn scheduled_from(listing: &Value) -> Vec<Scheduled> {
     out
 }
 
+fn flags_expand() -> String {
+    graph::path_segment(&format!("singleValueExtendedProperties($filter=id eq '{DEFERRED}' or id eq '{MESSAGE_FLAGS}')"))
+}
+
 pub fn scheduled_sends(email: &str) -> Result<Vec<Scheduled>, String> {
     let token = auth::access_token_for(email)?;
     let client = graph::http_client()?;
-    let expand = graph::path_segment(&format!("singleValueExtendedProperties($filter=id eq '{DEFERRED}')"));
-    let url = format!("{ME}/mailFolders/outbox/messages?$select=id,subject,toRecipients&$expand={expand}&$top=50");
-    let listing = call(&client, &token, "GET", &url, None).map_err(|f| match f.status {
+    let refused = |f: Failure| match f.status {
         401 | 403 => "Sign in again to see scheduled mail.".to_string(),
         _ => "Microsoft did not list the scheduled mail.".to_string(),
-    })?;
-    Ok(scheduled_from(&listing))
+    };
+    let mut out = Vec::new();
+    for folder in ["drafts", "outbox"] {
+        let url = format!("{ME}/mailFolders/{folder}/messages?$select=id,subject,toRecipients&$expand={}&$top=100", flags_expand());
+        out.extend(scheduled_from(&call(&client, &token, "GET", &url, None).map_err(refused)?));
+    }
+    out.sort_by(|a, b| a.send_at.cmp(&b.send_at));
+    Ok(out)
 }
 
 /// Stop a scheduled send and keep the message as a draft. Returns the
-/// draft's id. If the held message has already gone (sent), the copy is
-/// removed again and that is said.
+/// draft's id. The copy is checked before the held message goes: if it is
+/// marked as submitted too, it is removed and nothing is cancelled, rather
+/// than leave two copies that could both send. If the held message has
+/// already gone (sent), the copy is removed again and that is said.
 pub fn cancel_scheduled(email: &str, id: &str) -> Result<String, String> {
     let id = id.trim();
     if id.is_empty() {
@@ -699,9 +725,15 @@ pub fn cancel_scheduled(email: &str, id: &str) -> Result<String, String> {
     let token = auth::access_token_for(email)?;
     let client = graph::http_client()?;
     let gone = || "It has already been sent.".to_string();
+    let not_kept = || "Microsoft did not keep a copy, so the send was not cancelled.".to_string();
     let copy = call(&client, &token, "POST", &format!("{}/copy", message_url(id)), Some(&json!({ "destinationId": "drafts" })))
-        .map_err(|f| if f.gone() { gone() } else { "Microsoft did not keep a copy, so the send was not cancelled.".to_string() })?;
-    let draft = copy["id"].as_str().map(String::from).ok_or_else(|| "Microsoft did not keep a copy, so the send was not cancelled.".to_string())?;
+        .map_err(|f| if f.gone() { gone() } else { not_kept() })?;
+    let draft = copy["id"].as_str().map(String::from).ok_or_else(not_kept)?;
+    let checked = call(&client, &token, "GET", &format!("{}?$select=id&$expand={}", message_url(&draft), flags_expand()), None);
+    if !matches!(checked, Ok(ref item) if !submitted(item)) {
+        let _ = call(&client, &token, "DELETE", &message_url(&draft), None);
+        return Err("Microsoft's copy would have been sent as well, so the send was not cancelled. It is still scheduled.".into());
+    }
     match call(&client, &token, "DELETE", &message_url(id), None) {
         Ok(_) => Ok(draft),
         Err(failure) => {
@@ -787,15 +819,17 @@ mod tests {
     }
 
     #[test]
-    fn the_outbox_lists_only_scheduled_messages_soonest_first() {
+    fn only_submitted_drafts_with_a_send_time_are_scheduled() {
+        // As Exchange Online returned them on 2026-11-22.
         let listing = json!({ "value": [
             { "id": "late", "subject": "Report", "toRecipients": [{ "emailAddress": { "address": "a@x.example" } }],
-              "singleValueExtendedProperties": [{ "id": "SystemTime 0x3fef", "value": "2026-12-01T08:00:00Z" }] },
-            { "id": "now", "subject": "Stuck", "toRecipients": [] },
-            { "id": "soon", "subject": "Hi", "singleValueExtendedProperties": [{ "id": "SystemTime 0x3FEF", "value": "2026-11-23T08:00:00Z" }] }
+              "singleValueExtendedProperties": [{ "id": "SystemTime 0x3fef", "value": "2026-12-01T08:00:00Z" }, { "id": "Integer 0xe07", "value": "1037" }] },
+            { "id": "plain", "subject": "Draft", "singleValueExtendedProperties": [{ "id": "Integer 0xe07", "value": "1033" }] },
+            { "id": "copy", "subject": "Cancelled", "singleValueExtendedProperties": [{ "id": "SystemTime 0x3fef", "value": "2026-11-30T08:00:00Z" }, { "id": "Integer 0xe07", "value": "1033" }] },
+            { "id": "soon", "subject": "Hi", "singleValueExtendedProperties": [{ "id": "SystemTime 0x3FEF", "value": "2026-11-23T08:00:00Z" }, { "id": "Integer 0x0E07", "value": "1037" }] }
         ]});
         let got = scheduled_from(&listing);
-        assert_eq!(got.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), vec!["soon", "late"], "the unscheduled one is left out");
+        assert_eq!(got.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), vec!["soon", "late"], "a plain draft, and a cancelled copy that still carries a time, are left out");
         assert_eq!(got[1].to, vec!["a@x.example"]);
         assert_eq!(got[1].send_at, "2026-12-01T08:00:00Z");
     }

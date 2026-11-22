@@ -3672,6 +3672,37 @@ test("Work week on a Sunday shows the week ahead; events only share width where 
   same(laid, [["zoom", 0, 1], ["a", 0, 2], ["b", 1, 2], ["c", 0, 1]], "only the clashing pair goes side by side");
 });
 
+test("Send later: one Monday-morning choice on a Sunday, and names on one line", { fake: true, tz: true }, async ({ p }) => {
+  const presets = when => p.evaluate(w => {
+    const Real = Date;
+    const fixed = Real.parse(w);
+    window.Date = class extends Real { constructor(...a) { super(...(a.length ? a : [fixed])); } static now() { return fixed; } };
+    try { return sendLaterPresets().map(x => x.label); } finally { window.Date = Real; }
+  }, when);
+  same(await presets("2026-11-22T10:00:00"), ["Tomorrow morning"], "Sunday: tomorrow morning is Monday morning, offered once");
+  same(await presets("2026-11-25T10:00:00"), ["Tomorrow morning", "Monday morning"], "a Wednesday: both");
+  await p.setViewport({ width: 560, height: 800 });
+  // A wide monospace theme font, as in the report, where the name wrapped.
+  await p.addStyleTag({ content: ".choose-dialog, .choose-dialog * { font-family: monospace !important; font-size: 18px !important; }" });
+  await p.evaluate(() => { pickTime("Send later", "The message waits on Microsoft's server, so Mailroom does not need to be open. Until then it is in Outbox, where you can cancel it.", [{ label: "Tomorrow morning", when: new Date(2026, 10, 24, 8) }, { label: "Monday morning", when: new Date(2026, 10, 30, 8) }], "Schedule"); }); await wait(300);
+  const lines = await p.$$eval(".time-preset span", els => els.map(e => e.getBoundingClientRect().height > parseFloat(getComputedStyle(e).fontSize) * 1.8 ? 2 : 1));
+  same(lines, [1, 1], "each choice's name on one line");
+  await p.keyboard.press("Escape");
+});
+
+test("hidden calendars stay hidden after a restart", { fake: true }, async ({ p }) => {
+  await p.evaluate(() => setView("calendar")); await wait(800);
+  const hidden = () => p.evaluate(() => [...hiddenCal]);
+  same(await hidden(), [], "nothing hidden to start with");
+  await p.evaluate(() => { hiddenCal.add("AAMkCal1"); render(); }); await wait(200);
+  same(JSON.parse(await p.evaluate(() => localStorage.getItem("mailroom-hidden-calendars"))), ["AAMkCal1"], "saved as it is hidden");
+  await p.reload(); await wait(1500);
+  same(await hidden(), ["AAMkCal1"], "still hidden after a restart");
+  await p.evaluate(() => { hiddenCal.delete("AAMkCal1"); }); await wait(100);
+  await p.reload(); await wait(1500);
+  same(await hidden(), [], "and shown again once turned back on");
+});
+
 // ---------------------------------------------------------------- runner
 
 const { server, url } = await serve();
