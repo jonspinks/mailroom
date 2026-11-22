@@ -1,3 +1,26 @@
+// Settings read on every paint (#77): kept in memory, and forgotten whenever
+// anything writes local storage here, or another Mailroom window does
+// (the storage event), so a change is never missed.
+const storedMemo = new Map();
+function storedItem(key) {
+  if (!storedMemo.has(key)) {
+    let value = null;
+    try { value = localStorage.getItem(key); } catch (e) {}
+    storedMemo.set(key, value);
+  }
+  return storedMemo.get(key);
+}
+(() => {
+  try {
+    const proto = Storage.prototype;
+    const set = proto.setItem, remove = proto.removeItem, clear = proto.clear;
+    proto.setItem = function (key, value) { storedMemo.delete(String(key)); return set.call(this, key, value); };
+    proto.removeItem = function (key) { storedMemo.delete(String(key)); return remove.call(this, key); };
+    proto.clear = function () { storedMemo.clear(); return clear.call(this); };
+  } catch (e) {}
+  window.addEventListener("storage", ev => { if (ev.key == null) storedMemo.clear(); else storedMemo.delete(ev.key); });
+})();
+
 const accounts = {
   timberworks: {
     name: "Timberworks",
@@ -5943,7 +5966,7 @@ function checkReminders() {
 // conversation or under its subject. Until it is due only the mail on hand
 // is looked at; when due, the server is searched before reminding.
 function loadFollowUps() {
-  try { const list = JSON.parse(localStorage.getItem("mailroom-followups") || "[]"); return Array.isArray(list) ? list.filter(item => item && item.id && Array.isArray(item.to)) : []; } catch (e) { return []; }
+  try { const list = JSON.parse(storedItem("mailroom-followups") || "[]"); return Array.isArray(list) ? list.filter(item => item && item.id && Array.isArray(item.to)) : []; } catch (e) { return []; }
 }
 
 function saveFollowUps(list) {
@@ -9826,7 +9849,7 @@ function ensureInlineImages(m) {
       kept.push({ id: String(img.id || ""), name: String(img.name || "image"), contentId: id, inline: !!img.inline, url });
     });
     inlineImagesFor.set(m.id, { byCid: map, list: kept });
-    if (kept.length && view === "mail") renderReading();
+    if (kept.length) paintReadingSoon();
   }).catch(() => {}).finally(() => inlineLoading.delete(m.id));
 }
 
@@ -9863,7 +9886,7 @@ function ensureMessageFiles(m) {
   pending.then(files => applyMessageFiles(m.id, files)).catch(() => {}).finally(() => {
     filesLoading.delete(m.id);
     filesLoaded.add(m.id);
-    if (view === "mail") render();
+    paintReadingSoon(true);
   });
 }
 
@@ -9949,7 +9972,7 @@ async function ensureUnsubscribe(m) {
     const found = await tauriInvoke("unsubscribe_options", { email: acct.email, messageId: m.id });
     if (found && (found.oneClick || found.web || found.mailto)) {
       unsubscribeFor.set(m.id, found);
-      if (view === "mail") renderReading();
+      paintReadingSoon();
     }
   } catch (err) {
     unsubscribeFor.delete(m.id);
@@ -10008,7 +10031,7 @@ async function ensureInvite(m) {
   m.liveInvite = invite;
   m.invite = true;
   m.meeting = { title: invite.subject || m.subject, when: inviteWhen(invite), where: invite.location || "" };
-  if (view === "mail") renderReading();
+  paintReadingSoon();
 }
 
 // Answer the invite in one message, from the reading pane or the message
@@ -12768,7 +12791,7 @@ function removeSafeSender(value) {
 
 function remotePictureMode() {
   try {
-    const mode = localStorage.getItem("mailroom-remote-pictures");
+    const mode = storedItem("mailroom-remote-pictures");
     if (mode === "never" || mode === "always" || mode === "safe") return mode;
   } catch (e) {}
   return "safe";
@@ -12829,7 +12852,7 @@ function checkSender(message) {
     .catch(() => {})
     .finally(() => {
       senderChecks.delete(id);
-      if (view === "mail" && readingShowsMessage(message)) renderReading();
+      if (view === "mail" && readingShowsMessage(message)) paintReadingSoon();
     });
 }
 
@@ -12969,7 +12992,27 @@ function editorHtml(html) {
   return parkRemoteHtml(unparkRemoteHtml(htmlFor(html)));
 }
 
+// Sanitising and blocking remote pictures takes several parses of the
+// body, and remoteBar and letterHtml asked for it on every repaint (#77).
+// The answer only depends on the HTML and whether pictures are allowed, so
+// the last few are kept. Strings are immutable, so callers can't change them.
+const remoteMailMemo = new Map();
+const REMOTE_MAIL_MEMO = 40;
 function remoteMailHtml(html, allow) {
+  const key = (allow ? "1" : "0") + String(html || "");
+  const hit = remoteMailMemo.get(key);
+  if (hit) {
+    remoteMailMemo.delete(key);
+    remoteMailMemo.set(key, hit);
+    return { html: hit.html, blocked: hit.blocked };
+  }
+  const made = remoteMailHtmlFresh(html, allow);
+  remoteMailMemo.set(key, made);
+  if (remoteMailMemo.size > REMOTE_MAIL_MEMO) remoteMailMemo.delete(remoteMailMemo.keys().next().value);
+  return { html: made.html, blocked: made.blocked };
+}
+
+function remoteMailHtmlFresh(html, allow) {
   const clean = htmlFor(html);
   if (allow) return { html: clean, blocked: false };
   const doc = new DOMParser().parseFromString(clean, "text/html");
@@ -14708,7 +14751,7 @@ function assistOwner() {
 }
 
 function assistPopped() {
-  try { return !!localStorage.getItem("mailroom-assist-pop"); } catch (e) { return false; }
+  return !!storedItem("mailroom-assist-pop");
 }
 
 function loadAssistTurns() {
@@ -18837,7 +18880,7 @@ const folderBusy = new Set();
 let syncNote = "";
 const folderRun = new Map();
 const bodyLoads = new Set();
-const APP_VERSION = "1.6.6";
+const APP_VERSION = "1.6.7";
 let appVersion = APP_VERSION;
 
 prepareDesktopAccounts();
@@ -19136,6 +19179,26 @@ async function paintCachedFolder(accountId, key, live) {
   }
 }
 
+// Opening a message asks for its body, files, inline pictures, sender
+// verdict, unsubscribe options and invite at once, and each answer used to
+// repaint the reading pane: up to five paints for one open (#74). Answers
+// that land close together now share one paint. The files answer also
+// needs the list (its paperclip), so it asks for a full render.
+const READING_GATHER_MS = 40;
+let readingPaintTimer = 0;
+let readingPaintFull = false;
+function paintReadingSoon(full) {
+  if (full) readingPaintFull = true;
+  if (readingPaintTimer) return;
+  readingPaintTimer = setTimeout(() => {
+    readingPaintTimer = 0;
+    const whole = readingPaintFull;
+    readingPaintFull = false;
+    if (view !== "mail") return;
+    if (whole) render(); else renderReading();
+  }, READING_GATHER_MS);
+}
+
 function readingShowsMessage(message) {
   if (!message || view !== "mail") return false;
   const conv = conversationFor(selected);
@@ -19166,7 +19229,7 @@ async function ensureMessageBody(message) {
   if (!current || !current.needsBody) return;
   current.bodyHtml = html || "<p></p>";
   current.needsBody = false;
-  if (readingShowsMessage(current)) renderReading();
+  if (readingShowsMessage(current)) paintReadingSoon();
 }
 
 function recipientRows(value) {

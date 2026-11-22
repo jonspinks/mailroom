@@ -190,7 +190,10 @@
     invoke: (cmd, args) => {
       window.__calls.push([cmd, JSON.parse(JSON.stringify(args || {}))]);
       const answer = answers[cmd];
-      return answer ? Promise.resolve(answer(args || {})) : Promise.resolve(null);
+      const value = answer ? answer(args || {}) : null;
+      // A test can make a command answer late, as a real server does.
+      const late = (window.__delays || {})[cmd];
+      return late ? new Promise(ok => setTimeout(() => ok(value), late)) : Promise.resolve(value);
     },
     transformCallback: () => 0
   };
