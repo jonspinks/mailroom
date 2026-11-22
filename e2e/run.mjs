@@ -1603,6 +1603,42 @@ test("scheduled mail waits in Outbox with Cancel send, which keeps it as a draft
   expect((await p.$eval("#scheduled-panel", e => e.textContent)).includes("Later"), "it is in Outbox's Scheduled list");
 });
 
+test("mail shortcuts are off while writing, even when a compose button has focus", { fake: true }, async ({ p, calls, clear }) => {
+  await p.click('.row[data-id="m3"]'); await wait(400);
+  await p.click("#reply"); await wait(500);
+  // Focus a button in the reply (as after clicking Bold), not the text.
+  const focused = await p.evaluate(() => { const b = document.querySelector("#reading #compose-form button:not([type=submit])"); if (!b) return ""; b.focus(); return document.activeElement === b ? b.id || b.className : ""; });
+  expect(focused, "a compose button has focus", focused);
+  await clear();
+  for (const key of ["e", "Delete", "v", "j", "Insert"]) { await p.keyboard.press(key); await wait(150); }
+  await p.keyboard.down("Control"); await p.keyboard.press("z"); await p.keyboard.up("Control"); await wait(200);
+  same(await p.evaluate(() => messageBox(messages.find(m => m.id === "m3"))), "inbox", "E and Delete did not move the conversation");
+  same(await p.evaluate(() => [selected, !!messages.find(m => m.id === "m3").flagged, !!document.querySelector(".move-dialog")]), ["m3", false, false], "J, Insert and V did nothing either");
+  same((await calls("apply_mail")).length, 0, "nothing reached the server");
+  // Keys that land nowhere while the reply is open are ignored too.
+  await p.evaluate(() => document.activeElement.blur()); await p.keyboard.press("e"); await wait(200);
+  same(await p.evaluate(() => messageBox(messages.find(m => m.id === "m3"))), "inbox", "a stray key with the reply open does nothing");
+  // With the reply gone, the shortcuts are back.
+  await p.evaluate(() => { replyDraft = null; reading.dataset.paint = ""; render(); document.activeElement.blur(); }); await wait(300);
+  same(await p.$("#reading #compose-form"), null, "the reply is closed");
+  await p.keyboard.press("e"); await wait(300);
+  same(await p.evaluate(() => messageBox(messages.find(m => m.id === "m3"))), "archive", "E archives again when you're not writing");
+});
+
+test("undoing a Gmail archive from a view that isn't a label puts the Inbox label back", { fake: true, setup: () => { window.__google = true; } }, async ({ p, calls, clear }) => {
+  await wait(600);
+  await clear();
+  await p.evaluate(() => {
+    const m = messages.find(x => x.id === "m1");
+    m.box = "starred";
+    moveConversation({ messages: [m] }, "archive");
+  }); await wait(400);
+  await p.evaluate(() => undoLastMove()); await wait(500);
+  const kinds = (await calls("apply_mail")).map(a => a.kind);
+  same(kinds, ["archive", "inbox"], "the undo asks Gmail for the Inbox label back, not a move to Starred");
+  same(await p.evaluate(() => messageBox(messages.find(x => x.id === "m1"))), "starred", "and it shows where it was");
+});
+
 // ---------------------------------------------------------------- calendar
 
 test("calendar: new repeating event, edit sends only changes, series and invites", { fake: true, tz: true }, async ({ p, calls, clear }) => {
