@@ -372,6 +372,21 @@ test("a draft's remote pictures are parked in the editor but sent as they were (
   same(await p.$eval("#compose-body img", e => e.getAttribute("src")), tracker, "allowed, the picture loads in the editor");
 });
 
+test("parked-picture attributes in someone else's mail are cleaned, not restored", { fake: true }, async ({ p }) => {
+  const got = await p.evaluate(() => {
+    const hostile = '<div data-mr-parked="" data-mr-style="position:fixed;inset:0;z-index:99999">cover</div><img data-mr-parked="" data-mr-src="javascript:alert(1)">';
+    const read = htmlFor(hostile);
+    const holder = document.createElement("div");
+    holder.innerHTML = editorHtml(hostile);
+    const div = holder.querySelector("div");
+    const img = holder.querySelector("img");
+    return { read, style: div && (div.getAttribute("style") || ""), parkedStyle: div && div.getAttribute("data-mr-style"), src: img && img.getAttribute("src"), parkedSrc: img && img.getAttribute("data-mr-src") };
+  });
+  expect(!/data-mr-/.test(got.read), "the reading pane drops parked attributes", got.read);
+  expect(!/fixed/.test(got.style) && !/fixed/.test(got.parkedStyle || ""), "a pinned overlay is cleaned before the editor shows it", got);
+  expect(!/javascript/i.test(got.src || "") && !/javascript/i.test(got.parkedSrc || ""), "an unsafe address is cleaned too", got);
+});
+
 test("a thread shows the replies you sent, from Sent Items", { fake: true, setup: () => {
   const at = mins => new Date(Date.now() - mins * 60000).toISOString().replace(/\.\d+Z$/, "Z");
   window.__thread = [
@@ -1643,9 +1658,16 @@ test("scheduled mail waits in Outbox with Cancel send, which keeps it as a draft
   await p.click("[data-cancel-scheduled]"); await wait(400);
   expect((await p.$eval("#toast", e => e.textContent)).includes("already been sent"), "the reason is shown");
   await p.evaluate(() => { window.__cancelError = null; });
-  // Cancel send: it goes back to Drafts, which opens.
+  // Cancel send: it goes back to Drafts, which opens. A slow answer, a
+  // redraw of the panel and a second click still cancel it once.
   await clear();
-  await p.click("[data-cancel-scheduled]"); await wait(500);
+  await p.evaluate(() => { window.__delays = { cancel_scheduled: 400 }; });
+  await p.click("[data-cancel-scheduled]"); await wait(50);
+  await p.evaluate(() => paintScheduledPanel());
+  same(await p.$eval("[data-cancel-scheduled]", e => e.disabled), true, "the redrawn button stays off while the cancel is out");
+  await p.evaluate(() => document.querySelector("[data-cancel-scheduled]").click());
+  await wait(800);
+  await p.evaluate(() => { window.__delays = {}; });
   same((await calls("cancel_scheduled")).map(c => c.id), ["sched-1"], "cancelled on the server");
   same(await p.evaluate(() => box), "drafts", "Drafts opens, to edit or schedule again");
   same(await p.$("#scheduled-panel"), null, "and nothing is left scheduled");

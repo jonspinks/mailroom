@@ -963,7 +963,7 @@ fn duration_secs(value: &str) -> Option<i64> {
             unit => {
                 let n: i64 = number.parse().ok()?;
                 number.clear();
-                total += n * match (unit, in_time) {
+                let unit_secs = match (unit, in_time) {
                     ('W', false) => 7 * 86400,
                     ('D', false) => 86400,
                     ('H', true) => 3600,
@@ -971,6 +971,8 @@ fn duration_secs(value: &str) -> Option<i64> {
                     ('S', true) => 1,
                     _ => return None,
                 };
+                // A file's numbers can be any length: too big is no duration.
+                total = total.checked_add(n.checked_mul(unit_secs)?)?;
             }
         }
     }
@@ -1549,6 +1551,8 @@ BEGIN:VEVENT\r\nDTSTART:20261126T080000\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
         assert!(file_events("not a calendar").is_empty());
         assert_eq!(duration_secs("P1DT2H"), Some(93600));
         assert_eq!(duration_secs("-PT5M"), None);
+        assert_eq!(duration_secs("P99999999999999999W"), None);
+        assert_eq!(duration_secs("P1000000000000000W"), None);
     }
 
     #[test]

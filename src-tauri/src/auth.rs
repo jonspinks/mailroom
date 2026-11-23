@@ -201,7 +201,13 @@ pub fn sign_in(login_hint: Option<String>, provider: Provider) -> Result<Account
         }
     };
     let mut turn = store_turn();
-    let mut store = stored(&mut turn).unwrap_or_default();
+    let mut store = match stored_to_change(&mut turn) {
+        Ok(store) => store,
+        Err(err) => {
+            finish_browser(&mut stream, "Sign-in did not finish. You can close this window.");
+            return Err(err);
+        }
+    };
     let saved_email = match upsert_account(&mut store, tokens) {
         Ok(email) => email,
         Err(err) => {
@@ -231,7 +237,7 @@ pub fn sign_out() -> Result<(), String> {
 
 pub fn sign_out_account(email: &str) -> Result<(), String> {
     let mut turn = store_turn();
-    let mut store = stored(&mut turn).unwrap_or_default();
+    let mut store = stored_to_change(&mut turn)?;
     drop_account(&mut store, email);
     keep(&mut turn, &store)
 }
@@ -484,7 +490,14 @@ fn sign_in_google(login_hint: Option<String>) -> Result<AccountStatus, String> {
         return Err("Google did not grant mail and calendar access. Sign in again and leave every box ticked.".into());
     }
     let mut turn = store_turn();
-    let mut store = stored(&mut turn).unwrap_or_default();
+    let mut store = match stored_to_change(&mut turn) {
+        Ok(store) => store,
+        Err(err) => {
+            drop(turn);
+            finish_browser(&mut stream, "Sign-in did not finish. You can close this window.");
+            return Err(err);
+        }
+    };
     let saved = upsert_account(&mut store, tokens).and_then(|key| keep(&mut turn, &store).map(|_| key));
     drop(turn);
     let key = match saved {
@@ -833,6 +846,8 @@ enum Saved {
     Unreachable,
     /// There may be sign-ins, but they can't be read, with why.
     Unreadable(String),
+    /// The keyring is there but locked: the sign-ins are there, unread.
+    Locked(String),
 }
 
 fn read_saved() -> Saved {
@@ -844,7 +859,7 @@ fn read_saved() -> Saved {
         },
         Err(keyring::Error::NoEntry) => Saved::Nothing,
         // A keyring that is there but locked, as it can be just after login.
-        Err(keyring::Error::NoStorageAccess(_)) => Saved::Unreadable("The keyring is locked, so the saved sign-in can't be read. Unlock it and try again.".into()),
+        Err(keyring::Error::NoStorageAccess(_)) => Saved::Locked("The keyring is locked, so the saved sign-in can't be read. Unlock it and try again.".into()),
         Err(_) => Saved::Unreachable,
     };
     let path = token_file();
@@ -865,6 +880,20 @@ fn stored(slot: &mut Option<TokenFile>) -> Result<TokenFile, String> {
     stored_with(slot, read_saved)
 }
 
+/// The store, to change and save back. A locked keyring stops the change:
+/// saving over sign-ins that could not be read would lose them. A store that
+/// is there but can't be parsed is started again, so signing in still works.
+fn stored_to_change(slot: &mut Option<TokenFile>) -> Result<TokenFile, String> {
+    stored_to_change_with(slot, read_saved)
+}
+
+fn stored_to_change_with(slot: &mut Option<TokenFile>, read: impl FnOnce() -> Saved) -> Result<TokenFile, String> {
+    stored_with(slot, || match read() {
+        Saved::Unreadable(_) => Saved::Unreachable,
+        other => other,
+    })
+}
+
 fn stored_with(slot: &mut Option<TokenFile>, read: impl FnOnce() -> Saved) -> Result<TokenFile, String> {
     if let Some(store) = slot.as_ref() {
         return Ok(store.clone());
@@ -879,7 +908,7 @@ fn stored_with(slot: &mut Option<TokenFile>, read: impl FnOnce() -> Saved) -> Re
             Ok(TokenFile::default())
         }
         Saved::Unreachable => Ok(TokenFile::default()),
-        Saved::Unreadable(why) => Err(why),
+        Saved::Unreadable(why) | Saved::Locked(why) => Err(why),
     }
 }
 
@@ -1198,7 +1227,15 @@ mod tests {
 
         // A locked keyring is an error, and is not remembered as signed out.
         let mut slot = None;
-        assert!(stored_with(&mut slot, || Saved::Unreadable("locked".into())).is_err());
+        assert!(stored_with(&mut slot, || Saved::Locked("locked".into())).is_err());
+        assert!(slot.is_none());
+        assert!(stored_with(&mut slot, || Saved::Unreadable("bad".into())).is_err());
+        assert!(slot.is_none());
+        // Changing the store: a locked keyring stops it, so the sign-ins in it
+        // are not saved over; an unparseable store is started again.
+        assert!(stored_to_change_with(&mut slot, || Saved::Locked("locked".into())).is_err());
+        assert!(slot.is_none());
+        assert!(stored_to_change_with(&mut slot, || Saved::Unreadable("bad".into())).unwrap().accounts.is_empty());
         assert!(slot.is_none());
         // No keyring at all reads as signed out, and is asked again too.
         assert!(stored_with(&mut slot, || Saved::Unreachable).unwrap().accounts.is_empty());

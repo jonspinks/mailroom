@@ -7855,6 +7855,10 @@ async function loadScheduled(accountId) {
   if (view === "mail" && box === "outbox") paintScheduledPanel();
 }
 
+// Cancels on their way: the panel is redrawn while one is out, and a
+// second cancel of the same message would report it as already sent.
+const cancellingScheduled = new Set();
+
 function paintScheduledPanel() {
   let panel = document.getElementById("scheduled-panel");
   const ids = view === "mail" && box === "outbox" ? (account === "all" ? profileAccountIds() : [account]) : [];
@@ -7870,7 +7874,7 @@ function paintScheduledPanel() {
   panel.innerHTML = `<p class="move-group">Scheduled</p>` + items.map(({ id, item }) => `
     <div class="scheduled-item">
       <div class="scheduled-text"><b>${esc(item.subject || "(No subject)")}</b><small>Goes ${esc(scheduledWhen(item.sendAt))} · ${esc((item.to || []).map(recipientLabel).join(", ") || "No recipients")}</small></div>
-      <button type="button" class="linkish" data-cancel-scheduled="${esc(item.id)}" data-acct="${esc(id)}">Cancel send</button>
+      <button type="button" class="linkish" data-cancel-scheduled="${esc(item.id)}" data-acct="${esc(id)}"${cancellingScheduled.has(id + "\n" + item.id) ? " disabled" : ""}>Cancel send</button>
     </div>`).join("");
   panel.querySelectorAll("[data-cancel-scheduled]").forEach(btn => {
     btn.onclick = () => cancelScheduled(btn.dataset.acct, btn.dataset.cancelScheduled, btn);
@@ -7879,20 +7883,27 @@ function paintScheduledPanel() {
 
 async function cancelScheduled(accountId, id, btn) {
   const acct = accounts[accountId];
-  if (!acct) return;
+  const key = accountId + "\n" + id;
+  if (!acct || cancellingScheduled.has(key)) return;
+  cancellingScheduled.add(key);
   if (btn) btn.disabled = true;
   try {
     await tauriInvoke("cancel_scheduled", { email: acct.email, id });
   } catch (err) {
+    cancellingScheduled.delete(key);
     if (btn) btn.disabled = false;
     toast(String(err && err.message || err || "The send was not cancelled."));
     return loadScheduled(accountId);
   }
+  cancellingScheduled.delete(key);
   const left = (scheduledSends.get(accountId) || []).filter(item => item.id !== id);
   if (left.length) scheduledSends.set(accountId, left); else scheduledSends.delete(accountId);
   loadedLiveFolders.delete(accountId + "\ndrafts");
   toast("Send cancelled. It is in Drafts, to edit or schedule again.");
-  openFolder(accountId, "drafts", folderIdFor(accountId, "drafts"), "folder");
+  // Only if the Outbox is still what's on screen: the answer can take a
+  // while, and by then you may be reading something else.
+  if (view === "mail" && box === "outbox") openFolder(accountId, "drafts", folderIdFor(accountId, "drafts"), "folder");
+  else paintScheduledPanel();
 }
 
 // Forwards started before the original's attachment names had arrived. An
@@ -12762,7 +12773,9 @@ const MAIL_APP_ATTRS = new Set(["data-mail-style", "data-dark-ink", "data-mark-b
 // data- attributes, so any other one in a letter could pass for a button.
 // Attributes the editor parks remote addresses in (#72); see parkRemoteHtml.
 const PARKED_ATTRS = new Set(["src", "srcset", "poster", "background", "style"]);
-const MAIL_KEEP_DATA = new Set(["data-quote-start", "data-sig", "data-sig-id", "data-sig-src", "data-picture-id", "data-size", ...[...PARKED_ATTRS].map(name => "data-mr-" + name), "data-mr-parked"]);
+// Parked attributes (data-mr-*) are not kept: they turn back into real ones,
+// so a body is unparked before it is cleaned (editorHtml), never after.
+const MAIL_KEEP_DATA = new Set(["data-quote-start", "data-sig", "data-sig-id", "data-sig-src", "data-picture-id", "data-size"]);
 const MAIL_MEDIA_ATTRS = new Set(["src", "background", "poster", "lowsrc", "dynsrc"]);
 // Outlook marks where quoted history begins with one of these ids.
 const QUOTE_MARKER_IDS = /^(x_)?(divRplyFwdMsg|appendonsend|mail-editor-reference-message-container|OLK_SRC_BODY_SECTION)$/i;
@@ -13157,9 +13170,10 @@ function unparkRemoteHtml(html) {
 }
 
 // A local draft may hold parked pictures from an earlier showing: restore
-// them first, so the current setting decides afresh.
+// them first, so the current setting decides afresh, and so what they hold
+// is cleaned like any other attribute.
 function editorHtml(html) {
-  return parkRemoteHtml(unparkRemoteHtml(htmlFor(html)));
+  return parkRemoteHtml(htmlFor(unparkRemoteHtml(html)));
 }
 
 // Sanitising and blocking remote pictures takes several parses of the
