@@ -113,7 +113,16 @@ fn read_calendar_file(path: &std::path::Path) -> Request {
     if !meta.is_file() || meta.len() > MAX_ICS_BYTES {
         return bad(file);
     }
-    let Ok(bytes) = std::fs::read(path) else { return bad(file) };
+    // The size above can change before the read, or be wrong (a pipe, a
+    // FUSE file), so the read stops at the limit too.
+    let mut bytes = Vec::new();
+    let read = std::fs::File::open(path).and_then(|opened| {
+        use std::io::Read;
+        opened.take(MAX_ICS_BYTES + 1).read_to_end(&mut bytes)
+    });
+    if read.is_err() || bytes.len() as u64 > MAX_ICS_BYTES {
+        return bad(file);
+    }
     let events = crate::gcal::file_events(&String::from_utf8_lossy(&bytes));
     if events.is_empty() {
         return bad(file);
