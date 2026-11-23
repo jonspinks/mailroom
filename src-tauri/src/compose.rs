@@ -692,6 +692,15 @@ fn scheduled_from(listing: &Value) -> Vec<Scheduled> {
     out
 }
 
+const SCHEDULED_PAGES: usize = 50;
+
+fn next_graph_page(page: &Value) -> Option<String> {
+    page.get("@odata.nextLink")
+        .and_then(|value| value.as_str())
+        .filter(|next| next.starts_with("https://graph.microsoft.com/"))
+        .map(String::from)
+}
+
 fn flags_expand() -> String {
     graph::path_segment(&format!("singleValueExtendedProperties($filter=id eq '{DEFERRED}' or id eq '{MESSAGE_FLAGS}')"))
 }
@@ -705,8 +714,17 @@ pub fn scheduled_sends(email: &str) -> Result<Vec<Scheduled>, String> {
     };
     let mut out = Vec::new();
     for folder in ["drafts", "outbox"] {
-        let url = format!("{ME}/mailFolders/{folder}/messages?$select=id,subject,toRecipients&$expand={}&$top=100", flags_expand());
-        out.extend(scheduled_from(&call(&client, &token, "GET", &url, None).map_err(refused)?));
+        let mut url = format!("{ME}/mailFolders/{folder}/messages?$select=id,subject,toRecipients&$expand={}&$top=100", flags_expand());
+        // Every page, so a scheduled message past the first hundred drafts
+        // is listed and can be cancelled. Pages only from Graph itself.
+        for _ in 0..SCHEDULED_PAGES {
+            let page = call(&client, &token, "GET", &url, None).map_err(refused)?;
+            out.extend(scheduled_from(&page));
+            match next_graph_page(&page) {
+                Some(next) => url = next,
+                None => break,
+            }
+        }
     }
     out.sort_by(|a, b| a.send_at.cmp(&b.send_at));
     Ok(out)
@@ -832,6 +850,15 @@ mod tests {
         assert_eq!(got.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), vec!["soon", "late"], "a plain draft, and a cancelled copy that still carries a time, are left out");
         assert_eq!(got[1].to, vec!["a@x.example"]);
         assert_eq!(got[1].send_at, "2026-12-01T08:00:00Z");
+    }
+
+    #[test]
+    fn scheduled_listing_follows_only_graph_pages() {
+        assert_eq!(next_graph_page(&json!({ "@odata.nextLink": "https://graph.microsoft.com/v1.0/me/mailFolders/drafts/messages?$skip=100" })).as_deref(),
+            Some("https://graph.microsoft.com/v1.0/me/mailFolders/drafts/messages?$skip=100"));
+        assert_eq!(next_graph_page(&json!({ "value": [] })), None);
+        assert_eq!(next_graph_page(&json!({ "@odata.nextLink": "https://example.com/next" })), None);
+        assert_eq!(next_graph_page(&json!({ "@odata.nextLink": "https://graph.microsoft.com.example.com/next" })), None);
     }
 
     #[test]
