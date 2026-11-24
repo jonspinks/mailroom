@@ -122,7 +122,9 @@ test("safe senders: your accounts' domains are always on the list and cannot be 
     removable: [...document.querySelectorAll("[data-remove-sender]")].map(el => el.dataset.removeSender),
     shared: (document.getElementById("safe-sender-shared") || {}).textContent || ""
   }));
-  same(await page(), { fixed: ["example.com"], removable: [], shared: "" }, "your account's domain is listed, with no Remove");
+  same(await page(), { fixed: ["example.com", "microsoft.com"], removable: [], shared: "" }, "your account's domain, and microsoft.com for a Microsoft account, are listed with no Remove (#115)");
+  same(await p.evaluate(() => [senderIsSafe("account-security-noreply@accountprotection.microsoft.com"), senderIsSafe("news@outlook.com"), senderIsSafe("x@hotmail.com")]),
+    [true, false, false], "a Microsoft account makes microsoft.com safe, not outlook.com or hotmail.com");
   await p.type("#safe-sender-input", "Example.com");
   await p.click('#safe-sender-form button[type="submit"]'); await wait(100);
   same(await p.$eval("#safe-sender-error", el => el.textContent), "That is one of your accounts, so it is always safe.", "adding it again explains why");
@@ -132,10 +134,17 @@ test("safe senders: your accounts' domains are always on the list and cannot be 
   await p.evaluate(() => { installAccount({ id: "acct-gmail", email: "me@gmail.com", name: "Gmail", provider: "google" }); render(); });
   await wait(200);
   const got = await page();
-  same(got.fixed, ["example.com"], "a Gmail account does not make gmail.com safe");
-  same(got.shared, "Your own address at gmail.com is always safe. Other senders there are not, as anyone can have an address there.", "and says why");
-  same(await p.evaluate(() => [senderIsSafe("me@gmail.com"), senderIsSafe("someone@gmail.com"), senderIsSafe("me@hotmail.co.uk"), isPublicMailDomain("timberworks.example")]),
-    [true, false, false, false], "your own address is safe; the rest of a public provider is not");
+  same(got.fixed, ["example.com", "gmail.com", "microsoft.com"], "a Gmail account makes gmail.com safe (#115)");
+  same(got.shared, "", "so Settings no longer says other gmail.com senders are not safe");
+  same(await p.evaluate(() => [senderIsSafe("me@gmail.com"), senderIsSafe("someone@gmail.com"), senderIsSafe("me@hotmail.co.uk"), isPublicMailDomain("timberworks.example"), JSON.parse(localStorage.getItem("mailroom-safe-senders") || "[]")]),
+    [true, true, false, false, []], "gmail.com is safe and not stored; other public hosts are not");
+  await p.evaluate(() => { installAccount({ id: "acct-gm2", email: "me@googlemail.com", name: "Old Gmail", provider: "google" }); render(); });
+  await wait(200);
+  same((await page()).fixed, ["example.com", "gmail.com", "microsoft.com"], "a googlemail.com sign-in adds gmail.com, not googlemail.com");
+  same((await page()).shared, "Your own address at googlemail.com is always safe. Other senders there are not, as anyone can have an address there.", "and googlemail.com is still only your own address");
+  await p.evaluate(() => { delete accounts["acct-gm2"]; delete accounts["acct-gmail"]; render(); });
+  await wait(200);
+  same((await page()).fixed, ["example.com", "microsoft.com"], "gmail.com goes with the last Google account");
 
   await p.$eval("#safe-sender-input", el => { el.value = ""; });
   await p.type("#safe-sender-input", "partner.org");
@@ -1037,7 +1046,7 @@ test("reply with invite opens the new event form", { fake: false }, async ({ p, 
   });
   same(kiln.title, "Kiln schedule", "title from the subject");
   same(kiln.date, "2026-10-14", "Wednesday of this week");
-  same([kiln.start, kiln.end], ["09:00", "10:00"], "morning");
+  same([kiln.start, kiln.end], ["09:00", "09:45"], "morning, at the default meeting length");
   same(kiln.where, "Side gate", "the place named in the thread");
   same(kiln.calendar, "cal-timberworks", "the message's calendar");
   same(kiln.compose, false, "still not a mail reply");
@@ -3023,6 +3032,54 @@ test("viewer: a PDF attachment opens inside Mailroom, zooms, downloads, and Esc 
   await p.click('#reading [data-open-mail-file][data-file-name="plan.pdf"]'); await wait(600);
   expect((await p.$eval("#viewer-body", e => e.textContent)).includes("can't preview"), "says when it can't preview");
   await p.evaluate(() => closeViewer());
+});
+
+test("meeting date and time pickers, as Outlook has them", { fake: true, tz: true }, async ({ p }) => {
+  await p.evaluate(() => { localStorage.removeItem("mailroom-meeting-length"); setView("calendar"); }); await wait(800);
+  const form = () => p.evaluate(() => { const f = document.getElementById("event-form"); const v = n => f.querySelector("[name=" + n + "]").value; return [v("date"), v("start"), v("enddate"), v("end")]; });
+  await p.evaluate(() => openEventForm({ day: dayFromIso("2026-11-24"), start: 13 * 60 })); await wait(300);
+  same(await form(), ["2026-11-24", "13:00", "2026-11-24", "13:45"], "a new meeting is 45 minutes by default");
+  // Clicking a time opens a list of half hours.
+  await p.click("#event-form [name=start]"); await wait(150);
+  const starts = await p.$$eval(".time-popup .time-opt", els => els.map(e => e.textContent));
+  same([starts.length, starts[0], starts[26], starts[47]], [48, "00:00", "13:00", "23:30"], "the start list is every half hour");
+  same(await p.$eval(".time-popup .time-opt.active", e => e.textContent), "13:00", "with the current time picked out");
+  await p.evaluate(() => [...document.querySelectorAll(".time-popup .time-opt")].find(e => e.textContent === "14:00").click()); await wait(150);
+  same(await p.$(".time-popup"), null, "picking closes the list");
+  same(await form(), ["2026-11-24", "14:00", "2026-11-24", "14:45"], "a later start carries the end along");
+  // The end list says how long the meeting would be.
+  await p.click("#event-form [name=end]"); await wait(150);
+  const ends = await p.$$eval(".time-popup .time-opt", els => els.slice(0, 5).map(e => e.textContent));
+  same(ends, ["14:15(15 mins)", "14:30(30 mins)", "14:45(45 mins)", "15:00(1 hr)", "15:30(1.5 hrs)"], "the end list shows lengths");
+  await p.evaluate(() => [...document.querySelectorAll(".time-popup .time-opt")].find(e => e.textContent.startsWith("15:30")).click()); await wait(150);
+  same(await form(), ["2026-11-24", "14:00", "2026-11-24", "15:30"], "picking an end leaves the start alone");
+  // The date opens a month; a week on moves the end date too.
+  await p.click("#event-form .date-btn"); await wait(150);
+  expect(!!(await p.$(".date-popup")), "the date opens a month");
+  same(await p.$eval(".date-popup .mini-day.picked", e => e.dataset.pickDate), "2026-11-24", "with the date picked out");
+  await p.click('.date-popup [data-pick-date="2026-12-01"]'); await wait(150);
+  same(await form(), ["2026-12-01", "14:00", "2026-12-01", "15:30"], "a new start date moves the end date with it");
+  same(await p.$eval("#event-form .date-btn", e => e.textContent), "Tue 1 Dec 2026", "and the button shows it");
+  // Typed times are read the way people write them.
+  await p.click("#event-form [name=start]"); await p.keyboard.press("Escape");
+  await p.keyboard.down("Control"); await p.keyboard.press("a"); await p.keyboard.up("Control");
+  await p.keyboard.type("3pm");
+  await p.click("#event-form [name=title]"); await wait(150);
+  same(await form(), ["2026-12-01", "15:00", "2026-12-01", "16:30"], "3pm is 15:00, and the end keeps the length");
+  await p.click("#event-form [name=start]"); await p.keyboard.press("Escape");
+  await p.keyboard.down("Control"); await p.keyboard.press("a"); await p.keyboard.up("Control");
+  await p.keyboard.type("2330");
+  await p.click("#event-form [name=title]"); await wait(150);
+  same(await form(), ["2026-12-01", "23:30", "2026-12-02", "01:00"], "past midnight the end goes to the next day");
+  await p.evaluate(() => closePop());
+  // Settings > Calendar sets the length.
+  await p.click("#rail-settings"); await wait(200);
+  await p.click("#settings-calendar"); await wait(200);
+  same(await p.$eval("#meeting-length", e => e.value), "45", "Settings shows 45 minutes");
+  await p.select("#meeting-length", "60"); await wait(100);
+  await p.evaluate(() => { setView("calendar"); openEventForm({ day: dayFromIso("2026-11-24"), start: 9 * 60 }); }); await wait(300);
+  same((await form())[3], "10:00", "a new meeting then lasts an hour");
+  await p.evaluate(() => { closePop(); localStorage.removeItem("mailroom-meeting-length"); });
 });
 
 test("who's free: each person's day, and times that suit everyone", { fake: true }, async ({ p, calls }) => {

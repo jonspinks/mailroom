@@ -2301,7 +2301,41 @@
     flex-wrap: wrap;
     min-height: 32px;
   }
-  .event-when input[type="date"] { width: 148px; }
+  .date-pick { display: inline-flex; }
+  .event-when .date-btn { width: 148px; text-align: left; cursor: pointer; }
+  .date-btn:hover:not(:disabled) { border-bottom-color: var(--line-strong); }
+  .date-btn:focus-visible { outline: none; border-bottom-color: var(--blue); }
+  .date-btn:disabled { color: var(--muted); cursor: default; }
+  .invite-when .date-btn {
+    border: 1px solid var(--line-strong);
+    border-radius: min(4px, var(--r-max));
+    padding: 8px;
+    background: var(--field);
+    text-align: left;
+    width: 100%;
+  }
+  .invite-when .date-pick { display: flex; }
+  /* The month and the time lists that open under a meeting's fields. */
+  .float-picker {
+    position: fixed;
+    z-index: 60;
+    background: var(--panel);
+    border: 1px solid var(--line-strong);
+    border-radius: min(6px, var(--r-max));
+    box-shadow: var(--shadow);
+  }
+  .date-popup { width: 252px; padding: 8px 10px 6px; margin: 0; }
+  .date-popup .mini-day.picked .n { background: var(--blue); color: var(--on-accent); font-weight: 650; }
+  .date-popup .mini-day[aria-current="date"]:not(.picked) .n { color: var(--blue); font-weight: 700; box-shadow: inset 0 0 0 1px var(--blue); }
+  .date-popup .mini-day.cursor:not(.picked) .n { background: var(--hover); }
+  .date-popup .mini-day.picked:hover .n { background: var(--blue); color: var(--on-accent); }
+  .date-popup-foot { display: flex; justify-content: flex-end; padding-top: 4px; font-size: 12px; }
+  .time-popup { max-height: 248px; overflow-y: auto; padding: 4px 0; font-size: 14px; }
+  .time-opt { display: flex; gap: 8px; padding: 6px 12px; cursor: pointer; white-space: nowrap; }
+  .time-opt:hover { background: var(--hover); }
+  .time-opt.active { background: var(--selected); color: var(--blue-ink); }
+  .time-len { color: var(--muted); }
+  .time-opt.active .time-len { color: inherit; }
   #event-times { display: flex; align-items: center; gap: 8px; }
   #event-times input { width: 72px; text-align: center; }
   .event-to { color: var(--muted); font-size: 14px; }
