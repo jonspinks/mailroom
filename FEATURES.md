@@ -29,7 +29,7 @@ compares them with this list, and opens an issue for anything new.
 | Dark mode for designed mail | ✅ recoloured colour by colour, sun button for the original |
 | Quoted text folded | ✅ Outlook, Gmail and Apple replies; legal footers too |
 | Attachment previews | ✅ PDF viewer, pictures; save one, some or all |
-| Block remote pictures | ✅ never, always, or safe senders only |
+| Block remote pictures | ✅ never, always, or safe senders only; your accounts' domains, and gmail.com or microsoft.com while you have that kind of account, are always safe |
 | Unsubscribe | ✅ one-click (RFC 8058) or the sender's page |
 | Invite clashes | ✅ an invite says what it clashes with |
 | Print | ✅ one message, or save it as a PDF (Ctrl+P) |
@@ -88,6 +88,8 @@ compares them with this list, and opens an issue for anything new.
 | Work week, week, month | ✅ |
 | Day view | ✅ also from a week's day heading |
 | Events over several days | ✅ start and end dates in the editor; opens whole from any of its days |
+| Date and time pickers | ✅ the date opens a month; times type freely or pick from half hours, the end list shows each length; moving the start carries the end along |
+| Default meeting length | ✅ Settings > Calendar; 45 minutes unless changed |
 | Open a .ics file | ✅ Open with Mailroom: pick the calendar, and its events are added at your local time |
 | Several calendars, colours, show and hide | ✅ |
 | Recurring events and exceptions | ✅ this event, this and following, or all |

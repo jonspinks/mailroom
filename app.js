@@ -2565,7 +2565,14 @@ const MAILBOX_ZONES = [
 function renderCalendarSettings(body) {
   const computer = calendarZone();
   const rows = Object.entries(accounts).filter(([, acct]) => acct.signedIn && acct.email && acct.provider !== "google");
+  const length = meetingLength();
   body.innerHTML = `
+    <div class="acct-defaults meeting-length-block">
+      <label class="acct-default">Default meeting length
+        <select id="meeting-length">${MEETING_LENGTHS.map(m => `<option value="${m}"${m === length ? " selected" : ""}>${lengthLabel(m)}</option>`).join("")}</select>
+        <span class="field-hint">How long a new event or invite is when you click a time. Dragging across the calendar still sets its own length.</span>
+      </label>
+    </div>
     <p class="field-hint">This computer is set to ${esc(computer)}. New events use that zone. British Columbia and Alberta need tzdata 2026b or later.</p>
     ${rows.length ? rows.map(([id, acct]) => `
       <div class="acct-card zone-card" data-zone-account="${esc(id)}">
@@ -2576,6 +2583,10 @@ function renderCalendarSettings(body) {
         <button class="ghost" type="button" data-zone-computer hidden>Use this computer's time zone</button>
       </div>`).join("") : `<p class="empty-accounts">Sign in to a Microsoft account to set its mailbox time zone.</p>`}
   `;
+  body.querySelector("#meeting-length").onchange = (e) => {
+    try { localStorage.setItem("mailroom-meeting-length", e.target.value); } catch (err) {}
+    toast("New meetings are " + lengthLabel(Number(e.target.value)) + " long");
+  };
   rows.forEach(([id, acct]) => {
     const card = body.querySelector(`[data-zone-account="${CSS.escape(id)}"]`);
     if (!card) return;
@@ -8181,20 +8192,20 @@ function timeFromText(text) {
   if (range) {
     const start = Number(range[1]) * 60 + Number(range[2]);
     const end = Number(range[3]) * 60 + Number(range[4]);
-    return { start, end: end > start ? end : start + 60 };
+    return { start, end: end > start ? end : start + meetingLength() };
   }
   const clock = String(text || "").match(/\b(\d{1,2}):(\d{2})\b/);
   if (clock) {
     const start = Number(clock[1]) * 60 + Number(clock[2]);
-    return { start, end: start + 60 };
+    return { start, end: start + meetingLength() };
   }
   const loose = String(text || "").match(/\b(?:at|from)\s+(\d{1,2})(?::(\d{2}))?\b/i);
   if (loose) {
     const start = Number(loose[1]) * 60 + Number(loose[2] || 0);
-    return { start, end: start + 60 };
+    return { start, end: start + meetingLength() };
   }
-  if (/\bmorning\b/i.test(text)) return { start: 9 * 60, end: 10 * 60 };
-  if (/\bafternoon\b/i.test(text)) return { start: 14 * 60, end: 15 * 60 };
+  if (/\bmorning\b/i.test(text)) return { start: 9 * 60, end: 9 * 60 + meetingLength() };
+  if (/\bafternoon\b/i.test(text)) return { start: 14 * 60, end: 14 * 60 + meetingLength() };
   return null;
 }
 
@@ -8222,10 +8233,10 @@ function freeSlot(preferDay) {
     for (let hour = 9; hour <= 15; hour++) {
       if (hour === 12) continue;
       const start = hour * 60;
-      if (slotFree(day, start, start + 60)) return { day, start, end: start + 60 };
+      if (slotFree(day, start, start + meetingLength())) return { day, start, end: start + meetingLength() };
     }
   }
-  return { day: preferDay == null ? thursday : preferDay, start: 16 * 60, end: 17 * 60 };
+  return { day: preferDay == null ? thursday : preferDay, start: 16 * 60, end: 16 * 60 + meetingLength() };
 }
 
 function meetingFromThread(msg) {
@@ -8233,7 +8244,7 @@ function meetingFromThread(msg) {
   const titled = thread.find(m => m.meeting && m.meeting.when);
   if (titled) {
     const when = titled.meeting.when;
-    const timed = timeFromText(when) || { start: 10 * 60, end: 11 * 60 };
+    const timed = timeFromText(when) || { start: 10 * 60, end: 10 * 60 + meetingLength() };
     let day = dayFromText(when);
     if (day == null || day < 0) day = 3;
     return {
@@ -8267,7 +8278,7 @@ function meetingFromThread(msg) {
     if (day == null) day = slot.day;
     if (start == null) { start = slot.start; end = slot.end; }
   }
-  if (end == null || end <= start) end = start + 60;
+  if (end == null || end <= start) end = start + meetingLength();
   const title = cleanSubject(thread[0].subject);
   return {
     title: title ? title.charAt(0).toUpperCase() + title.slice(1) : "Meeting",
@@ -8295,14 +8306,14 @@ function parseClock(value) {
 function readInvite(form) {
   const card = form.querySelector("#compose-invite");
   if (!card) return null;
-  const start = parseClock(card.querySelector("#invite-start").value);
-  let end = parseClock(card.querySelector("#invite-end").value);
+  const start = looseClock(card.querySelector("#invite-start").value);
+  let end = looseClock(card.querySelector("#invite-end").value);
   const begin = start == null ? 10 * 60 : start;
-  if (end == null || end <= begin) end = begin + 60;
+  if (end == null || end <= begin) end = Math.min(begin + meetingLength(), 23 * 60 + 59);
   return {
     title: card.querySelector("#invite-title").value.trim() || "Meeting",
     where: card.querySelector("#invite-where").value.trim(),
-    day: Number(card.querySelector("#invite-day").value),
+    day: dayFromIso(card.querySelector("#invite-day").value),
     start: begin,
     end,
     source: card.dataset.source === "free" ? "free" : "thread"
@@ -11263,6 +11274,357 @@ function fmt(mins) {
   return String(h).padStart(2, "0") + ":" + String(m).padStart(2, "0");
 }
 
+// ---- Meeting date and time pickers, as Outlook has them (1.7.2) ----
+// The date is a button that opens a month to pick from. The times are
+// fields you can type in ("9", "930", "2pm", "14:30"), with a list of half
+// hours under them. The end list says how long the meeting would be, and
+// moving the start date or time carries the end along, so the meeting
+// keeps its length. Before this the date was the bare WebKit date field
+// and the times were plain text, with nothing to pick from.
+const MEETING_LENGTHS = [15, 30, 45, 60, 90, 120];
+
+function meetingLength() {
+  try {
+    const n = Number(localStorage.getItem("mailroom-meeting-length"));
+    return MEETING_LENGTHS.includes(n) ? n : 45;
+  } catch (e) { return 45; }
+}
+
+function lengthLabel(mins) {
+  if (mins < 60) return mins + " mins";
+  const h = mins / 60;
+  if (Number.isInteger(h)) return h + (h === 1 ? " hr" : " hrs");
+  if (mins % 30 === 0) return h + " hrs";
+  const whole = Math.floor(h);
+  return whole + (whole === 1 ? " hr " : " hrs ") + (mins % 60) + " mins";
+}
+
+// A time as typed. 24:00 is left to the callers that allow it.
+function looseClock(text) {
+  const raw = String(text || "").trim().toLowerCase().replace(/\s+/g, "");
+  const m = raw.match(/^(\d{1,2})(?:[:.h]?(\d{2}))?(a|am|p|pm)?$/);
+  if (!m) return null;
+  let h = Number(m[1]);
+  const min = Number(m[2] || 0);
+  if (min > 59) return null;
+  if (m[3]) {
+    if (h < 1 || h > 12) return null;
+    h = h % 12 + (m[3][0] === "p" ? 12 : 0);
+  }
+  if (h > 23) return null;
+  return h * 60 + min;
+}
+
+function endClock(text) {
+  return /^\s*24:00\s*$/.test(String(text || "")) ? 24 * 60 : looseClock(text);
+}
+
+function dateButtonText(iso) {
+  const day = dayFromIso(iso);
+  if (day == null) return "Choose a date";
+  const d = dateFromDay(day);
+  return dowLong[d.getDay()].slice(0, 3) + " " + d.getDate() + " " + monthNames[d.getMonth()].slice(0, 3) + " " + d.getFullYear();
+}
+
+function isoOfDate(date) {
+  return date.getFullYear() + "-" + String(date.getMonth() + 1).padStart(2, "0") + "-" + String(date.getDate()).padStart(2, "0");
+}
+
+// One floating list or month at a time. It hangs off <body>: the dialogs
+// are transformed, which would pin a fixed child to the dialog instead.
+var floatPicker = null;
+
+function closeFloatPicker() {
+  if (!floatPicker) return;
+  const { el, onClose } = floatPicker;
+  floatPicker = null;
+  el.remove();
+  if (onClose) onClose();
+}
+
+function openFloatPicker(anchor, el, onClose) {
+  closeFloatPicker();
+  el.classList.add("float-picker");
+  el.addEventListener("mousedown", ev => ev.preventDefault());
+  document.body.appendChild(el);
+  const r = anchor.getBoundingClientRect();
+  el.style.minWidth = Math.round(r.width) + "px";
+  const w = el.offsetWidth;
+  const h = el.offsetHeight;
+  const below = window.innerHeight - r.bottom;
+  el.style.left = Math.max(8, Math.min(r.left, window.innerWidth - w - 8)) + "px";
+  el.style.top = (below >= h + 8 || below >= r.top ? r.bottom + 4 : Math.max(8, r.top - h - 4)) + "px";
+  floatPicker = { el, anchor, onClose };
+}
+
+document.addEventListener("mousedown", (ev) => {
+  if (floatPicker && !floatPicker.el.contains(ev.target) && !floatPicker.anchor.contains(ev.target)) closeFloatPicker();
+}, true);
+document.addEventListener("scroll", (ev) => {
+  if (floatPicker && !floatPicker.el.contains(ev.target)) closeFloatPicker();
+}, true);
+window.addEventListener("resize", () => closeFloatPicker());
+
+// The date field: a hidden ISO value, so forms read it as before, and a
+// button that shows it. `attrs` names the hidden input (name= or id=).
+function datePickHtml(attrs, iso, label) {
+  return `<span class="date-pick"><input type="hidden" ${attrs} value="${esc(iso)}"><button type="button" class="event-line date-btn" aria-haspopup="dialog" aria-expanded="false" aria-label="${esc(label)}" title="${esc(label)}">${esc(dateButtonText(iso))}</button></span>`;
+}
+
+function setDateField(input, iso) {
+  input.value = iso;
+  const btn = input.parentElement && input.parentElement.querySelector(".date-btn");
+  if (btn) btn.textContent = dateButtonText(iso);
+}
+
+function bindDatePick(input) {
+  const btn = input.parentElement.querySelector(".date-btn");
+  if (!btn || btn.dataset.bound) return;
+  btn.dataset.bound = "1";
+  let shown = null;
+  let cursor = null;
+  let el = null;
+  const isOpen = () => !!(floatPicker && floatPicker.anchor === btn);
+  const pick = (iso) => {
+    const was = input.value;
+    setDateField(input, iso);
+    closeFloatPicker();
+    if (iso !== was) {
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      input.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+  };
+  const paint = () => {
+    const year = shown.getFullYear();
+    const month = shown.getMonth();
+    const last = new Date(year, month + 1, 0);
+    const day = startOfWeek(new Date(year, month, 1));
+    const cells = [];
+    while (cells.length < 42) {
+      const iso = isoOfDate(day);
+      const cls = ["mini-day", day.getMonth() !== month ? "outside" : "", iso === input.value ? "picked" : "", iso === cursor ? "cursor" : ""].filter(Boolean).join(" ");
+      const label = dowLong[day.getDay()] + " " + day.getDate() + " " + monthNames[day.getMonth()] + " " + day.getFullYear();
+      cells.push(`<button type="button" tabindex="-1" class="${cls}" data-pick-date="${iso}" aria-label="${label}"${isToday(day) ? ' aria-current="date"' : ""}${iso === input.value ? ' aria-pressed="true"' : ""}><span class="n">${day.getDate()}</span></button>`);
+      day.setDate(day.getDate() + 1);
+      if (cells.length % 7 === 0 && day > last) break;
+    }
+    const heads = ["M", "T", "W", "T", "F", "S", "S"].map(ch => `<div class="mini-dow">${ch}</div>`).join("");
+    el.innerHTML = `<div class="mini-head">
+        <span class="label">${monthNames[month]} ${year}</span>
+        <button type="button" tabindex="-1" data-month="-1" aria-label="Previous month"><svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true"><path d="M10 3.5L5.5 8 10 12.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+        <button type="button" tabindex="-1" data-month="1" aria-label="Next month"><svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true"><path d="M6 3.5L10.5 8 6 12.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+      </div>
+      <div class="mini-grid">${heads}${cells.join("")}</div>
+      <div class="date-popup-foot"><button type="button" tabindex="-1" class="linkish" data-pick-date="${isoOfDate(todayDate())}">Today</button></div>`;
+  };
+  const open = () => {
+    const day = dayFromIso(input.value);
+    const sel = day == null ? todayDate() : dateFromDay(day);
+    shown = new Date(sel.getFullYear(), sel.getMonth(), 1);
+    cursor = isoOfDate(sel);
+    el = document.createElement("div");
+    el.className = "date-popup mini-cal";
+    el.setAttribute("role", "dialog");
+    el.setAttribute("aria-label", "Choose a date");
+    paint();
+    el.addEventListener("click", (ev) => {
+      const nav = ev.target.closest("[data-month]");
+      if (nav) {
+        shown = new Date(shown.getFullYear(), shown.getMonth() + Number(nav.dataset.month), 1);
+        paint();
+        return;
+      }
+      const cell = ev.target.closest("[data-pick-date]");
+      if (cell) pick(cell.dataset.pickDate);
+    });
+    openFloatPicker(btn, el, () => btn.setAttribute("aria-expanded", "false"));
+    btn.setAttribute("aria-expanded", "true");
+  };
+  const moveCursor = (days, months) => {
+    const day = dayFromIso(cursor);
+    const d = dateFromDay(day == null ? dayFromDate(todayDate()) : day);
+    if (months) d.setMonth(d.getMonth() + months);
+    else d.setDate(d.getDate() + days);
+    cursor = isoOfDate(d);
+    shown = new Date(d.getFullYear(), d.getMonth(), 1);
+    paint();
+  };
+  btn.onclick = () => (isOpen() ? closeFloatPicker() : open());
+  btn.addEventListener("keydown", (ev) => {
+    if (!isOpen()) {
+      if (ev.key === "ArrowDown" || ev.key === "ArrowUp") { ev.preventDefault(); open(); }
+      return;
+    }
+    const steps = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [-7, 0], ArrowDown: [7, 0], PageUp: [0, -1], PageDown: [0, 1] };
+    if (steps[ev.key]) { ev.preventDefault(); moveCursor(...steps[ev.key]); return; }
+    if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); pick(cursor); return; }
+    if (ev.key === "Escape") { ev.preventDefault(); ev.stopPropagation(); closeFloatPicker(); return; }
+    if (ev.key === "Tab") closeFloatPicker();
+  });
+  btn.addEventListener("blur", () => { if (isOpen()) closeFloatPicker(); });
+}
+
+function halfHours() {
+  const out = [];
+  for (let m = 0; m < 24 * 60; m += 30) out.push(m);
+  return out;
+}
+
+// `options()` gives [{ m, note }] to list under the field.
+function bindTimeCombo(input, options) {
+  if (input.dataset.bound) return;
+  input.dataset.bound = "1";
+  input.setAttribute("role", "combobox");
+  input.setAttribute("aria-autocomplete", "list");
+  input.setAttribute("aria-expanded", "false");
+  let items = [];
+  let active = -1;
+  let el = null;
+  const isOpen = () => !!(floatPicker && floatPicker.anchor === input);
+  const paintActive = (scroll) => {
+    if (!el) return;
+    el.querySelectorAll(".time-opt").forEach((opt, i) => {
+      opt.classList.toggle("active", i === active);
+      opt.setAttribute("aria-selected", i === active ? "true" : "false");
+    });
+    const opt = el.children[active];
+    if (scroll && opt) el.scrollTop = opt.offsetTop - (el.clientHeight - opt.offsetHeight) / 2;
+  };
+  const nearest = () => {
+    const typed = endClock(input.value);
+    if (typed == null) return -1;
+    const at = items.findIndex(item => item.m >= typed);
+    return at < 0 ? items.length - 1 : at;
+  };
+  const pick = (i) => {
+    const item = items[i];
+    closeFloatPicker();
+    if (!item) return;
+    const text = fmt(item.m);
+    if (text === input.value) return;
+    input.value = text;
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+  };
+  const open = () => {
+    items = options();
+    if (!items.length) return;
+    el = document.createElement("div");
+    el.className = "time-popup";
+    el.setAttribute("role", "listbox");
+    el.innerHTML = items.map((item, i) => `<div class="time-opt" role="option" data-i="${i}"><span>${fmt(item.m)}</span>${item.note ? `<span class="time-len">${esc(item.note)}</span>` : ""}</div>`).join("");
+    el.addEventListener("click", (ev) => {
+      const opt = ev.target.closest("[data-i]");
+      if (opt) pick(Number(opt.dataset.i));
+    });
+    openFloatPicker(input, el, () => { input.setAttribute("aria-expanded", "false"); el = null; });
+    input.setAttribute("aria-expanded", "true");
+    active = nearest();
+    paintActive(true);
+  };
+  input.addEventListener("click", () => { if (!isOpen()) open(); });
+  input.addEventListener("input", () => {
+    if (!isOpen()) return;
+    active = nearest();
+    paintActive(true);
+  });
+  input.addEventListener("keydown", (ev) => {
+    if (ev.key === "ArrowDown" || ev.key === "ArrowUp") {
+      ev.preventDefault();
+      if (!isOpen()) { open(); return; }
+      const step = ev.key === "ArrowDown" ? 1 : -1;
+      active = active < 0 ? 0 : Math.max(0, Math.min(items.length - 1, active + step));
+      paintActive(true);
+      return;
+    }
+    if (ev.key === "Enter") {
+      // Enter picks from the list, or settles what was typed. It never
+      // saves the whole form from a time field.
+      ev.preventDefault();
+      if (isOpen() && active >= 0 && endClock(input.value) !== items[active].m) pick(active);
+      else { closeFloatPicker(); settle(); }
+      return;
+    }
+    if (ev.key === "Escape" && isOpen()) { ev.preventDefault(); ev.stopPropagation(); closeFloatPicker(); return; }
+    if (ev.key === "Tab") closeFloatPicker();
+  });
+  const settle = () => {
+    if (/^\s*24:00\s*$/.test(input.value)) return;
+    const m = looseClock(input.value);
+    if (m == null || fmt(m) === input.value) return;
+    input.value = fmt(m);
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+  };
+  input.addEventListener("blur", () => {
+    if (isOpen()) closeFloatPicker();
+    settle();
+  });
+}
+
+// Start and end together. `f` holds the date, start and end fields, and
+// the end date when the form has one. Moving the start date or time moves
+// the end by as much; changing the end leaves the start alone.
+function bindMeetingWhen(root, f, allDay) {
+  const sameDay = () => !f.enddate || f.enddate.value === f.date.value;
+  bindDatePick(f.date);
+  if (f.enddate) bindDatePick(f.enddate);
+  bindTimeCombo(f.start, () => {
+    const now = looseClock(f.start.value);
+    const list = halfHours();
+    if (now != null && !list.includes(now)) list.push(now);
+    return list.sort((a, b) => a - b).map(m => ({ m }));
+  });
+  bindTimeCombo(f.end, () => {
+    const start = looseClock(f.start.value);
+    const now = endClock(f.end.value);
+    if (start == null || !sameDay()) {
+      const list = halfHours();
+      if (now != null && now < 24 * 60 && !list.includes(now)) list.push(now);
+      return list.sort((a, b) => a - b).map(m => ({ m }));
+    }
+    const lengths = new Set([15, 30, 45, meetingLength()]);
+    for (let d = 60; d < 24 * 60; d += 30) lengths.add(d);
+    if (now != null && now > start) lengths.add(now - start);
+    return [...lengths].filter(d => start + d < 24 * 60).sort((a, b) => a - b).map(d => ({ m: start + d, note: "(" + lengthLabel(d) + ")" }));
+  });
+  const snap = () => ({
+    day: dayFromIso(f.date.value),
+    endDay: f.enddate ? dayFromIso(f.enddate.value) : dayFromIso(f.date.value),
+    start: looseClock(f.start.value),
+    end: endClock(f.end.value)
+  });
+  let before = snap();
+  const fields = [f.date, f.start, f.end, f.enddate].filter(Boolean);
+  const inWhen = (target) => fields.includes(target) || fields.some(field => field.type === "hidden" && field.parentElement.contains(target));
+  // The meeting as it stood when the user starts to change it. The
+  // schedule's picks and other code set the fields without focus.
+  root.addEventListener("focusin", (ev) => { if (inWhen(ev.target)) before = snap(); });
+  root.addEventListener("pointerdown", (ev) => { if (inWhen(ev.target)) before = snap(); }, true);
+  root.addEventListener("change", (ev) => {
+    if (!fields.includes(ev.target)) return;
+    const now = snap();
+    if ((ev.target === f.date || ev.target === f.start) && before.day != null && now.day != null) {
+      const whole = allDay && allDay();
+      const shift = (now.day - before.day) * 1440 + (whole || now.start == null || before.start == null ? 0 : now.start - before.start);
+      if (shift && f.enddate && before.endDay != null) {
+        const endAt = before.endDay * 1440 + (before.end == null ? 0 : before.end) + shift;
+        let endDay = Math.floor(endAt / 1440);
+        let end = endAt - endDay * 1440;
+        // Midnight shows as 24:00 on the day before, as the editor opens it.
+        if (end === 0 && before.end != null && endDay > now.day) { endDay -= 1; end = 24 * 60; }
+        setDateField(f.enddate, isoFromDay(endDay));
+        if (!whole && before.end != null) f.end.value = fmt(end);
+        f.enddate.dispatchEvent(new Event("input", { bubbles: true }));
+      } else if (shift && !f.enddate && before.end != null && !whole) {
+        f.end.value = fmt(Math.min(before.end + shift, 23 * 60 + 59));
+        f.end.dispatchEvent(new Event("input", { bubbles: true }));
+      }
+    }
+    before = snap();
+  });
+}
+
 const monthNames = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
 const dowLong = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 const dowShort = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
@@ -11581,14 +11943,14 @@ function bindCalendarClicks(root) {
         return;
       }
       if (cell.dataset.slot === "month") {
-        openEventForm({ day, start: 9 * 60, end: 10 * 60 });
+        openEventForm({ day, start: 9 * 60, end: 9 * 60 + meetingLength() });
         return;
       }
       const rect = cell.getBoundingClientRect();
       let minutes = ((ev.clientY - rect.top) / rect.height) * (24 * 60);
       minutes = Math.round(minutes / 30) * 30;
       minutes = Math.max(0, Math.min(23 * 60, minutes));
-      openEventForm({ day, start: minutes, end: minutes + 60 });
+      openEventForm({ day, start: minutes, end: Math.min(minutes + meetingLength(), 24 * 60) });
     });
   });
 }
@@ -12869,7 +13231,7 @@ function isPublicMailDomain(domain) {
 // The domains of the accounts you have signed in. Always safe, and not
 // removable: they come from the accounts, not the saved list.
 function accountSafeSenders() {
-  const keys = new Set();
+  const keys = new Set(providerSafeSenders());
   ownAddresses().forEach(address => {
     const domain = organisationalDomain(address);
     if (domain && !isPublicMailDomain(domain)) keys.add("@" + domain);
@@ -12877,11 +13239,28 @@ function accountSafeSenders() {
   return [...keys].sort();
 }
 
+// The provider's own domain is safe while you have an account with it
+// (#115): its mail about your account comes from there. Only the primary
+// domain: a Google account adds gmail.com, even at googlemail.com, and a
+// Microsoft one adds microsoft.com, not outlook.com or hotmail.com. It is
+// never stored, and goes when the last account of that kind does.
+const PROVIDER_DOMAINS = { google: "gmail.com", microsoft: "microsoft.com" };
+
+function providerSafeSenders() {
+  const keys = new Set();
+  Object.values(accounts).forEach(acct => {
+    const domain = PROVIDER_DOMAINS[acct.provider === "google" ? "google" : "microsoft"];
+    if (domain) keys.add("@" + domain);
+  });
+  return [...keys].sort();
+}
+
 function publicAccountDomains() {
   const found = new Set();
+  const provided = providerSafeSenders();
   ownAddresses().forEach(address => {
     const domain = organisationalDomain(address);
-    if (domain && isPublicMailDomain(domain)) found.add(domain);
+    if (domain && isPublicMailDomain(domain) && !provided.includes("@" + domain)) found.add(domain);
   });
   return [...found].sort();
 }
@@ -15390,10 +15769,12 @@ function renderAssistants(body) {
 
 function renderSafeSenders(body) {
   const fixed = accountSafeSenders();
+  const provided = providerSafeSenders();
   const shared = publicAccountDomains();
+  const providerMeta = entry => entry === "@gmail.com" ? "Google. Safe while you have a Google account here." : "Microsoft. Safe while you have a Microsoft account here.";
   const rows = fixed.map(entry => `
     <div class="acct-card" data-account-sender="${esc(entry)}">
-      <span class="acct-copy"><span class="who">${esc(String(entry).replace(/^@/, ""))}</span><span class="meta">Your account. Always safe.</span></span>
+      <span class="acct-copy"><span class="who">${esc(String(entry).replace(/^@/, ""))}</span><span class="meta">${provided.includes(entry) ? providerMeta(entry) : "Your account. Always safe."}</span></span>
     </div>`).join("") + safeSenders.filter(entry => !fixed.includes(entry)).map(entry => `
     <div class="acct-card">
       <span class="acct-copy"><span class="who">${esc(String(entry).replace(/^@/, ""))}</span></span>
@@ -15432,7 +15813,9 @@ function renderSafeSenders(body) {
     const stored = safeSenderKey(key);
     if (!addSafeSender(key)) {
       note.hidden = false;
-      note.textContent = stored && accountSafeSenders().includes(stored) ? "That is one of your accounts, so it is always safe."
+      const providerOnly = stored && providerSafeSenders().includes(stored) && ![...ownAddresses()].some(address => "@" + organisationalDomain(address) === stored);
+      note.textContent = providerOnly ? "That is your mail provider, so it is safe while that account is here."
+        : stored && accountSafeSenders().includes(stored) ? "That is one of your accounts, so it is always safe."
         : stored && safeSenders.includes(stored) ? "That domain is already listed." : "Enter a domain like anthropic.com.";
       return;
     }
@@ -15455,9 +15838,6 @@ function htmlFragment(raw) {
 
 function inviteMarkup(meeting, to) {
   if (!meeting) return "";
-  const labels = ["Monday 12 October", "Tuesday 13 October", "Wednesday 14 October", "Thursday 15 October", "Friday 16 October", "Saturday 17 October", "Sunday 18 October"];
-  const options = [0, 1, 2, 3, 4];
-  if (meeting.day > 4 && meeting.day < labels.length) options.push(meeting.day);
   const who = addressList(to).map(recipientLabel);
   const note = meeting.source === "free"
     ? "Nothing in the thread names a time, so this is a free hour"
@@ -15466,7 +15846,7 @@ function inviteMarkup(meeting, to) {
       <div class="invite-head"><span>Calendar invite</span><button type="button" class="linkish" id="invite-remove">Remove</button></div>
       <label class="field">Title<input id="invite-title" value="${esc(meeting.title || "")}"></label>
       <div class="invite-when">
-        <label>Day<select id="invite-day">${options.map(d => `<option value="${d}"${Number(meeting.day) === d ? " selected" : ""}>${labels[d]}</option>`).join("")}</select></label>
+        <label>Day${datePickHtml('id="invite-day"', isoFromDay(Number(meeting.day) || 0), "Day")}</label>
         <label>Start<input id="invite-start" value="${fmt(meeting.start)}" inputmode="numeric" autocomplete="off"></label>
         <label>End<input id="invite-end" value="${fmt(meeting.end)}" inputmode="numeric" autocomplete="off"></label>
       </div>
@@ -17358,6 +17738,11 @@ function bindCompose(root, ctx) {
   }
   const inviteCard = form.querySelector("#compose-invite");
   if (inviteCard) {
+    bindMeetingWhen(inviteCard, {
+      date: inviteCard.querySelector("#invite-day"),
+      start: inviteCard.querySelector("#invite-start"),
+      end: inviteCard.querySelector("#invite-end")
+    });
     inviteCard.addEventListener("input", () => {
       if (ctx.draft) ctx.draft.meeting = readInvite(form);
     });
@@ -18030,7 +18415,7 @@ function refreshOpenComposeFrom() {
   select.dispatchEvent(new Event("change"));
 }
 
-function closePop() { popRoot.innerHTML = ""; }
+function closePop() { closeFloatPicker(); popRoot.innerHTML = ""; }
 
 function confirmDiscard(done) {
   if (document.getElementById("discard-confirm")) return;
@@ -18893,7 +19278,7 @@ function openEventForm(seed) {
   let day = seed.day == null ? dayFromDate(todayDate()) : seed.day;
   const allDay = !!seed.allDay;
   let start = seed.start == null ? 13 * 60 : seed.start;
-  let end = seed.end == null ? start + 60 : seed.end;
+  let end = seed.end == null ? Math.min(start + meetingLength(), 24 * 60) : seed.end;
   // An event over several days opens whole, whichever day was clicked: its
   // first day and start, its last day and end (#71).
   let endDay = day;
@@ -18950,12 +19335,12 @@ function openEventForm(seed) {
       <div class="event-row">
         ${ico(`<rect x="2.2" y="3.2" width="11.6" height="10.2" rx="1.2" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M2.2 6.4h11.6M5.2 2.2v2.2M10.8 2.2v2.2" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>`)}
         <div class="event-row-body event-when">
-          <input class="event-line" name="date" type="date" value="${isoFromDay(day)}" aria-label="Start date">
+          ${datePickHtml('name="date"', isoFromDay(day), "Start date")}
           <div id="event-times"${allDay ? " hidden" : ""}>
             <input class="event-line" name="start" value="${fmt(start)}" aria-label="Start" inputmode="numeric" autocomplete="off">
           </div>
           <span class="event-to">to</span>
-          <input class="event-line" name="enddate" type="date" value="${isoFromDay(endDay)}" aria-label="End date">
+          ${datePickHtml('name="enddate"', isoFromDay(endDay), "End date")}
           <div id="event-end-time"${allDay ? " hidden" : ""}>
             <input class="event-line" name="end" value="${fmt(end)}" aria-label="End" inputmode="numeric" autocomplete="off">
           </div>
@@ -19201,6 +19586,12 @@ function openEventForm(seed) {
     document.getElementById("event-end-time").hidden = e.target.checked;
   };
   const dateInput = form.querySelector("[name=date]");
+  bindMeetingWhen(form, {
+    date: dateInput,
+    enddate: form.querySelector("[name=enddate]"),
+    start: form.querySelector("[name=start]"),
+    end: form.querySelector("[name=end]")
+  }, () => form.querySelector("[name=allday]").checked);
   const repeatRow = document.getElementById("repeat-row");
   bindRepeat(form, dateInput);
   if (seed.series && seed.series.recurrence) recurrenceToForm(form, seed.series.recurrence, dateInput.value);
@@ -19226,7 +19617,7 @@ function openEventForm(seed) {
   if (joinBtn) joinBtn.onclick = () => openNoteLink(meetingLink(seed).url);
   if (editing && seed.live) calSelect.disabled = true;
   if (readOnly) {
-    form.querySelectorAll("input, textarea, select").forEach(el => { el.disabled = true; });
+    form.querySelectorAll("input, textarea, select, .date-btn").forEach(el => { el.disabled = true; });
     const save = form.querySelector('button[type="submit"]');
     if (save) save.hidden = true;
     form.querySelectorAll("[data-response]").forEach(btn => {
@@ -19261,11 +19652,11 @@ function openEventForm(seed) {
     const whole = form.querySelector("[name=allday]").checked;
     const endDayNum = dayFromIso(data.get("enddate")) ?? dayNum;
     if (endDayNum < dayNum) return fail("The end date is before the start date.");
-    let begin = parseClock(data.get("start"));
+    let begin = looseClock(data.get("start"));
     // An event that ends at midnight shows 24:00 as its end, which isn't a
     // clock time, and one typed as 00:00 after a later start means the same.
     // Both failed with "End must be after the start" before (2026-11-22).
-    let finish = /^\s*24:00\s*$/.test(String(data.get("end") || "")) ? 24 * 60 : parseClock(data.get("end"));
+    let finish = endClock(data.get("end"));
     if (!whole && finish === 0 && (endDayNum > dayNum || (begin || 0) > 0)) finish = 24 * 60;
     if (!whole) {
       if (begin == null) begin = 13 * 60;
@@ -19341,7 +19732,7 @@ const folderBusy = new Set();
 let syncNote = "";
 const folderRun = new Map();
 const bodyLoads = new Set();
-const APP_VERSION = "1.7.1";
+const APP_VERSION = "1.7.2";
 let appVersion = APP_VERSION;
 
 prepareDesktopAccounts();
