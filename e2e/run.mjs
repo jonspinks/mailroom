@@ -2697,6 +2697,46 @@ test("lists in mail are spaced and indented as Outlook draws them", { fake: true
   same(typed, "40px", "a list typed in the editor is indented the same");
 });
 
+test("Share availability: busy times shaded, pick free ones, the list goes in with the time zone (#120)", { fake: true }, async ({ p, calls }) => {
+  await p.click("#compose"); await wait(300);
+  await p.click("#compose-body"); await p.keyboard.type("Hi Andre,"); await p.keyboard.press("Enter");
+  await p.click('#compose-form .format-bar [data-cmd="availability"]'); await wait(500);
+  expect(await p.$(".avail-dialog"), "the dialog opens");
+  expect((await calls("sync_calendar")).length >= 1, "the sender's calendar is loaded for it");
+  const grid = await p.evaluate(() => {
+    const cells = [...document.querySelectorAll("[data-avail]")];
+    const days = [...new Set(cells.map(c => c.dataset.avail.split("|")[0]))];
+    return { days: days.length, rows: cells.length / days.length, lastDay: days[days.length - 1] };
+  });
+  same([grid.days, grid.rows], [5, 16], "five working days of 9 to 5 in half hours");
+  // The fake calendar has a 9:00 to 10:00 meeting tomorrow.
+  const tomorrow = await p.evaluate(() => dayFromDate(addDays(new Date(), 1)));
+  const nine = await p.$(`[data-avail="${tomorrow}|540"]`);
+  if (nine) same(await p.$eval(`[data-avail="${tomorrow}|540"]`, b => [b.disabled, b.classList.contains("busy")]), [true, true], "a meeting's time is busy");
+  same(await p.$eval(".avail-dialog button[type=submit]", b => b.disabled), true, "nothing to insert yet");
+  // Drag from 10:00 to 10:30 on the last day: one hour.
+  const a = await (await p.$(`[data-avail="${grid.lastDay}|600"]`)).boundingBox();
+  const b = await (await p.$(`[data-avail="${grid.lastDay}|630"]`)).boundingBox();
+  await p.mouse.move(a.x + 5, a.y + 5); await p.mouse.down();
+  await p.mouse.move(b.x + 5, b.y + 5, { steps: 4 }); await p.mouse.up(); await wait(100);
+  same(await p.$eval(".avail-count", e => e.textContent), "1 hour picked", "the drag picked both half hours");
+  await p.click(".avail-dialog button[type=submit]"); await wait(300);
+  same(await p.$(".avail-dialog"), null, "the dialog closes");
+  const text = await p.$eval("#compose-body", e => e.innerText);
+  expect(/Here are some times I'm free \(Eastern (Standard|Daylight) Time\)/.test(text), "names the time zone", text);
+  expect(/10:00\sAM to 11:00\sAM/.test(text), "the hour, joined into one span", text);
+  expect(text.indexOf("Hi Andre,") < text.indexOf("Here are some times"), "where the caret was, after the greeting", text);
+});
+
+test("Settings > Calendar: working hours are kept, and must end after they start (#120)", { fake: true }, async ({ p }) => {
+  await p.evaluate(() => showSettings("calendar")); await wait(300);
+  await p.select("#work-start", "480"); await wait(100);
+  same(await p.evaluate(() => workHours()), { start: 480, end: 1020 }, "8:00 start kept");
+  await p.select("#work-end", "450"); await wait(100);
+  same(await p.evaluate(() => workHours()), { start: 480, end: 1020 }, "an end before the start is refused");
+  expect(/end after it starts/.test(await p.$eval("#toast", t => t.textContent)), "and says why");
+});
+
 test("compose bar follows Outlook: full ribbon in a new message, none in an inline reply until Format text", { fake: true }, async ({ p }) => {
   await p.click("#compose"); await wait(300);
   const order = await p.$$eval("#compose-form .format-bar > *", els => els.map(e => e.matches("select") ? e.getAttribute("aria-label") : (e.getAttribute("aria-label") || e.getAttribute("title") || e.className)).filter(x => x && x !== "fmt-sep" && !/file-picker/.test(x)));

@@ -48,6 +48,7 @@ compares them with this list, and opens an issue for anything new.
 | Drafts on the server | ✅ saved while typing |
 | Pop-out compose | ✅ keeps the original and its files |
 | Reply with meeting | ✅ day, time and place read from the thread |
+| Share availability | ✅ pick free half hours from the next five working days (busy times shaded from your calendar); goes in as a list naming the time zone; working hours in Settings > Calendar; no booking link |
 | Formatting, colour, highlight | ✅ 12pt Aptos by default, shown as it is sent; Outlook's ribbon order: undo, font, size, strikethrough, alignment, indents; none in an inline reply until Format text |
 | Links | ✅ Link on the ribbon or right-click a word: address and text to display, edit or remove; email addresses become mailto: |
 | Pictures inline or attached | ✅ Small, Medium, Large or Original |
