@@ -645,7 +645,32 @@ function colourSample(value) {
   return found;
 }
 
+// Colours are read on a detached canvas (#105): no node in the page, no
+// style recalculation. A colour the canvas can't read (a newer CSS colour
+// function, say) still goes through a probe in the page, as before.
+let colourCanvas = null;
+function canvasColour(raw) {
+  if (colourCanvas === null) {
+    try { colourCanvas = document.createElement("canvas").getContext("2d") || false; } catch (e) { colourCanvas = false; }
+  }
+  if (!colourCanvas) return undefined;
+  const read = sentinel => {
+    colourCanvas.fillStyle = sentinel;
+    colourCanvas.fillStyle = raw;
+    return String(colourCanvas.fillStyle);
+  };
+  const first = read("#010203");
+  if (first !== read("#040506")) return undefined;
+  let m = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(first);
+  if (m) return { r: parseInt(m[1], 16), g: parseInt(m[2], 16), b: parseInt(m[3], 16), a: 1 };
+  m = first.match(/^rgba?\(\s*([\d.]+)[,\s]+([\d.]+)[,\s]+([\d.]+)(?:[,\s/]+([\d.]+))?\s*\)$/);
+  if (m) return { r: +m[1], g: +m[2], b: +m[3], a: m[4] == null ? 1 : +m[4] };
+  return undefined;
+}
+
 function sampleColour(raw) {
+  const quick = canvasColour(raw);
+  if (quick !== undefined) return quick;
   const probe = document.createElement("span");
   probe.style.cssText = "position:absolute;left:-9999px;top:0";
   probe.style.backgroundColor = raw;
@@ -14132,10 +14157,17 @@ function isRemoteUrl(value) {
 
 // The browser's own reading of a style: escapes resolved, and
 // image-set("…") written as image-set(url("…")), so one check covers them.
+// One detached element parses every style attribute (#105); a new document
+// for each styled element cost more than the parse itself.
+let styleProbeEl = null;
+function styleProbe(text) {
+  if (!styleProbeEl) styleProbeEl = document.implementation.createHTMLDocument("").createElement("div");
+  styleProbeEl.setAttribute("style", String(text || ""));
+  return styleProbeEl;
+}
+
 function normalisedStyle(style) {
-  const probe = document.implementation.createHTMLDocument("").createElement("div");
-  probe.setAttribute("style", String(style || ""));
-  return probe.style.cssText;
+  return styleProbe(style).style.cssText;
 }
 
 // Custom properties are substituted when the style is computed, so a URL
@@ -14147,8 +14179,7 @@ function stripRemoteStyle(style) {
   let changed = false;
   let text = normalisedStyle(style);
   if (CSS_VARIABLE.test(text)) {
-    const probe = document.implementation.createHTMLDocument("").createElement("div");
-    probe.setAttribute("style", text);
+    const probe = styleProbe(text);
     [...probe.style].forEach(name => {
       const value = probe.style.getPropertyValue(name);
       if (!name.startsWith("--") && !/var\(/i.test(value)) return;
@@ -14373,10 +14404,16 @@ function quoteStart(body) {
 // as a forward with nothing added, is left whole.
 function foldQuotedHtml(html, id) {
   const doc = new DOMParser().parseFromString(String(html || ""), "text/html");
+  if (!doc.body) return html;
+  return foldQuotedIn(doc, id) ? doc.body.innerHTML : html;
+}
+
+// Fold the quoted history in a parsed message. True when it folded any.
+function foldQuotedIn(doc, id) {
   const body = doc.body;
-  if (!body) return html;
+  if (!body) return false;
   const start = quoteStart(body);
-  if (!start || !hasTextBefore(start, body)) return html;
+  if (!start || !hasTextBefore(start, body)) return false;
   const range = doc.createRange();
   range.setStartBefore(start);
   range.setEndAfter(body.lastChild);
@@ -14396,7 +14433,7 @@ function foldQuotedHtml(html, id) {
   wrap.appendChild(quoted);
   body.appendChild(toggle);
   body.appendChild(wrap);
-  return body.innerHTML;
+  return true;
 }
 
 // ---- Legal footers: one short line until opened ----
@@ -14427,15 +14464,35 @@ function makeToggle(doc, id, label, open) {
 
 function foldLegalHtml(html, id) {
   const doc = new DOMParser().parseFromString(String(html || ""), "text/html");
+  if (!doc.body) return html;
+  return foldLegalIn(doc, id) ? doc.body.innerHTML : html;
+}
+
+// The innermost blocks that read as a legal notice, outside the quote.
+// Walked from the deepest up (#105): each block's text is read once, and a
+// block is innermost when nothing below it was legal. Before, every block
+// read the text of every block inside it again.
+function legalBlocks(body) {
+  const LEGAL_TAGS = "p, div, td, span, font, small";
+  const all = [...body.querySelectorAll(LEGAL_TAGS)];
+  const legalBelow = new Set();
+  const found = [];
+  for (let i = all.length - 1; i >= 0; i--) {
+    const el = all[i];
+    const legal = looksLegal(el.textContent.replace(/\s+/g, " ").trim());
+    if (legal && !legalBelow.has(el) && !el.closest(".mail-quote")) found.push(el);
+    if (legal || legalBelow.has(el)) {
+      for (let up = el.parentElement; up && up !== body && !legalBelow.has(up); up = up.parentElement) legalBelow.add(up);
+    }
+  }
+  return found.reverse();
+}
+
+function foldLegalIn(doc, id) {
   const body = doc.body;
-  if (!body) return html;
-  // The innermost blocks that read as a legal notice, outside the quote.
-  const blocks = [...body.querySelectorAll("p, div, td, span, font, small")].filter(el =>
-    !el.closest(".mail-quote") &&
-    looksLegal(el.textContent.replace(/\s+/g, " ").trim()) &&
-    ![...el.querySelectorAll("p, div, td, span, font, small")].some(inner => looksLegal(inner.textContent.replace(/\s+/g, " ").trim()))
-  );
-  if (!blocks.length) return html;
+  if (!body) return false;
+  const blocks = legalBlocks(body);
+  if (!blocks.length) return false;
   blocks.forEach((block, i) => {
     const key = id + ":legal" + i;
     const open = openQuotes.has(key);
@@ -14454,7 +14511,7 @@ function foldLegalHtml(html, id) {
       toggle.after(wrap);
     }
   });
-  return body.innerHTML;
+  return true;
 }
 
 document.addEventListener("click", (ev) => {
@@ -14488,10 +14545,14 @@ function mailClass(name) {
 function prefixMailClasses(html) {
   const doc = new DOMParser().parseFromString(String(html || ""), "text/html");
   if (!doc.body) return html;
+  prefixMailClassesIn(doc);
+  return doc.body.innerHTML;
+}
+
+function prefixMailClassesIn(doc) {
   doc.body.querySelectorAll("[class]").forEach(el => {
     el.setAttribute("class", el.getAttribute("class").split(/\s+/).filter(Boolean).map(mailClass).join(" "));
   });
-  return doc.body.innerHTML;
 }
 
 function prefixSelector(selector) {
@@ -14502,8 +14563,18 @@ function prefixSelector(selector) {
 function fittedMailHtml(html, allow, foldId, keepQuoted) {
   // As text, so nothing in the CSS can close the template and become markup.
   const css = esc(mailStyleText(html));
-  const shown = prefixMailClasses(remoteMailHtml(html, allow).html);
-  const body = foldId ? foldLegalHtml(keepQuoted ? shown : foldQuotedHtml(shown, foldId), foldId) : shown;
+  // One parse for the class prefix and both folds (#105); each used to
+  // parse and serialise the whole message again.
+  const doc = new DOMParser().parseFromString(remoteMailHtml(html, allow).html, "text/html");
+  let body = "";
+  if (doc.body) {
+    prefixMailClassesIn(doc);
+    if (foldId) {
+      if (!keepQuoted) foldQuotedIn(doc, foldId);
+      foldLegalIn(doc, foldId);
+    }
+    body = doc.body.innerHTML;
+  }
   if (!css.trim()) return body;
   return `<template class="mail-css">${css}</template>${body}`;
 }
@@ -14834,14 +14905,21 @@ function markDarkInks(root) {
   });
 }
 
+// Read every size first, then write (#105): a read after each write made
+// the engine lay the letter out again for every large node.
 function capLargeMailType(el) {
+  const large = [];
   el.querySelectorAll("*").forEach(node => {
     if (inSignature(node)) return;
-    const size = parseFloat(getComputedStyle(node).fontSize);
+    const style = getComputedStyle(node);
+    const size = parseFloat(style.fontSize);
     if (!(size > 22)) return;
+    const leading = parseFloat(style.lineHeight);
+    large.push({ node, tall: Number.isFinite(leading) && leading > 22 * 1.5 });
+  });
+  large.forEach(({ node, tall }) => {
     node.style.setProperty("font-size", "22px", "important");
-    const leading = parseFloat(getComputedStyle(node).lineHeight);
-    if (Number.isFinite(leading) && leading > 22 * 1.5) node.style.setProperty("line-height", "1.35", "important");
+    if (tall) node.style.setProperty("line-height", "1.35", "important");
   });
 }
 
@@ -14981,7 +15059,11 @@ function mailAuthorWidth(cell) {
   return cell.dataset.mailW;
 }
 
+// Every table is measured first and changed after (#105); measuring each
+// after the one before was changed laid the letter out once per table.
 function shareMailColumns(el) {
+  const plans = [];
+  const shrink = [];
   el.querySelectorAll("table").forEach(table => {
     if (inSignature(table)) return;
     const row = [...table.rows].find(r => r.cells.length > 1);
@@ -15003,6 +15085,9 @@ function shareMailColumns(el) {
     if (!starved && table.dataset.mailShared !== "1") return;
     const host = table.parentElement ? table.parentElement.clientWidth : el.clientWidth;
     if (host < 40) return;
+    plans.push({ table, described, content, host });
+  });
+  plans.forEach(({ table, described, content, host }) => {
     table.dataset.mailShared = "1";
     table.style.setProperty("width", "100%", "important");
     table.style.setProperty("max-width", "100%", "important");
@@ -15026,12 +15111,16 @@ function shareMailColumns(el) {
         inner.style.setProperty("max-width", "100%", "important");
         inner.style.setProperty("table-layout", "fixed", "important");
       });
-      const single = item.text.length > 0 && item.text.length <= 20;
-      while (single && size > 11 && item.cell.scrollWidth > item.cell.clientWidth + 1) {
-        size -= 1;
-        apply(size);
-      }
+      if (item.text.length > 0 && item.text.length <= 20) shrink.push({ cell: item.cell, size, apply });
     });
+  });
+  // A short label that still overflows steps down a pixel at a time, once
+  // every table has its widths.
+  shrink.forEach(({ cell, apply, size }) => {
+    while (size > 11 && cell.scrollWidth > cell.clientWidth + 1) {
+      size -= 1;
+      apply(size);
+    }
   });
 }
 
@@ -20483,7 +20572,7 @@ const folderBusy = new Set();
 let syncNote = "";
 const folderRun = new Map();
 const bodyLoads = new Set();
-const APP_VERSION = "1.7.10";
+const APP_VERSION = "1.7.11";
 let appVersion = APP_VERSION;
 
 prepareDesktopAccounts();
