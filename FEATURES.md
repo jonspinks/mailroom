@@ -98,7 +98,7 @@ compares them with this list, and opens an issue for anything new.
 | Open a .ics file | ✅ Open with Mailroom: pick the calendar, and its events are added at your local time |
 | Several calendars, colours, show and hide | ✅ |
 | Recurring events and exceptions | ✅ this event, this and following, or all |
-| Drag to move | ✅ |
+| Drag to move | ✅ timed events to another time or day; all-day chips to another day; any event in Month; an event over several days moves as a whole; a repeating one asks this event or the series |
 | Answer invites | ✅ Accept, Tentative, Decline, in the message or from its right-click menu in the list |
 | Join online meetings | ✅ Teams, Zoom, Google Meet and Webex |
 | New Teams meeting | **M** |

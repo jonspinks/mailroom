@@ -12170,47 +12170,199 @@ function bindCalendarDrag(root) {
       btn.addEventListener("pointerup", up);
     });
   });
+  // Drag a chip to another day (#101): all-day events in the week views'
+  // all-day row, and any event in Month. The time of day stays.
+  root.querySelectorAll(".chip[data-event]").forEach(chip => {
+    chip.addEventListener("pointerdown", (down) => {
+      if (down.button !== 0) return;
+      const kind = chip.dataset.kind === "all" ? "all" : "timed";
+      const ev = findCalendarEvent(chip.dataset.event, kind);
+      if (!ev) return;
+      const home = chip.closest("[data-day]");
+      let over = null, moved = false;
+      const mark = cell => {
+        root.querySelectorAll(".drop-target").forEach(el => { if (el !== cell) el.classList.remove("drop-target"); });
+        if (cell) cell.classList.add("drop-target");
+      };
+      const move = (pm) => {
+        if (!moved && Math.abs(pm.clientY - down.clientY) < 6 && Math.abs(pm.clientX - down.clientX) < 6) return;
+        moved = calDragged = true;
+        document.body.classList.add("is-cal-drag");
+        chip.classList.add("dragging");
+        const el = document.elementFromPoint(pm.clientX, pm.clientY);
+        const cell = el && el.closest ? el.closest(".allday-cell[data-day], .month-day[data-day]") : null;
+        over = cell && root.contains(cell) ? cell : null;
+        mark(over);
+      };
+      const up = () => {
+        chip.removeEventListener("pointermove", move);
+        chip.removeEventListener("pointerup", up);
+        chip.classList.remove("dragging");
+        mark(null);
+        if (!moved) return;
+        endDrag();
+        if (!over || !home) return;
+        const days = Number(over.dataset.day) - Number(home.dataset.day);
+        if (!days) return;
+        if (calendarReadOnly(ev.calendar)) return toast("This calendar is read-only.");
+        shiftCalendarEvent(ev, kind, days, 0);
+      };
+      chip.setPointerCapture(down.pointerId);
+      chip.addEventListener("pointermove", move);
+      chip.addEventListener("pointerup", up);
+    });
+  });
 }
 
-// Give an event a new day and time, on the server for a server calendar.
+// A drag from the week grid: a new time for a timed event, or a new end.
+// Moves go through shiftCalendarEvent, so an event over several days moves
+// as a whole (#101); a new end only works on an event within one day.
 async function moveCalendarEvent(ev, target) {
+  if (target.day === ev.day && target.start === ev.start && target.end !== ev.end) {
+    if (String(ev.id).includes("@")) {
+      render();
+      return toast("An event over several days changes length in its editor.");
+    }
+    return shiftCalendarEvent(ev, "timed", 0, 0, target.end - ev.end);
+  }
+  return shiftCalendarEvent(ev, "timed", target.day - ev.day, target.start - ev.start);
+}
+
+function stampParts(stamp) {
+  const text = String(stamp || "");
+  // A stamp with a zone is a moment; one without is a wall-clock time here.
+  const d = /[zZ]|[+-]\d\d:?\d\d$/.test(text.slice(10)) ? new Date(text) : (() => {
+    const m = /^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2}))?/.exec(text);
+    return m ? new Date(+m[1], +m[2] - 1, +m[3], +(m[4] || 0), +(m[5] || 0)) : new Date(NaN);
+  })();
+  return d;
+}
+
+function stampOf(date, allDay) {
+  const iso = date.getFullYear() + "-" + String(date.getMonth() + 1).padStart(2, "0") + "-" + String(date.getDate()).padStart(2, "0");
+  return allDay ? iso + "T00:00:00" : localStamp(iso, date.getHours() * 60 + date.getMinutes());
+}
+
+function shiftedStamp(stamp, days, mins, allDay) {
+  const d = stampParts(stamp);
+  if (Number.isNaN(d.getTime())) return "";
+  const out = new Date(d.getFullYear(), d.getMonth(), d.getDate() + days, d.getHours(), d.getMinutes() + mins);
+  return stampOf(out, allDay);
+}
+
+// A repeating series moved by `days`: a weekly series' weekdays move along,
+// and so does its first date. Anything else changes day in the editor.
+function shiftedRecurrence(rec, days) {
+  if (!rec || !days) return rec || null;
+  const pattern = rec.pattern || {};
+  if (pattern.type !== "daily" && pattern.type !== "weekly") return undefined;
+  const next = JSON.parse(JSON.stringify(rec));
+  if (pattern.type === "weekly" && Array.isArray(pattern.daysOfWeek)) {
+    next.pattern.daysOfWeek = pattern.daysOfWeek.map(name => {
+      const i = WEEKDAY_KEYS.indexOf(String(name).toLowerCase());
+      return i < 0 ? name : WEEKDAY_KEYS[((i + days) % 7 + 7) % 7];
+    });
+  }
+  if (next.range && next.range.startDate) next.range.startDate = shiftedStamp(next.range.startDate, days, 0, true).slice(0, 10);
+  if (next.range && next.range.endDate && next.range.type === "endDate") next.range.endDate = shiftedStamp(next.range.endDate, days, 0, true).slice(0, 10);
+  return next;
+}
+
+// Move an event by whole days and minutes, or give it a new end (`grow`
+// minutes). One over several days moves as a whole; an occurrence of a
+// series asks whether the series moves too, as the editor does.
+async function shiftCalendarEvent(ev, kind, days, mins, grow = 0) {
   if (calendarReadOnly(ev.calendar)) {
     render();
     return toast("This calendar is read-only.");
   }
-  if (String(ev.id).includes("@")) return toast("An event over several days is moved in its editor.");
   const live = ev.live && serverCalendar(ev.calendar);
   if (live && ev.organizer && !ev.isOrganizer && !youOrganize(ev) && (ev.attendees || []).length) {
     render();
     return toast("Only the organiser can move this meeting.");
   }
-  const before = { day: ev.day, start: ev.start, end: ev.end };
-  Object.assign(ev, target);
-  render();
-  if (!live) return toast("Moved · " + ev.title);
+  const allDay = kind === "all" || ev.start == null;
+  const spanning = String(ev.id).includes("@") && ev.spanStart && ev.spanEnd;
+  if (!live) {
+    if (spanning) {
+      render();
+      return toast("An event over several days is moved in its editor.");
+    }
+    ev.day += days;
+    if (!allDay) {
+      ev.start += mins;
+      ev.end += mins + grow;
+    }
+    render();
+    return toast("Moved · " + ev.title);
+  }
+  let scope = "this";
+  if (inRecurringSeries(ev)) {
+    scope = await chooseDialog("Move a repeating event", ev.title || "", [
+      { value: "this", label: "This event", primary: true },
+      { value: "all", label: "All events in the series" }
+    ]);
+    if (!scope) return render();
+  }
   const acct = accounts[ev.account];
-  const iso = isoFromDay(target.day);
+  // The whole event's ends before the move.
+  let from, to;
+  if (spanning) {
+    from = ev.spanStart;
+    to = ev.spanEnd;
+  } else if (allDay) {
+    from = isoFromDay(ev.day) + "T00:00:00";
+    to = nextDayIso(isoFromDay(ev.day)) + "T00:00:00";
+  } else {
+    const iso = isoFromDay(ev.day);
+    from = localStamp(iso, ev.start);
+    to = ev.end >= 24 * 60 ? nextDayIso(iso) + "T00:00:00" : localStamp(iso, ev.end);
+  }
+  let eventId = String(ev.eventId || ev.id).split("@")[0];
+  let recurrence;
+  if (scope === "all") {
+    let series;
+    try {
+      series = await tauriInvoke("event_series", { email: acct.email, masterId: ev.seriesMasterId });
+    } catch (err) {
+      render();
+      return toast(String(err && err.message || err || "The series could not be read."));
+    }
+    recurrence = shiftedRecurrence(series && series.recurrence, days);
+    if (recurrence === undefined) {
+      render();
+      return toast("This series changes day in its editor.");
+    }
+    eventId = ev.seriesMasterId;
+    from = series.start;
+    to = series.end;
+  }
+  const start = shiftedStamp(from, days, mins, allDay);
+  const end = shiftedStamp(to, days, mins + grow, allDay);
+  if (!start || !end || end <= start) {
+    render();
+    return toast("The event could not be moved.");
+  }
+  // Show the move straight away; the sync that follows puts it right.
+  const before = { day: ev.day, start: ev.start, end: ev.end };
+  if (!spanning && scope === "this") {
+    ev.day += days;
+    if (!allDay) {
+      ev.start += mins;
+      ev.end = Math.min(24 * 60, ev.end + mins + grow);
+    }
+    render();
+  }
+  const fields = { subject: ev.title, location: ev.where || "", start, end, timeZone: calendarZone(), allDay, showAs: showAsOf(ev) };
+  if (scope === "all") fields.recurrence = recurrence || null;
   try {
-    await tauriInvoke("save_event", {
-      email: acct.email,
-      eventId: String(ev.eventId || ev.id).split("@")[0],
-      calendarId: null,
-      fields: {
-        subject: ev.title,
-        location: ev.where || "",
-        start: localStamp(iso, target.start),
-        end: target.end >= 24 * 60 ? nextDayIso(iso) + "T00:00:00" : localStamp(iso, target.end),
-        timeZone: calendarZone(),
-        allDay: false,
-        showAs: showAsOf(ev)
-      }
-    });
+    await tauriInvoke("save_event", { email: acct.email, eventId, calendarId: null, fields });
   } catch (err) {
     Object.assign(ev, before);
     render();
     return toast(String(err && err.message || err || "The event could not be moved."));
   }
-  toast("Moved · " + ev.title);
+  toast((scope === "all" ? "Moved the series · " : "Moved · ") + ev.title);
   await syncCalendars(ev.account, true);
   if (view === "calendar") render();
 }
@@ -20281,7 +20433,7 @@ const folderBusy = new Set();
 let syncNote = "";
 const folderRun = new Map();
 const bodyLoads = new Set();
-const APP_VERSION = "1.7.8";
+const APP_VERSION = "1.7.9";
 let appVersion = APP_VERSION;
 
 prepareDesktopAccounts();
