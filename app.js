@@ -5331,7 +5331,8 @@ function paintList() {
       <button type="button" class="row-act pin" data-row-pin="${esc(opts.thread)}" aria-pressed="${pinned ? "true" : "false"}" title="${esc(pinLabel)}" aria-label="${esc(pinLabel)}">${rowPinIcon}</button>
       <button type="button" class="row-act" data-row-delete="${esc(m.id)}" data-row-only="${opts.child ? "1" : ""}" title="Delete" aria-label="Delete">${rowTrashIcon}</button>
     </span>`;
-    return `<div class="row-wrap">
+    const files = rowFilesHtml(opts.shortcut);
+    return `<div class="row-wrap${opts.child ? " child-wrap" : ""}${files ? " has-files" : ""}">
       <button class="row${opts.child ? " child" : ""}${opts.unread ? " unread" : ""}${!opts.child && picked.has(opts.thread) ? " picked" : ""}" type="button" data-thread="${opts.thread}" data-id="${m.id}" aria-current="${opts.current ? "true" : "false"}"${!opts.child && picked.size ? ` aria-selected="${picked.has(opts.thread)}"` : ""}>
         <span class="avatar" style="background:${esc(m.color)}">${esc(m.initials)}</span>
         <span>
@@ -5341,7 +5342,7 @@ function paintList() {
         </span>
       </button>
       ${actions}
-      ${rowFilesHtml(opts.shortcut)}
+      ${files}
     </div>`;
   };
   const top = topResultIds(items);
@@ -5432,6 +5433,50 @@ function paintList() {
 // Selecting a message, flagging one or a sync landing changes a line or two
 // of the list. A line whose markup is the same as last time keeps its
 // element, so only the lines that changed are built, bound and laid out.
+// Bring `old` in line with `fresh` in place when the two have the same
+// shape: only attributes and text differ, as when a row is selected, read
+// or flagged. The row under the pointer stays the same element, so the
+// second click of a double-click still lands on it (#80), and its handlers,
+// which read the row's data when they run, carry on. False when the shape
+// differs; the caller then swaps in the new part.
+function morphListNode(old, fresh) {
+  if (old.nodeType !== fresh.nodeType) return false;
+  if (old.nodeType === 3) {
+    if (old.data !== fresh.data) old.data = fresh.data;
+    return true;
+  }
+  if (old.nodeType !== 1 || old.tagName !== fresh.tagName) return false;
+  const a = old.childNodes;
+  const b = fresh.childNodes;
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i].nodeType !== b[i].nodeType || (a[i].nodeType === 1 && a[i].tagName !== b[i].tagName)) return false;
+  }
+  for (let i = 0; i < a.length; i++) {
+    if (!morphListNode(a[i], b[i])) return false;
+  }
+  for (const attr of [...old.attributes]) {
+    // draggable is set by bindListPart, not written in the HTML.
+    if (!fresh.hasAttribute(attr.name) && attr.name !== "draggable") old.removeAttribute(attr.name);
+  }
+  for (const attr of fresh.attributes) {
+    if (old.getAttribute(attr.name) !== attr.value) old.setAttribute(attr.name, attr.value);
+  }
+  return true;
+}
+
+// Same shape all the way down, checked before anything is changed, so a
+// failed morph never leaves a part half updated.
+function sameListShape(old, fresh) {
+  if (old.nodeType !== fresh.nodeType) return false;
+  if (old.nodeType !== 1) return true;
+  if (old.tagName !== fresh.tagName || old.childNodes.length !== fresh.childNodes.length) return false;
+  for (let i = 0; i < old.childNodes.length; i++) {
+    if (!sameListShape(old.childNodes[i], fresh.childNodes[i])) return false;
+  }
+  return true;
+}
+
 function placeListParts(parts) {
   const kept = new Map();
   [...rows.children].forEach(node => {
@@ -5446,6 +5491,11 @@ function placeListParts(parts) {
     }
     maker.innerHTML = part.html;
     const node = maker.content.firstElementChild;
+    if (old && sameListShape(old, node) && morphListNode(old, node)) {
+      kept.delete(part.key);
+      old._listHtml = part.html;
+      return old;
+    }
     node._listKey = part.key;
     node._listHtml = part.html;
     bindListPart(node);
@@ -20433,7 +20483,7 @@ const folderBusy = new Set();
 let syncNote = "";
 const folderRun = new Map();
 const bodyLoads = new Set();
-const APP_VERSION = "1.7.9";
+const APP_VERSION = "1.7.10";
 let appVersion = APP_VERSION;
 
 prepareDesktopAccounts();
