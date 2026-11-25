@@ -4183,6 +4183,16 @@ let passed = 0, failed = 0;
 for (const t of tests.filter(t => t.name.includes(filter))) {
   const page = await browser.newPage();
   await page.setViewport({ width: 1400, height: 900 });
+  // An action kept under the toolbar's More is reached the way a person
+  // reaches it: open More, then choose it.
+  const rawClick = page.click.bind(page);
+  page.click = async (selector, options) => {
+    const under = await page.evaluate((sel) => {
+      try { const el = document.querySelector(sel); const menu = el && el.closest("#more-menu"); return !!(menu && menu.hidden); } catch (e) { return false; }
+    }, selector).catch(() => false);
+    if (under) { await rawClick("#more-actions"); await wait(60); }
+    return rawClick(selector, options);
+  };
   const errors = [];
   page.on("pageerror", e => errors.push(e.message));
   // A CSP block names the element that tried, so a failure says where.

@@ -4,15 +4,15 @@
 
   :root {
     color-scheme: light;
-    --bg: #f3f2f1;
+    --bg: #f3f4f6;
     --panel: #fff;
-    --ink: #242424;
-    --muted: #5c5c5c;
-    --faint: #8a8886;
-    --line: #edebe9;
-    --line-strong: #d2d0ce;
-    --hover: #f5f5f5;
-    --selected: #deecf9;
+    --ink: #1f2328;
+    --muted: #4f5964;
+    --faint: #5c6470;
+    --line: #e6e8eb;
+    --line-strong: #cfd4da;
+    --hover: #f1f3f5;
+    --selected: #e3eefa;
     --blue: #0f6cbd;
     --blue-ink: #0f548c;
     --work: #0f6cbd;
@@ -58,22 +58,22 @@
     --seam: #ffffff;
     --seam-shade: 4px 0 12px rgba(0, 0, 0, .16);
     --card-shadow: 0 0.3px 0.9px rgba(0, 0, 0, .08), 0 1.6px 3.6px rgba(0, 0, 0, .13);
-    --row-on: #ebebeb;
+    --row-on: #e8ebee;
     --chip-shadow: 0 1px 2px rgba(0, 0, 0, .10);
-    --search: #f5f5f5;
+    --search: #f1f3f5;
     --field: #fff;
-    --soft: #fafafa;
-    --rail: #faf9f8;
+    --soft: #f8f9fa;
+    --rail: #f7f8f9;
     --side: #fff;
     --list-width: 360px;
-    --seg: #f0f0f0;
+    --seg: #eceef1;
     --seg-on: #fff;
-    --hour-line: #f0eeec;
-    --day-line: #f3f2f1;
+    --hour-line: #eceef1;
+    --day-line: #f1f3f5;
     --toast-bg: #242424;
     --toast-ink: #fff;
     --on-accent: #fff;
-    --search-icon: #616161;
+    --search-icon: #5c6470;
     --flag: #c4314b;
     --stripe: rgba(255, 255, 255, .55);
     --font: "Segoe UI", "Adwaita Sans", Cantarell, system-ui, sans-serif;
@@ -1083,7 +1083,7 @@
     background: var(--panel);
     padding: 10px 14px 12px;
     display: grid;
-    grid-template-columns: 36px minmax(0, 1fr);
+    grid-template-columns: 8px minmax(0, 1fr);
     gap: 10px;
   }
   .row:hover { background: var(--hover); }
@@ -1091,8 +1091,8 @@
   .more-folders { color: var(--muted); }
   .more-folders svg { transition: transform 120ms; transform: rotate(0deg); }
   .more-folders[aria-expanded="true"] svg { transform: rotate(90deg); }
-  body[data-list-density="compact"] .row { padding: 6px 14px 7px; grid-template-columns: 28px minmax(0, 1fr); gap: 8px; }
-  body[data-list-density="compact"] .row .avatar { width: 28px; height: 28px; font-size: 11px; }
+  body[data-list-density="compact"] .row { padding: 6px 14px 7px; }
+  body[data-list-density="roomy"] .row { padding: 14px 14px 16px; }
   body[data-list-preview="none"] .conv .row .preview { display: none; }
   body[data-list-preview="2"] .conv .row .preview { white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
   body[data-list-density="compact"] .row .preview,
@@ -1142,28 +1142,49 @@
   .row-act[data-row-flag][aria-pressed="true"] svg path,
   .row-act.pin[aria-pressed="true"] svg path { fill: currentColor; }
   .row.unread .who, .row.unread .subject { font-weight: 700; }
-  .row.unread::before {
-    content: "";
-    position: absolute;
-    left: 0;
-    top: 10px;
-    bottom: 10px;
-    width: 3px;
-    border-radius: min(2px, var(--r-max));
+  /* Unread is a dot in the accent colour, where the eye starts each line.
+     The accent means "act here" and nothing else in the list uses it. */
+  .unread-dot {
+    width: 8px;
+    height: 8px;
+    margin-top: 6px;
+    border-radius: min(50%, var(--r-max));
     background: var(--blue);
+    visibility: hidden;
   }
-  .conv-line .row.unread::before { left: -22px; }
+  .row.unread .unread-dot { visibility: visible; }
+  .acct-dot {
+    flex: none;
+    width: 8px;
+    height: 8px;
+    margin-right: 6px;
+    border-radius: min(50%, var(--r-max));
+    background: var(--work);
+  }
+  .acct-dot.personal { background: var(--personal); }
+  .acct-dot.plum { background: var(--plum); }
+  .acct-dot.amber { background: var(--amber); }
+  .acct-dot.clay { background: var(--clay); }
+  .acct-dot.leaf { background: var(--leaf); }
+  .acct-dot.orange { background: var(--orange); }
+  .acct-dot.pink { background: var(--pink); }
+  .acct-dot.red { background: var(--red); }
+  .acct-dot.gold { background: var(--gold); }
+  .acct-dot.navy { background: var(--navy); }
+  .acct-dot.slate { background: var(--slate); }
+  .acct-dot.magenta { background: var(--magenta); }
+  .row .who:has(.acct-dot) { display: flex; align-items: center; }
   .row.child {
-    grid-template-columns: 24px minmax(0, 1fr);
     gap: 8px;
     padding: 5px 14px 6px 48px;
   }
-  .row.child .avatar { width: 24px; height: 24px; font-size: 10px; }
   .row.child .who,
   .row.child .preview,
   .row.child .when { font-size: 12px; }
   .row.child .preview { margin-top: 1px; }
   .row.child .clip svg { width: 12px; height: 12px; }
+  /* Initials are neutral: a colour here said nothing about the sender, and
+     was the loudest thing in the window. The inline colour is left unused. */
   .avatar {
     width: 36px;
     height: 36px;
@@ -1172,7 +1193,9 @@
     place-items: center;
     font-size: 13px;
     font-weight: 650;
-    color: var(--on-accent);
+    background: var(--seg) !important;
+    color: var(--muted);
+    box-shadow: inset 0 0 0 1px var(--line);
   }
   .who-line, .sub-line { display: flex; gap: 8px; align-items: baseline; min-width: 0; }
   .from-folder { font-size: 11px; color: var(--muted); border: 1px solid var(--line); border-radius: min(4px, var(--r-max)); padding: 0 5px; white-space: nowrap; }
@@ -1657,6 +1680,63 @@
   .text-btn { height: 32px; padding: 0 8px; color: var(--muted); }
   .read-head .toolbar { flex-wrap: wrap; justify-content: flex-end; }
   .read-head .icon-btn { color: var(--muted); }
+  /* The reading pane's actions: a word beside each icon, in three groups,
+     and the rest under More. In a narrow pane the words fold away and the
+     icons stay. */
+  .read-head { container-type: inline-size; }
+  .read-head .toolbar { align-items: center; row-gap: 4px; justify-content: flex-start; margin-left: 0; }
+  .read-head .toolbar .more-menu { right: auto; left: 0; }
+  .tool-btn {
+    width: auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 0 9px 0 7px;
+    border-radius: min(4px, var(--r-max));
+    font-size: 13px;
+    white-space: nowrap;
+  }
+  .tool-btn:hover { color: var(--ink); }
+  .tool-btn#reply, .tool-btn#reply-all { color: var(--ink); font-weight: 600; }
+  .tool-btn#reply + .tool-btn#reply-all { font-weight: 400; color: var(--muted); }
+  .tool-sep { width: 1px; height: 18px; margin: 0 5px; background: var(--line-strong); flex: none; }
+  .tool-sep:has(+ .tool-sep), .tool-sep:last-child { display: none; }
+  .tool-more { position: relative; display: inline-flex; }
+  .more-menu {
+    position: absolute;
+    top: calc(100% + 4px);
+    right: 0;
+    z-index: 30;
+    min-width: 220px;
+    display: flex;
+    flex-direction: column;
+    padding: 4px;
+    background: var(--panel);
+    border: 1px solid var(--line-strong);
+    border-radius: min(6px, var(--r-max));
+    box-shadow: var(--shadow);
+  }
+  .more-menu .more-item {
+    width: 100%;
+    height: 32px;
+    display: flex;
+    align-items: center;
+    justify-content: flex-start;
+    gap: 10px;
+    padding: 0 10px;
+    border-radius: min(4px, var(--r-max));
+    font-size: 13px;
+    color: var(--ink);
+    text-align: left;
+    white-space: nowrap;
+  }
+  .more-menu .more-item svg { color: var(--muted); flex: none; }
+  .more-menu .more-item[aria-pressed="true"] { color: var(--blue-ink); }
+  @container (max-width: 560px) {
+    .tool-btn .tool-label { display: none; }
+    .tool-btn { padding: 0; width: 32px; justify-content: center; }
+    .tool-sep { margin: 0 2px; }
+  }
   .row-menu {
     position: fixed;
     z-index: 8;
@@ -2580,15 +2660,15 @@
   #download-go:disabled { opacity: .45; }
   .row-files {
     position: absolute;
-    left: 60px;
+    left: 32px;
     bottom: 8px;
     display: flex;
     align-items: center;
     gap: 6px;
-    max-width: calc(100% - 76px);
+    max-width: calc(100% - 48px);
     z-index: 1;
   }
-  .row-wrap.child-wrap .row-files { left: 80px; bottom: 5px; max-width: calc(100% - 96px); }
+  .row-wrap.child-wrap .row-files { left: 64px; bottom: 5px; max-width: calc(100% - 80px); }
   .row-wrap.has-files .row { padding-bottom: 42px; }
   .row-wrap.child-wrap.has-files .row { padding-bottom: 32px; }
   body[data-list-density="compact"] .row-wrap.has-files .row { padding-bottom: 7px; }
@@ -3926,11 +4006,11 @@ html[data-look="omarchy"] .theme-omarchy { display: block; }
 html[data-look="omarchy"] #app-mark stop { stop-color: var(--blue); }
 /* Avatars carry their account's colour inline; on the Omarchy theme they
    take the theme's version of it. */
-html[data-look="omarchy"] :is(.avatar, .event-avatar)[style*="#0f6cbd"] { background: var(--work) !important; }
-html[data-look="omarchy"] :is(.avatar, .event-avatar)[style*="#0e7c66"] { background: var(--personal) !important; }
-html[data-look="omarchy"] :is(.avatar, .event-avatar)[style*="#5b3d8a"] { background: var(--plum) !important; }
-html[data-look="omarchy"] :is(.avatar, .event-avatar)[style*="#8a5a00"] { background: var(--amber) !important; }
-html[data-look="omarchy"] :is(.avatar, .event-avatar)[style*="#a33b32"] { background: var(--clay) !important; }
+html[data-look="omarchy"] .event-avatar[style*="#0f6cbd"] { background: var(--work) !important; }
+html[data-look="omarchy"] .event-avatar[style*="#0e7c66"] { background: var(--personal) !important; }
+html[data-look="omarchy"] .event-avatar[style*="#5b3d8a"] { background: var(--plum) !important; }
+html[data-look="omarchy"] .event-avatar[style*="#8a5a00"] { background: var(--amber) !important; }
+html[data-look="omarchy"] .event-avatar[style*="#a33b32"] { background: var(--clay) !important; }
 .omarchy-card { border: 1px solid var(--line); border-radius: min(8px, var(--r-max)); padding: 14px 16px; margin: 0 0 14px; background: var(--panel); }
 .omarchy-card h3 { margin: 0 0 4px; font-size: 14px; }
 .omarchy-card p { margin: 0 0 10px; }

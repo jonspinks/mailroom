@@ -4542,6 +4542,47 @@ function conversations() {
   }).filter(c => !focus || focusOf(c.latest) === focusTab).sort((a, b) => b.latest.seq - a.latest.seq);
 }
 
+// The More menu on the reading pane's toolbar. Choosing something closes it;
+// so does a click anywhere else, or Escape.
+function closeMoreActions() {
+  const menu = document.getElementById("more-menu");
+  const btn = document.getElementById("more-actions");
+  if (!menu || menu.hidden) return false;
+  menu.hidden = true;
+  if (btn) btn.setAttribute("aria-expanded", "false");
+  return true;
+}
+
+function bindMoreActions() {
+  const btn = document.getElementById("more-actions");
+  const menu = document.getElementById("more-menu");
+  if (!btn || !menu) return;
+  btn.onclick = (ev) => {
+    ev.stopPropagation();
+    const opening = menu.hidden;
+    menu.hidden = !opening;
+    btn.setAttribute("aria-expanded", opening ? "true" : "false");
+    if (opening) {
+      const first = [...menu.querySelectorAll("button")].find(item => !item.hidden && item.offsetParent);
+      if (first) first.focus();
+    }
+  };
+  menu.addEventListener("click", () => setTimeout(closeMoreActions, 0));
+  menu.addEventListener("keydown", (ev) => {
+    if (ev.key === "Escape") { ev.stopPropagation(); closeMoreActions(); btn.focus(); return; }
+    if (ev.key !== "ArrowDown" && ev.key !== "ArrowUp") return;
+    ev.preventDefault();
+    const items = [...menu.querySelectorAll("button")].filter(item => !item.hidden && item.offsetParent);
+    const at = items.indexOf(document.activeElement);
+    const next = items[(at + (ev.key === "ArrowDown" ? 1 : -1) + items.length) % items.length];
+    if (next) next.focus();
+  });
+}
+
+document.addEventListener("click", (ev) => {
+  if (!ev.target.closest || !ev.target.closest(".tool-more")) closeMoreActions();
+});
+
 function conversationFor(id) {
   const msg = messages.find(m => m.id === id);
   if (!msg) return null;
@@ -5338,6 +5379,10 @@ function paintList() {
   const rowFlagIcon = `<svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M4.2 2.2v11.6M4.2 2.8h7.2L9.2 5.6l2.2 2.8H4.2" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round" stroke-linecap="round"/></svg>`;
   const rowPinIcon = `<svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M6 2.2h4l-.7 3.4 2.2 2.2H4.5l2.2-2.2L6 2.2zM8 7.8v6" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round" stroke-linecap="round"/></svg>`;
   const rowTrashIcon = `<svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M3.2 4.6h9.6M6.2 4.5V3.2h3.6v1.3M5.6 4.6l.4 8h4l.4-8" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+  // With more than one account in view, a dot in the account's colour says
+  // whose mail a line is. It is the colour of that account's calendar too.
+  const mixedAccounts = account === "all" && Object.keys(accounts).filter(id => accountInProfile(id)).length > 1;
+  const acctDot = (m) => mixedAccounts && accounts[m.account] ? `<span class="acct-dot ${esc(accounts[m.account].cls || "work")}" title="${esc(accounts[m.account].name)}"></span>` : "";
   const rowHtml = (m, opts) => {
     const who = (m.draft || m.pendingSend) ? "To: " + (m.toName || m.to || "someone") : m.from;
     const when = m.draft && !m.pendingSend ? "Draft" : ((sort.by === "size" || sort.by === "due") && sortWhen(sort.by, m, opts.shownAll)) || m.time;
@@ -5360,9 +5405,9 @@ function paintList() {
     const files = rowFilesHtml(opts.shortcut);
     return `<div class="row-wrap${opts.child ? " child-wrap" : ""}${files ? " has-files" : ""}">
       <button class="row${opts.child ? " child" : ""}${opts.unread ? " unread" : ""}${!opts.child && picked.has(opts.thread) ? " picked" : ""}" type="button" data-thread="${opts.thread}" data-id="${m.id}" aria-current="${opts.current ? "true" : "false"}"${!opts.child && picked.size ? ` aria-selected="${picked.has(opts.thread)}"` : ""}>
-        <span class="avatar" style="background:${esc(m.color)}">${esc(m.initials)}</span>
+        <span class="unread-dot" aria-hidden="true"></span>
         <span>
-          <span class="who-line"><span class="who"><span class="who-name">${esc(who)}</span><span class="pill acct-pill ${accounts[m.account].cls}">${esc(accounts[m.account].name)}</span></span>${externalPill(m)}${folderPill}${importanceMark(m)}${categoryDots(m)}${flag}${opts.shortcut ? `<span class="row-clip" title="Has attachments" aria-label="Has attachments">${rowClipIcon}</span>` : ""}${m.pendingAction ? `<span class="pending-mark" title="Waiting to reach the server" aria-label="Waiting to reach the server"><svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><circle cx="6" cy="6" r="4.6" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M6 3.4V6l1.8 1.2" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg></span>` : ""}<span class="when${when === "Draft" ? " draft-when" : ""}">${esc(when)}</span></span>
+          <span class="who-line"><span class="who">${acctDot(m)}<span class="who-name">${esc(who)}</span><span class="pill acct-pill ${accounts[m.account].cls}">${esc(accounts[m.account].name)}</span></span>${externalPill(m)}${folderPill}${importanceMark(m)}${categoryDots(m)}${flag}${opts.shortcut ? `<span class="row-clip" title="Has attachments" aria-label="Has attachments">${rowClipIcon}</span>` : ""}${m.pendingAction ? `<span class="pending-mark" title="Waiting to reach the server" aria-label="Waiting to reach the server"><svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><circle cx="6" cy="6" r="4.6" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M6 3.4V6l1.8 1.2" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg></span>` : ""}<span class="when${when === "Draft" ? " draft-when" : ""}">${esc(when)}</span></span>
           ${subjectLine}
           <span class="preview">${esc(m.preview)}</span>
         </span>
@@ -9558,33 +9603,53 @@ function renderReading() {
   const fileBtn = fileTotal ? `<button class="icon-btn files-btn" type="button" id="thread-files" title="Attachments (${fileTotal})" aria-label="Attachments (${fileTotal})" aria-haspopup="menu">${clipIcon}<span class="files-count">${fileTotal}</span></button>` : "";
   // The reading window only reads: moving, flagging or deleting belongs to
   // the main window, whose list would otherwise go stale.
+  // Fourteen bare icons made every action a guess. The ones used all day
+  // carry a word; the rest keep their icon and word under More, so each
+  // still has one place and the same id.
+  const tool = (id, label, path, text) => `<button class="icon-btn tool-btn" type="button" id="${id}" title="${label}" aria-label="${label}">${path}<span class="tool-label">${text || label}</span></button>`;
+  const item = (id, label, path) => `<button class="icon-btn more-item" type="button" role="menuitem" id="${id}" title="${label}" aria-label="${label}">${path}<span class="tool-label">${label}</span></button>`;
+  const sep = `<span class="tool-sep" aria-hidden="true"></span>`;
+  const moreIcon = `<svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true"><circle cx="4.500" cy="10" r="1.300" fill="currentColor"/><circle cx="10" cy="10" r="1.300" fill="currentColor"/><circle cx="15.500" cy="10" r="1.300" fill="currentColor"/></svg>`;
+  const more = (items) => items.trim() ? `<span class="tool-more">
+          <button class="icon-btn tool-btn" type="button" id="more-actions" title="More actions" aria-label="More actions" aria-haspopup="menu" aria-expanded="false" aria-controls="more-menu">${moreIcon}<span class="tool-label">More</span></button>
+          <span class="more-menu" id="more-menu" role="menu" aria-label="More actions" hidden>${items}</span>
+        </span>` : "";
+  // Reply all earns its place on the bar only when there is someone else to
+  // answer; otherwise it waits under More.
+  const head = conv.latest;
+  const others = head ? parseAddresses([head.to, addressText(head.cc)].join(";")).filter(email => !ownAddresses().has(email.toLowerCase())).length : 0;
+  const wideReply = others > 0;
   const tools = readWindow
-    ? `${icon("reply", "Reply", replyIcon)}
-        ${icon("reply-all", "Reply all", replyAllIcon)}
-        ${icon("forward", "Forward", forwardIcon)}
+    ? `${tool("reply", "Reply", replyIcon)}
+        ${tool("reply-all", "Reply all", replyAllIcon)}
+        ${tool("forward", "Forward", forwardIcon)}
         ${fileBtn}
         ${icon("print", "Print (Ctrl+P)", printIcon)}`
     : (folderDraft || held)
-    ? icon("delete", "Delete", deleteIcon)
-    : `${icon("reply", "Reply", replyIcon)}
-        ${icon("reply-all", "Reply all", replyAllIcon)}
-        ${icon("forward", "Forward", forwardIcon)}
-        ${icon("reply-invite", "Reply with invite", replyInviteIcon)}
-        ${fileBtn}
-        ${icon("mark-read", "Mark as read", readIcon)}
-        ${icon("mark-unread", "Mark as unread", unreadIcon)}
-        ${where === "trash" ? icon("restore", "Restore", restoreIcon) : ""}
-        ${where === "archive" ? icon("to-inbox", "Move to inbox", inboxIcon) : ""}
-        ${folderKind(where, conv.latest.account) === "junk" ? icon("not-junk", "Not junk", inboxIcon) : ""}
-        ${where !== "trash" && where !== "archive" ? icon("archive", "Archive", archiveIcon) : ""}
-        ${where !== "drafts" && where !== "outbox" ? icon("move-to", "Move to…", moveIcon) : ""}
-        ${where !== "drafts" && where !== "outbox" && !isGoogleAccount(conv.latest.account) ? icon("categorize", "Categorize", tagIcon) : ""}
-        ${where === "inbox" || where === "archive" ? icon("snooze", "Snooze", snoozeIcon) : ""}
-        ${sweepSource(conv.messages.filter(m => messageBox(m) === where)) ? icon("sweep", "Sweep…", sweepIcon) : ""}
-        ${where !== "trash" ? icon("delete", "Delete", deleteIcon) : ""}
-        ${conv.messages.some(canReportJunk) ? icon("report-junk", "Report junk", junkIcon) : ""}
-        ${icon("flag", "Flag", flagIcon)}
-        ${icon("print", "Print (Ctrl+P)", printIcon)}`;
+    ? tool("delete", "Delete", deleteIcon)
+    : `${tool("reply", "Reply", replyIcon)}
+        ${wideReply ? tool("reply-all", "Reply all", replyAllIcon) : ""}
+        ${tool("forward", "Forward", forwardIcon)}
+        ${sep}
+        ${where === "trash" ? tool("restore", "Restore", restoreIcon) : ""}
+        ${where === "archive" ? tool("to-inbox", "Move to inbox", inboxIcon) : ""}
+        ${folderKind(where, conv.latest.account) === "junk" ? tool("not-junk", "Not junk", inboxIcon) : ""}
+        ${where !== "trash" && where !== "archive" ? tool("archive", "Archive", archiveIcon) : ""}
+        ${where !== "trash" ? tool("delete", "Delete", deleteIcon) : ""}
+        ${where === "inbox" || where === "archive" ? tool("snooze", "Snooze", snoozeIcon) : ""}
+        ${fileBtn ? sep + fileBtn : ""}
+        ${sep}
+        ${more(`
+          ${wideReply ? "" : item("reply-all", "Reply all", replyAllIcon)}
+          ${item("reply-invite", "Reply with invite", replyInviteIcon)}
+          ${item("mark-read", "Mark as read", readIcon)}
+          ${item("mark-unread", "Mark as unread", unreadIcon)}
+          ${item("flag", "Flag", flagIcon)}
+          ${where !== "drafts" && where !== "outbox" ? item("move-to", "Move to…", moveIcon) : ""}
+          ${where !== "drafts" && where !== "outbox" && !isGoogleAccount(conv.latest.account) ? item("categorize", "Categorize", tagIcon) : ""}
+          ${sweepSource(conv.messages.filter(m => messageBox(m) === where)) ? item("sweep", "Sweep…", sweepIcon) : ""}
+          ${conv.messages.some(canReportJunk) ? item("report-junk", "Report junk", junkIcon) : ""}
+          ${item("print", "Print (Ctrl+P)", printIcon)}`)}`;
   const subjectLine = conv.topic;
   const threadCount = shown.length;
   reading.innerHTML = `
@@ -9605,6 +9670,7 @@ function renderReading() {
   `;
   const closeBtn = document.getElementById("close-message");
   if (closeBtn) closeBtn.onclick = () => (readWindow ? closeComposeWindow() : backToList());
+  bindMoreActions();
   if (!folderDraft) loadThreadSent(conv);
   if ((folderDraft || showReply || showDraftCard) && reading.querySelector("#compose-form")) bindCompose(reading, { mode: "inline", kind: composeKind, draft: replyDraft });
   if (replyMsg) bindReplyTabs();
@@ -10916,6 +10982,36 @@ const OMARCHY_HEX = /^#[0-9a-f]{6}$/;
 
 // Mailroom's colour tokens from an Omarchy palette. Every value is one of
 // the palette's hex colours or a color-mix() of them.
+// Small grey text (times, previews, counts) has to stay readable on every
+// theme, tested or not: start at 70% foreground and step towards the
+// foreground until it reaches 4.5:1 on the background and on a selected row.
+function hexLuminance(hex) {
+  const part = (at) => {
+    const c = parseInt(hex.slice(at, at + 2), 16) / 255;
+    return c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+  };
+  return 0.2126 * part(1) + 0.7152 * part(3) + 0.0722 * part(5);
+}
+
+function hexContrast(a, b) {
+  const [hi, lo] = [hexLuminance(a), hexLuminance(b)].sort((x, y) => y - x);
+  return (hi + 0.05) / (lo + 0.05);
+}
+
+function hexMix(a, b, share) {
+  const part = (at) => Math.round(parseInt(a.slice(at, at + 2), 16) * share / 100 + parseInt(b.slice(at, at + 2), 16) * (100 - share) / 100).toString(16).padStart(2, "0");
+  return "#" + part(1) + part(3) + part(5);
+}
+
+function readableFaint(fg, bg, selection) {
+  const grounds = [bg].concat(OMARCHY_HEX.test(selection || "") ? [selection] : []);
+  for (let share = 70; share < 100; share += 5) {
+    const colour = hexMix(fg, bg, share);
+    if (grounds.every(ground => hexContrast(colour, ground) >= 4.5)) return colour;
+  }
+  return fg;
+}
+
 function omarchyVars(look) {
   const c = (look && look.colors) || {};
   const pick = (...keys) => { for (const key of keys) if (OMARCHY_HEX.test(c[key] || "")) return c[key]; return ""; };
@@ -10933,7 +11029,7 @@ function omarchyVars(look) {
   const edge = pick("muted") || mix(fg, bg, 35);
   const vars = {
     "--bg": bg, "--panel": bg, "--side": bg, "--rail": sunk, "--seam": sunk,
-    "--ink": fg, "--muted": mix(fg, bg, 74), "--faint": mix(fg, bg, 55),
+    "--ink": fg, "--muted": mix(fg, bg, 82), "--faint": readableFaint(fg, bg, pick("selection")),
     // Plain mail text in dark mode, white in Mailroom's own dark.
     "--mail-ink": pick("bright_foreground", "light_foreground") || fg,
     "--line": mix(edge, bg, 55), "--line-strong": edge,
