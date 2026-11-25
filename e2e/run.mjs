@@ -2623,10 +2623,17 @@ test("the message window shows just that message, polls nothing, and answers in 
   same([snap.to, snap.subject], ["bob@example.org", "Re: Site plans"], "addressed and titled as a reply");
   expect(snap.originals.some(m => m.id === "m3"), "with the message it answers");
   same(await p.evaluate(() => !!document.querySelector("#reading #compose-form")), false, "no reply pane left in the message window");
-  expect(await p.$eval("#reading", e => e.textContent.includes("Site plans body")), "which still shows the message");
+  same((await calls("plugin:window|close")).length, 1, "and the message window closes: the compose window takes its place");
   await p.click("#forward"); await wait(600);
   const forward = await p.evaluate(() => JSON.parse(localStorage.getItem("outlook-mock-compose")));
   same([forward.subject, forward.to, (await calls("pop_compose")).length], ["FW: Site plans", "", 2], "Forward too");
+  same((await calls("plugin:window|close")).length, 2, "and closes the message window too");
+  // A compose window that could not open leaves the message where it was.
+  await p.evaluate(() => { window.__popFail = true; });
+  await p.click("#reply"); await wait(600);
+  same((await calls("plugin:window|close")).length, 2, "no close when the compose window did not open");
+  expect(await p.$eval("#reading", e => e.textContent.includes("Site plans body")), "the message still shows");
+  await p.evaluate(() => { window.__popFail = false; });
   // The compose window takes the reply from here, as from the main window.
   await p.goto(p.url().split(/[?#]/)[0] + "?" + composed[0].query, { waitUntil: "load" }); await wait(1200);
   expect(await p.$eval("#message-history", e => e.textContent.includes("Site plans body")), "the compose window shows the original");

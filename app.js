@@ -16650,14 +16650,15 @@ async function popOutCompose(form, ctx) {
   if (ctx && ctx.mode === "inline") {
     replyDraft = null;
     renderReading();
-    return;
+    return true;
   }
   if (ctx && ctx.mode === "pane") {
     paneCompose = null;
     renderReading();
-    return;
+    return true;
   }
   closePop();
+  return true;
 }
 
 // ---- A message in a window of its own (double-click in the list) ----
@@ -16735,14 +16736,17 @@ function openReadWindow() {
 }
 
 // The reading window has no reply pane: a reply or forward started there
-// goes straight on to the compose window, with the message it answers.
+// goes straight on to the compose window, with the message it answers, and
+// the reading window closes so the compose window takes its place, as in
+// Outlook (2026-11-25). If the compose window could not open, it stays.
 async function popReaderReply(draftId) {
   const form = reading.querySelector("#compose-form");
-  if (form && replyDraft) await popOutCompose(form, { mode: "inline", draft: replyDraft });
+  const opened = form && replyDraft ? await popOutCompose(form, { mode: "inline", draft: replyDraft }) : false;
   replyDraft = null;
   removeDraft(draftId);
   reading.dataset.paint = "";
   renderReading();
+  if (opened) closeComposeWindow();
 }
 
 const ATTACH_LIMIT = 35 * 1024 * 1024;
@@ -19732,7 +19736,7 @@ const folderBusy = new Set();
 let syncNote = "";
 const folderRun = new Map();
 const bodyLoads = new Set();
-const APP_VERSION = "1.7.3";
+const APP_VERSION = "1.7.4";
 let appVersion = APP_VERSION;
 
 prepareDesktopAccounts();
