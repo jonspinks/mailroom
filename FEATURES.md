@@ -27,6 +27,7 @@ compares them with this list, and opens an issue for anything new.
 | Choose when mail is marked as read | ✅ when opened, after 5 seconds, when you move on, or never (Settings > Mail) |
 | Group by date | ✅ Today, Yesterday, weekdays, Last week… |
 | Message preview lines | ✅ none, 1 line or 2 lines (Settings > Mail) |
+| Sort by | ✅ Date, From, Subject, Size, Importance, Flag due date, Attachments, either way round, kept per folder; size and due date show on the row; sorts the mail on this computer |
 | Dark mode for designed mail | ✅ recoloured colour by colour, sun button for the original |
 | Quoted text folded | ✅ Outlook, Gmail and Apple replies; legal footers too |
 | Attachment previews | ✅ PDF viewer, pictures; save one, some or all |

@@ -385,6 +385,12 @@ fn extra_text(item: &LiveMessage) -> String {
     if !item.reply_to.is_empty() {
         extra.insert("replyTo".into(), serde_json::to_value(&item.reply_to).unwrap_or_default());
     }
+    if item.size > 0 {
+        extra.insert("size".into(), item.size.into());
+    }
+    if !item.due.is_empty() {
+        extra.insert("due".into(), item.due.clone().into());
+    }
     serde_json::Value::Object(extra).to_string()
 }
 
@@ -402,6 +408,8 @@ fn apply_extra(item: &mut LiveMessage, text: &str) {
         Some("other") => "other".into(),
         _ => String::new(),
     };
+    item.size = extra["size"].as_i64().unwrap_or(0).max(0);
+    item.due = extra["due"].as_str().unwrap_or("").to_string();
 }
 
 fn add_cats(conn: &Connection, table: &str) -> Result<(), String> {
@@ -993,6 +1001,9 @@ fn patch_messages_on(
         if let Some(focus) = &patch.focus {
             item.focus = focus.clone();
         }
+        if let Some(due) = &patch.due {
+            item.due = due.clone();
+        }
         tx.execute(
             "update folder_messages set subject = ?4, unread = ?5, flagged = ?6, cats = ?7, extra = ?8
              where email = ?1 and folder_id = ?2 and id = ?3",
@@ -1013,6 +1024,50 @@ fn patch_messages_on(
     refresh_counts_tx(&tx, &email, folder_id)?;
     tx.commit().map_err(|err| err.to_string())?;
     Ok(merged)
+}
+
+/// Sizes fetched for sorting by size (#121), kept in each row's `extra`.
+/// A row whose extra is not JSON starts again from an empty object.
+pub fn set_sizes(email: &str, folder_id: &str, sizes: &[(String, i64)]) -> Result<(), String> {
+    let mut conn = writing()?;
+    set_sizes_on(&mut conn, email, folder_id, sizes)
+}
+
+fn set_sizes_on(conn: &mut Connection, email: &str, folder_id: &str, sizes: &[(String, i64)]) -> Result<(), String> {
+    let email = email.trim().to_lowercase();
+    let tx = conn.transaction().map_err(|err| err.to_string())?;
+    {
+        let mut stmt = tx
+            .prepare_cached(
+                "update folder_messages
+                 set extra = json_set(case when json_valid(extra) then extra else '{}' end, '$.size', ?4)
+                 where email = ?1 and folder_id = ?2 and id = ?3",
+            )
+            .map_err(|err| err.to_string())?;
+        for (id, size) in sizes {
+            if *size > 0 {
+                stmt.execute(params![email, folder_id.trim(), id.trim(), size]).map_err(|err| err.to_string())?;
+            }
+        }
+    }
+    tx.commit().map_err(|err| err.to_string())
+}
+
+/// Cached messages in a folder with no size yet, newest first.
+pub fn ids_without_size(email: &str, folder_id: &str, limit: usize) -> Result<Vec<String>, String> {
+    let conn = reading()?;
+    let mut stmt = conn
+        .prepare_cached(
+            "select id from folder_messages
+             where email = ?1 and folder_id = ?2
+               and coalesce(case when json_valid(extra) then json_extract(extra, '$.size') end, 0) <= 0
+             order by received desc, id desc limit ?3",
+        )
+        .map_err(|err| err.to_string())?;
+    let rows = stmt
+        .query_map(params![email.trim().to_lowercase(), folder_id.trim(), limit as i64], |row| row.get::<_, String>(0))
+        .map_err(|err| err.to_string())?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(|err| err.to_string())
 }
 
 /// A folder was marked read, or emptied, on the server.
@@ -1735,6 +1790,8 @@ fn message_fields(row: &rusqlite::Row) -> rusqlite::Result<LiveMessage> {
         importance: String::new(),
         invite: false,
         focus: String::new(),
+        size: 0,
+        due: String::new(),
     })
 }
 
@@ -2152,7 +2209,29 @@ mod tests {
             importance: String::new(),
             invite: false,
             focus: String::new(),
+            size: 0,
+            due: String::new(),
         }
+    }
+
+    #[test]
+    fn size_and_due_date_keep_through_the_cache_and_a_patch() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        ensure_schema(&conn).unwrap();
+        let mut cached = message("big");
+        cached.flagged = true;
+        cached.due = "2026-12-01".into();
+        replace_folder_messages_on(&mut conn, "jon@example.com", "in", &[cached, message("small")]).unwrap();
+        set_sizes_on(&mut conn, "jon@example.com", "in", &[("big".into(), 5_000_000), ("small".into(), 0), ("gone".into(), 9)]).unwrap();
+        let rows = load_folder_messages(&conn, "jon@example.com", "in", true).unwrap();
+        let big = rows.iter().find(|m| m.id == "big").unwrap();
+        assert_eq!((big.size, big.due.as_str()), (5_000_000, "2026-12-01"));
+        assert_eq!(rows.iter().find(|m| m.id == "small").unwrap().size, 0, "a zero size is not stored");
+
+        // Unflagged on the server: the due date goes, the size stays.
+        let unflag = crate::graph::MessagePatch { id: "big".into(), flagged: Some(false), due: Some(String::new()), ..Default::default() };
+        let merged = patch_messages_on(&mut conn, "jon@example.com", "in", &[unflag]).unwrap();
+        assert_eq!((merged[0].size, merged[0].due.as_str()), (5_000_000, ""));
     }
 
     #[test]

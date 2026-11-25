@@ -357,6 +357,12 @@
           "markdownDescription": "Enables the event_series command without any pre-configured scope."
         },
         {
+          "description": "Enables the fetch_sizes command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-fetch-sizes",
+          "markdownDescription": "Enables the fetch_sizes command without any pre-configured scope."
+        },
+        {
           "description": "Enables the finish_quit command without any pre-configured scope.",
           "type": "string",
           "const": "allow-finish-quit",
@@ -961,6 +967,12 @@
           "type": "string",
           "const": "deny-event-series",
           "markdownDescription": "Denies the event_series command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the fetch_sizes command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-fetch-sizes",
+          "markdownDescription": "Denies the fetch_sizes command without any pre-configured scope."
         },
         {
           "description": "Denies the finish_quit command without any pre-configured scope.",

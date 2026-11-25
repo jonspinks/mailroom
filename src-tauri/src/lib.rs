@@ -900,6 +900,32 @@ async fn search_mail(
 }
 
 /// One page of cached headers. The page searches each account and merges.
+/// Sizes for sorting a folder by size (#121), stored with the cached rows.
+/// Microsoft: the newest messages' sizes in pages of 100. Gmail: the cached
+/// messages that have none yet, one small request each.
+#[tauri::command]
+async fn fetch_sizes(email: String, folder_id: String) -> Result<Vec<(String, i64)>, String> {
+    in_background(move || {
+        let key = email.trim().to_lowercase();
+        let folder_id = folder_id.trim().to_string();
+        if key.is_empty() || folder_id.is_empty() {
+            return Err("Choose a folder.".into());
+        }
+        let sizes = if auth::is_google(&key) {
+            let missing = store::ids_without_size(&key, &folder_id, 300)?;
+            if missing.is_empty() {
+                return Ok(Vec::new());
+            }
+            google::message_sizes(&key, &missing)?
+        } else {
+            graph::folder_sizes(&key, &folder_id, 1000)?
+        };
+        store::set_sizes(&key, &folder_id, &sizes)?;
+        Ok(sizes)
+    })
+    .await
+}
+
 #[tauri::command]
 async fn search_cached(
     email: Option<String>,
@@ -2501,6 +2527,7 @@ pub fn run() {
             set_spelling,
             search_mail,
             search_cached,
+            fetch_sizes,
             message_files,
             open_attachment,
             open_link,
@@ -2860,6 +2887,8 @@ mod tests {
             importance: String::new(),
             invite: false,
             focus: String::new(),
+            size: 0,
+            due: String::new(),
         }];
         omit_message_bodies(&mut messages);
         assert!(messages[0].body_html.is_empty());

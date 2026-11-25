@@ -91,6 +91,7 @@
       return { messages: all.slice(start, start + 25), nextLink: start + 25 < all.length ? "skip=" + (start + 25) : "" };
     },
     set_focus: () => null,
+    fetch_sizes: () => window.__sizes || [],
     pop_compose: () => (window.__popFail ? Promise.reject("The window could not open.") : null),
     print_page: () => null,
     free_busy: (a) => (a.people || []).map(e => {
