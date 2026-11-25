@@ -2634,6 +2634,14 @@ function renderCalendarSettings(body) {
         <select id="meeting-length">${MEETING_LENGTHS.map(m => `<option value="${m}"${m === length ? " selected" : ""}>${lengthLabel(m)}</option>`).join("")}</select>
         <span class="field-hint">How long a new event or invite is when you click a time. Dragging across the calendar still sets its own length.</span>
       </label>
+      <div class="acct-default work-hours">Working hours
+        <span class="work-hours-pick">
+          <select id="work-start" aria-label="Working day starts">${WORK_HOUR_CHOICES.map(m => `<option value="${m}"${m === workHours().start ? " selected" : ""}>${esc(clockLabel(m))}</option>`).join("")}</select>
+          to
+          <select id="work-end" aria-label="Working day ends">${WORK_HOUR_CHOICES.map(m => `<option value="${m}"${m === workHours().end ? " selected" : ""}>${esc(clockLabel(m))}</option>`).join("")}</select>
+        </span>
+        <span class="field-hint">The hours Share availability offers, Monday to Friday.</span>
+      </div>
     </div>
     <p class="field-hint">This computer is set to ${esc(computer)}. New events use that zone. British Columbia and Alberta need tzdata 2026b or later.</p>
     ${rows.length ? rows.map(([id, acct]) => `
@@ -2645,6 +2653,25 @@ function renderCalendarSettings(body) {
         <button class="ghost" type="button" data-zone-computer hidden>Use this computer's time zone</button>
       </div>`).join("") : `<p class="empty-accounts">Sign in to a Microsoft account to set its mailbox time zone.</p>`}
   `;
+  const workStart = body.querySelector("#work-start");
+  const workEnd = body.querySelector("#work-end");
+  const saveWork = () => {
+    const start = Number(workStart.value);
+    const end = Number(workEnd.value);
+    if (end <= start) {
+      toast("The working day has to end after it starts");
+      workStart.value = String(workHours().start);
+      workEnd.value = String(workHours().end);
+      return;
+    }
+    try {
+      localStorage.setItem("mailroom-work-start", String(start));
+      localStorage.setItem("mailroom-work-end", String(end));
+    } catch (err) {}
+    toast("Working hours " + clockLabel(start) + " to " + clockLabel(end));
+  };
+  workStart.onchange = saveWork;
+  workEnd.onchange = saveWork;
   body.querySelector("#meeting-length").onchange = (e) => {
     try { localStorage.setItem("mailroom-meeting-length", e.target.value); } catch (err) {}
     toast("New meetings are " + lengthLabel(Number(e.target.value)) + " long");
@@ -13190,6 +13217,193 @@ function linkAddress(raw) {
 
 // Outlook's Insert link: the address and the text to show. Resolves to
 // { href, text }, "remove" for Remove link, or null when cancelled.
+// ---- Share availability (#120), as Outlook's RM580444 does: pick free
+// times from your own calendar and put them in the message as a short
+// list that names the time zone. Busy time comes from the sending
+// account's events (not free, not declined), loaded here if this window
+// has not got them yet. No booking link: a reply naming a time turns into
+// an invite with Reply with meeting.
+const WORK_HOUR_CHOICES = Array.from({ length: 33 }, (_, i) => 360 + i * 30); // 6:00 to 22:00
+
+function workHours() {
+  const read = (key, fallback) => {
+    try { const n = Number(localStorage.getItem(key)); return WORK_HOUR_CHOICES.includes(n) ? n : fallback; } catch (e) { return fallback; }
+  };
+  const start = read("mailroom-work-start", 540);
+  const end = read("mailroom-work-end", 1020);
+  return end > start ? { start, end } : { start: 540, end: 1020 };
+}
+
+function clockLabel(mins) {
+  const d = new Date(2026, 0, 1, 0, mins);
+  return d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+}
+
+function availabilityDays(count) {
+  const hours = workHours();
+  const now = new Date();
+  const days = [];
+  let d = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  // Today counts while there is still an hour of the working day left.
+  if (now.getHours() * 60 + now.getMinutes() > hours.end - 60) d = addDays(d, 1);
+  while (days.length < count) {
+    if (d.getDay() !== 0 && d.getDay() !== 6) days.push(d);
+    d = addDays(d, 1);
+  }
+  return days;
+}
+
+// Busy half hours of one account, keyed "day|minute".
+function busySlots(accountId, days, hours) {
+  const busy = new Set();
+  const counts = ev => ev.account === accountId && !ev.hidden && ev.response !== "declined" && showAsOf(ev) !== "free";
+  const dayKeys = days.map(d => dayFromDate(d));
+  allday.forEach(ev => {
+    if (!counts(ev) || !dayKeys.includes(ev.day)) return;
+    for (let m = hours.start; m < hours.end; m += 30) busy.add(ev.day + "|" + m);
+  });
+  events.forEach(ev => {
+    if (!counts(ev) || ev.start == null || !dayKeys.includes(ev.day)) return;
+    for (let m = hours.start; m < hours.end; m += 30) {
+      if (ev.start < m + 30 && ev.end > m) busy.add(ev.day + "|" + m);
+    }
+  });
+  return busy;
+}
+
+// Picked half hours as one line a day: "Tuesday 25 November: 10:00 to 11:00, 14:30 to 15:00".
+function availabilityHtml(picked, days) {
+  const lines = [];
+  days.forEach(date => {
+    const day = dayFromDate(date);
+    const mins = [...picked].filter(key => Number(key.split("|")[0]) === day).map(key => Number(key.split("|")[1])).sort((a, b) => a - b);
+    if (!mins.length) return;
+    const spans = [];
+    mins.forEach(m => {
+      const last = spans[spans.length - 1];
+      if (last && last[1] === m) last[1] = m + 30;
+      else spans.push([m, m + 30]);
+    });
+    const name = date.toLocaleDateString(undefined, { weekday: "long", day: "numeric", month: "long" });
+    lines.push(`<li><b>${esc(name)}</b>: ${spans.map(([a, b]) => esc(clockLabel(a)) + " to " + esc(clockLabel(b))).join(", ")}</li>`);
+  });
+  if (!lines.length) return "";
+  const zone = new Intl.DateTimeFormat(undefined, { timeZoneName: "long" }).formatToParts(days[0]).find(part => part.type === "timeZoneName");
+  const zoneText = zone ? zone.value : calendarZone();
+  return `<p>Here are some times I'm free (${esc(zoneText)}):</p><ul>${lines.join("")}</ul><p></p>`;
+}
+
+async function availabilityDialog(accountId) {
+  const acct = accounts[accountId];
+  const days = availabilityDays(5);
+  const hours = workHours();
+  if (acct && acct.signedIn && inDesktop()) {
+    const first = days[0];
+    const last = addDays(days[days.length - 1], 1);
+    const mark = calendarSynced.get(accountId);
+    if (!mark || new Date(mark.start) > first || new Date(mark.end) < last) await syncCalendars(accountId, false);
+  }
+  const busy = busySlots(accountId, days, hours);
+  const now = new Date();
+  const todayKey = dayFromDate(now);
+  const nowMins = now.getHours() * 60 + now.getMinutes();
+  const slots = [];
+  for (let m = hours.start; m < hours.end; m += 30) slots.push(m);
+  const cellState = (day, m) => (day < todayKey || (day === todayKey && m < nowMins)) ? "past" : busy.has(day + "|" + m) ? "busy" : "free";
+  return new Promise(resolve => {
+    const picked = new Set();
+    const layer = document.createElement("div");
+    layer.id = "choose-layer";
+    const head = days.map(d => `<th scope="col">${esc(d.toLocaleDateString(undefined, { weekday: "short", day: "numeric" }))}</th>`).join("");
+    const body = slots.map(m => `<tr><th scope="row">${m % 60 === 0 ? esc(clockLabel(m)) : ""}</th>${days.map(d => {
+      const day = dayFromDate(d);
+      const state = cellState(day, m);
+      const label = d.toLocaleDateString(undefined, { weekday: "long", day: "numeric", month: "long" }) + ", " + clockLabel(m) + (state === "busy" ? ", busy" : state === "past" ? ", past" : "");
+      return `<td><button type="button" class="avail-cell ${state}" data-avail="${day}|${m}" aria-pressed="false" aria-label="${esc(label)}"${state === "free" ? "" : " disabled"}></button></td>`;
+    }).join("")}</tr>`).join("");
+    layer.innerHTML = `
+      <div class="backdrop dim" data-avail-dismiss></div>
+      <form class="dialog avail-dialog" role="dialog" aria-modal="true" aria-label="Share availability" novalidate>
+        <h2>Share availability</h2>
+        <p class="field-hint">Pick the times to offer${acct ? " from " + esc(acct.name) + "'s calendar" : ""}. Shaded times are busy. Working hours are set in Settings &gt; Calendar.</p>
+        <div class="avail-grid-wrap"><table class="avail-grid"><thead><tr><th></th>${head}</tr></thead><tbody>${body}</tbody></table></div>
+        <div class="dialog-actions">
+          <button class="ghost avail-all" type="button" data-avail-all>All free times</button>
+          <span class="avail-count" aria-live="polite"></span>
+          <button class="ghost" type="button" data-avail-dismiss>Cancel</button>
+          <button class="primary" type="submit" disabled>Insert</button>
+        </div>
+      </form>`;
+    document.body.appendChild(layer);
+    const form = layer.querySelector("form");
+    const insert = form.querySelector("button[type=submit]");
+    const count = form.querySelector(".avail-count");
+    const paint = () => {
+      form.querySelectorAll("[data-avail]").forEach(btn => {
+        const on = picked.has(btn.dataset.avail);
+        btn.classList.toggle("picked", on);
+        btn.setAttribute("aria-pressed", on ? "true" : "false");
+      });
+      insert.disabled = !picked.size;
+      count.textContent = picked.size ? (picked.size / 2) + (picked.size === 2 ? " hour" : " hours") + " picked" : "";
+    };
+    const done = value => {
+      document.removeEventListener("keydown", onKey, true);
+      document.removeEventListener("pointerup", onUp);
+      layer.remove();
+      resolve(value);
+    };
+    function onKey(ev) {
+      if (ev.key !== "Escape") return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      done(null);
+    }
+    function onUp() { dragging = null; }
+    document.addEventListener("keydown", onKey, true);
+    document.addEventListener("pointerup", onUp);
+    // Press and drag across free times to pick or unpick several at once.
+    let dragging = null;
+    const touch = btn => {
+      if (!btn || btn.disabled) return;
+      if (dragging === "add") picked.add(btn.dataset.avail);
+      else picked.delete(btn.dataset.avail);
+      paint();
+    };
+    form.addEventListener("pointerdown", ev => {
+      const btn = ev.target.closest("[data-avail]");
+      if (!btn || btn.disabled) return;
+      ev.preventDefault();
+      dragging = picked.has(btn.dataset.avail) ? "remove" : "add";
+      touch(btn);
+    });
+    form.addEventListener("pointerover", ev => { if (dragging) touch(ev.target.closest("[data-avail]")); });
+    form.addEventListener("keydown", ev => {
+      const btn = ev.target.closest && ev.target.closest("[data-avail]");
+      if (!btn || (ev.key !== " " && ev.key !== "Enter")) return;
+      ev.preventDefault();
+      dragging = picked.has(btn.dataset.avail) ? "remove" : "add";
+      touch(btn);
+      dragging = null;
+    });
+    layer.addEventListener("click", ev => {
+      if (ev.target.closest("[data-avail-all]")) {
+        form.querySelectorAll("[data-avail]:not([disabled])").forEach(btn => picked.add(btn.dataset.avail));
+        paint();
+        return;
+      }
+      if (ev.target.closest("[data-avail-dismiss]")) done(null);
+    });
+    form.onsubmit = ev => {
+      ev.preventDefault();
+      if (!picked.size) return;
+      done(availabilityHtml(picked, days));
+    };
+    const first = form.querySelector("[data-avail]:not([disabled])");
+    if (first) first.focus();
+  });
+}
+
 function linkDialog({ href, text, editing }) {
   return new Promise(resolve => {
     const layer = document.createElement("div");
@@ -16552,6 +16766,7 @@ function formatBarHtml({ attach = true, assistant = true, hidden = false } = {})
           ${attach ? `<button class="attach-btn" type="button" id="add-file"${skip} title="Attach" aria-label="Attach"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M6.2 8.4l3.1-3.1a1.9 1.9 0 012.7 2.7L7.8 12.2a3 3 0 01-4.2-4.2L8 3.6" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg></button>
           <input class="file-picker" id="compose-file-picker" type="file" multiple tabindex="-1" aria-hidden="true">` : ""}
           <button type="button" class="format-icon" data-cmd="link"${skip} title="Link" aria-label="Link"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M6.9 9.1a2.5 2.5 0 003.5 0l2.3-2.3a2.5 2.5 0 00-3.5-3.5l-.9.9M9.1 6.9a2.5 2.5 0 00-3.5 0L3.3 9.2a2.5 2.5 0 003.5 3.5l.9-.9" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+          <button type="button" class="format-icon" data-cmd="availability"${skip} title="Share availability" aria-label="Share availability"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><rect x="2.2" y="3.2" width="11.6" height="10.6" rx="1.6" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M2.2 6.4h11.6M5.4 1.8v2.6M10.6 1.8v2.6" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><path d="M5.6 10.2l1.6 1.5 3.2-3.2" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
           ${assistant ? assistantButtonHtml() : ""}
         </div>`;
 }
@@ -18126,6 +18341,10 @@ function bindCompose(root, ctx) {
     if (cmd === "link") {
       editLink(write);
       return;
+    }
+    if (cmd === "availability") {
+      insertAvailability(write);
+      return;
     } else if (cmd === "insertUnorderedList" || cmd === "insertOrderedList") {
       applyList(write, cmd === "insertOrderedList");
     } else {
@@ -18174,6 +18393,22 @@ function bindCompose(root, ctx) {
     afterFormat(write);
   }
   body.linkFromMenu = () => editLink(body.querySelector(".body-write") || body);
+  // Share availability (#120): the free times picked go in at the caret.
+  async function insertAvailability(write) {
+    const sel = window.getSelection();
+    const range = sel && sel.rangeCount ? sel.getRangeAt(0).cloneRange() : null;
+    const sender = fromAccountId(formFromValue(form)) || defaultAccountId();
+    const html = await availabilityDialog(sender);
+    body.focus();
+    if (range && write.contains(range.commonAncestorContainer)) {
+      sel.removeAllRanges();
+      sel.addRange(range);
+    } else {
+      caretInMessage(null);
+    }
+    if (html) document.execCommand("insertHTML", false, html);
+    afterFormat(write);
+  }
   form.querySelectorAll(".format-bar [data-cmd]").forEach(btn => {
     btn.addEventListener("mousedown", (e) => e.preventDefault());
     btn.onclick = () => runFormat(btn.dataset.cmd);
@@ -20046,7 +20281,7 @@ const folderBusy = new Set();
 let syncNote = "";
 const folderRun = new Map();
 const bodyLoads = new Set();
-const APP_VERSION = "1.7.7";
+const APP_VERSION = "1.7.8";
 let appVersion = APP_VERSION;
 
 prepareDesktopAccounts();
