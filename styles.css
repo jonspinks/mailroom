@@ -359,6 +359,8 @@
     font-weight: 650;
     letter-spacing: -.01em;
   }
+  /* The bar is for getting somewhere. The version is in Settings. */
+  .brand .ver, .brand small { display: none !important; }
   .brand .ver {
     flex: none;
     font-weight: 500;
@@ -1500,7 +1502,7 @@
   }
   .read-subject h2 {
     margin: 0;
-    font-size: 17px;
+    font-size: 18px;
     font-weight: 600;
     letter-spacing: 0;
     line-height: 23px;
@@ -1569,6 +1571,10 @@
   /* Mail is drawn inside its letter and nowhere else: fixed or absolutely
      placed parts of a message position against it and are clipped to it. */
   .letter-fit { overflow-wrap: anywhere; max-width: 100%; position: relative; contain: paint; isolation: isolate; }
+  /* Mail that is only writing keeps a comfortable line however wide the
+     window is. Designed mail and tables keep the pane's full width. */
+  .thread-card .letter:not(.mail-fit),
+  .thread-card .letter-fit:not(:has(table)) { max-width: 46rem; }
   .letter-fit .row {
     display: block;
     grid-template-columns: none;
@@ -1675,6 +1681,14 @@
   #discard-confirm { position: fixed; inset: 0; z-index: 20; }
   #discard-confirm .backdrop { z-index: 20; }
   #discard-confirm .dialog { z-index: 21; }
+  /* Until you answer, Accept leads. */
+  .rsvp.unanswered button[data-rsvp="accepted"] { background: var(--blue); border-color: var(--blue); color: var(--on-accent); font-weight: 600; }
+  .invite-strip { display: grid; grid-template-columns: repeat(8, 1fr); gap: 2px; margin: 10px 0 8px; max-width: 320px; }
+  .strip-cell { display: grid; gap: 2px; }
+  .strip-cell i { display: block; height: 12px; background: var(--seg); border-radius: min(2px, var(--r-max)); }
+  .strip-cell.busy i { background: var(--faint); }
+  .strip-cell.this i { background: var(--blue); }
+  .strip-cell small { font-size: 10px; line-height: 12px; color: var(--faint); font-variant-numeric: tabular-nums; }
   .rsvp button[aria-pressed="true"] { background: var(--row-on); border-color: var(--line-strong); color: var(--ink); font-weight: 650; box-shadow: var(--chip-shadow); }
   .toolbar { display: flex; gap: 2px; margin-left: auto; }
   .text-btn { height: 32px; padding: 0 8px; color: var(--muted); }
@@ -1853,6 +1867,11 @@
   .times { display: flex; flex-direction: column; height: 100%; min-height: 0; }
   .times .gutter { flex: 1 0 0; height: auto; min-height: 0; }
   .daycol { position: relative; overflow: hidden; border-right: 1px solid var(--line); }
+  .daycol {
+    --off-hours: color-mix(in srgb, var(--ink) 3.5%, transparent);
+    background-image: linear-gradient(to bottom, var(--off-hours) 0, var(--off-hours) var(--work-from, 0%), transparent var(--work-from, 0%), transparent var(--work-to, 100%), var(--off-hours) var(--work-to, 100%), var(--off-hours) 100%);
+  }
+  .daycol.today { background-color: color-mix(in srgb, var(--blue) 6%, transparent); }
   .hour-line {
     position: absolute;
     left: 0; right: 0;
@@ -1947,11 +1966,15 @@
   .event.slate, .chip.slate { background: var(--slate-soft); color: var(--slate-ink); }
   .event.magenta, .chip.magenta { background: var(--magenta-soft); color: var(--magenta-ink); }
   .event.tentative, .chip.tentative { background-image: repeating-linear-gradient(-45deg, transparent, transparent 4px, var(--stripe) 4px, var(--stripe) 8px); }
+  /* Three states by shape, not by hue: solid is busy, hatched is tentative,
+     a dashed outline is free. The edge keeps the calendar's colour. */
   .event.free, .chip.free,
   .event.tentative.free, .chip.tentative.free {
     background-color: transparent;
     background-image: none;
-    box-shadow: inset 0 0 0 1px currentColor;
+    box-shadow: inset 3px 0 0 currentColor;
+    outline: 1px dashed currentColor;
+    outline-offset: -1px;
   }
   .event.oof, .chip.oof,
   .event.tentative.oof, .chip.tentative.oof {
@@ -1959,6 +1982,22 @@
     box-shadow: inset 0 0 0 1.5px currentColor;
   }
   .event-show { display: block; font-size: 10px; font-weight: 700; letter-spacing: .04em; }
+  /* An event shows only the lines that fit whole: the title, then the time,
+     then the place, then the rest. Nothing is cut through the middle. */
+  @container (max-height: 34px) {
+    .event:not(.compact) strong { -webkit-line-clamp: 1; }
+    .event-time, .event-where, .event-body, .event-people, .event:not(.compact) .event-show { display: none; }
+  }
+  @container (max-height: 50px) {
+    .event:not(.compact) strong { -webkit-line-clamp: 1; }
+    .event-where, .event-body, .event-people { display: none; }
+  }
+  @container (max-height: 66px) {
+    .event-body, .event-people { display: none; }
+  }
+  @container (max-height: 82px) {
+    .event-body { display: none; }
+  }
   .chip {
     display: block;
     /* A button shrinks to its text even as a block; fill the day. */
@@ -2176,6 +2215,8 @@
   .empty-reading .empty-mark { width: 72px; height: 72px; margin-bottom: 10px; color: var(--faint); }
   .empty-reading .empty-title { margin: 0; font-size: 16px; font-weight: 600; color: var(--ink); }
   .empty-reading .empty-note { margin: 0; font-size: 13px; color: var(--muted); }
+  .empty-reading .empty-next { margin-top: 8px; padding: 6px 12px; border: 1px solid var(--line-strong); border-radius: min(4px, var(--r-max)); background: var(--field); color: var(--ink); font-size: 13px; }
+  .empty-reading .empty-next:hover { background: var(--hover); }
   #choose-layer { position: fixed; inset: 0; z-index: 30; }
   #choose-layer .backdrop { z-index: 30; }
   #choose-layer .dialog { z-index: 31; width: min(360px, calc(100vw - 32px)); }
@@ -2206,6 +2247,17 @@
   .name-dialog input { width: 100%; margin: 4px 0 12px; }
   .goto-dialog .move-choice[aria-selected="true"] { background: var(--hover); }
   .goto-dialog .move-choice .meta { margin-left: auto; font-size: 12px; color: var(--muted); }
+  /* The command bar: near the top of the window, where the eye already is. */
+  .command-bar { width: min(560px, calc(100vw - 32px)); padding: 8px; }
+  .command-bar #command-input { width: 100%; height: 40px; padding: 0 12px; border: 0; border-bottom: 1px solid var(--line); border-radius: 0; background: transparent; color: var(--ink); font: inherit; font-size: 15px; outline: none; }
+  .command-list { max-height: min(56vh, 460px); padding-top: 4px; }
+  .command-list .move-choice[aria-selected="true"] { background: var(--selected); }
+  .command-list .move-choice .folder-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .command-list .move-choice .meta { margin-left: auto; padding-left: 12px; font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 55%; }
+  .command-list kbd.meta, .search-kbd { font: inherit; font-size: 11px; color: var(--muted); border: 1px solid var(--line-strong); border-radius: min(4px, var(--r-max)); padding: 0 5px; line-height: 16px; }
+  .search-kbd { flex: none; background: transparent; cursor: pointer; }
+  .search-kbd:hover { color: var(--ink); }
+  .suggest-none { margin: 0; padding: 10px; color: var(--muted); font-size: 13px; }
   #folder-nav .drop-into { outline: 2px solid var(--blue); outline-offset: -2px; border-radius: min(6px, var(--r-max)); }
   .sync-window, .notify-setting { margin-top: 28px; }
   .sync-window h2, .notify-setting h2 { margin: 0 0 8px; font-size: 13px; font-weight: 650; color: var(--ink); }
@@ -3966,18 +4018,18 @@
   /* Focused Inbox tabs (2026-10-23). */
   .focus-tabs { display: flex; gap: 16px; margin-top: 4px; }
   .focus-tabs[hidden] { display: none; }
-  .followup-bar { border-bottom: 1px solid var(--line); background: var(--amber-soft); color: var(--amber-ink); padding: 6px 12px; font-size: 12.5px; }
+  .followup-bar { border-bottom: 1px solid var(--line); background: var(--amber-soft); color: var(--amber-ink); padding: 6px 12px; font-size: 12px; }
   .followup-bar[hidden] { display: none; }
   .search-extras { border-bottom: 1px solid var(--line); padding: 6px 12px 8px; display: flex; flex-direction: column; gap: 6px; }
   .search-extras[hidden] { display: none; }
   .extra-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
   .extra-label { font-size: 11px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); width: 78px; flex: none; }
-  .extra-chip { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; border: 1px solid var(--line-strong); background: var(--panel); color: var(--ink); border-radius: min(14px, var(--r-max)); padding: 3px 10px 3px 4px; font: inherit; font-size: 12.5px; cursor: pointer; }
+  .extra-chip { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; border: 1px solid var(--line-strong); background: var(--panel); color: var(--ink); border-radius: min(14px, var(--r-max)); padding: 3px 10px 3px 4px; font: inherit; font-size: 12px; cursor: pointer; }
   .extra-chip:hover { background: var(--hover); }
   .extra-chip[data-extra-event] { padding-left: 8px; }
-  .extra-chip small { color: var(--muted); font-size: 11.5px; }
+  .extra-chip small { color: var(--muted); font-size: 12px; }
   .extra-text { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 200px; }
-  .extra-initials { display: grid; place-items: center; width: 20px; height: 20px; border-radius: 50%; background: var(--blue); color: var(--on-accent, #fff); font-size: 9.5px; font-weight: 700; }
+  .extra-initials { display: grid; place-items: center; width: 20px; height: 20px; border-radius: 50%; background: var(--blue); color: var(--on-accent, #fff); font-size: 10px; font-weight: 700; }
   .followup-item { display: flex; align-items: center; gap: 8px; padding: 2px 0; }
   .followup-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .followup-item .link-btn { border: 0; background: transparent; color: var(--blue); font: inherit; font-weight: 600; cursor: pointer; padding: 2px 4px; }

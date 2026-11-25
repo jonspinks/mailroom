@@ -1923,12 +1923,52 @@ function visibleAccountFolders(id) {
 const CORE_FOLDERS = new Set(["inbox", "drafts", "sent", "archive", "trash", "outbox"]);
 const moreFoldersOpen = new Set((() => { try { return JSON.parse(localStorage.getItem("mailroom-more-folders") || "[]"); } catch (e) { return []; } })());
 
+// The short folder list (the default) shows a folder only while there is a
+// reason to look at it: the Inbox, the folder you are in, anything with
+// unread mail, and Drafts or Outbox while something waits there. The full
+// list is the one Outlook shows, every everyday folder all the time.
+let folderList = (() => { try { return localStorage.getItem("mailroom-folder-list") === "full" ? "full" : "short"; } catch (e) { return "short"; } })();
+
+function folderUnread(acct, folder) {
+  if (acct === "all") return profileEntries().reduce((sum, [id]) => sum + folderUnread(id, folder), 0);
+  const live = accounts[acct] && accounts[acct].signedIn && accounts[acct].liveFolders;
+  if (live && live.length) {
+    const entry = live.find(item => item.key === folder);
+    return entry ? Number(entry.unread) || 0 : 0;
+  }
+  return messages.filter(m => m.account === acct && messageBox(m) === folder && m.unread).length;
+}
+
+function folderEarnsPlace(acct, folder) {
+  if (folderPick !== "fav" && account === acct && box === folder) return true;
+  if (folder === "inbox") return true;
+  if (folder === "drafts" || folder === "outbox") return folderBadge(acct, folder) > 0;
+  return folderUnread(acct, folder) > 0;
+}
+
 // Everyday folders first; the rest wait under "More folders".
 function splitAccountFolders(id) {
   const all = visibleAccountFolders(id);
+  if (folderList === "short") {
+    const core = all.filter(folder => folderEarnsPlace(id, folder));
+    return { core, extra: all.filter(folder => !core.includes(folder)) };
+  }
   const core = all.filter(folder => CORE_FOLDERS.has(folder) || folderKind(folder, id) === "junk" || (account === id && box === folder));
   const extra = all.filter(folder => !core.includes(folder));
   return { core, extra };
+}
+
+function moreFoldersToggle(id, open) {
+  return `<button class="acct-item folder-sub more-folders" type="button" data-more-folders="${esc(id)}" aria-expanded="${open}">${sectionChevron()}<span class="folder-name">${open ? "Fewer folders" : "More folders"}</span></button>`;
+}
+
+// The unified folders, shortened the same way as each account's.
+function allAccountsFoldersHtml(boxes) {
+  if (folderList !== "short") return boxes.map(folder => folderButton("all", folder)).join("");
+  const core = boxes.filter(folder => folderEarnsPlace("all", folder));
+  const extra = boxes.filter(folder => !core.includes(folder));
+  const open = moreFoldersOpen.has("all");
+  return core.map(folder => folderButton("all", folder)).join("") + (extra.length ? moreFoldersToggle("all", open) : "") + (open ? extra.map(folder => folderButton("all", folder)).join("") : "");
 }
 
 function accountFoldersHtml(id) {
@@ -3642,7 +3682,7 @@ function renderFolders() {
     ${profileSwitchHtml()}
     ${hasAccounts ? `<button class="new-mail" type="button" id="compose">New mail</button>` : ""}
     ${hasAccounts && favs.length ? `${sectionHead("fav", "Favorites", "Favorites")}${sectionOpen("fav") ? favs.map(item => favoriteButton(item.account, item.box)).join("") : ""}` : ""}
-    ${mailIds.length > 1 ? `${sectionHead("all", "All accounts", "All accounts")}${sectionOpen("all") ? mailBoxes.map(folder => folderButton("all", folder)).join("") : ""}` : ""}
+    ${mailIds.length > 1 ? `${sectionHead("all", "All accounts", "All accounts")}${sectionOpen("all") ? allAccountsFoldersHtml(mailBoxes) : ""}` : ""}
     ${mailIds.map(([id, acct]) => `
       ${sectionHead(id, esc(acct.name), acct.name)}
       ${sectionOpen(id) ? accountFoldersHtml(id) + categoryFoldersHtml(id) + searchFoldersHtml(id) : ""}
@@ -5378,6 +5418,7 @@ function paintList() {
   const rowClipIcon = `<svg width="13" height="13" viewBox="0 0 16 16" aria-hidden="true"><path d="M6.2 8.4l3.1-3.1a1.9 1.9 0 012.7 2.7L7.8 12.2a3 3 0 01-4.2-4.2L8 3.6" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>`;
   const rowFlagIcon = `<svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M4.2 2.2v11.6M4.2 2.8h7.2L9.2 5.6l2.2 2.8H4.2" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round" stroke-linecap="round"/></svg>`;
   const rowPinIcon = `<svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M6 2.2h4l-.7 3.4 2.2 2.2H4.5l2.2-2.2L6 2.2zM8 7.8v6" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round" stroke-linecap="round"/></svg>`;
+  const rowArchiveIcon = `<svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.6 3.6h10.800v2.200H2.600zM3.600 5.800v6.600h8.800V5.800M6.400 8.200h3.200" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
   const rowTrashIcon = `<svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M3.2 4.6h9.6M6.2 4.5V3.2h3.6v1.3M5.6 4.6l.4 8h4l.4-8" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
   // With more than one account in view, a dot in the account's colour says
   // whose mail a line is. It is the colour of that account's calendar too.
@@ -5397,7 +5438,10 @@ function paintList() {
     const pinned = isPinned(opts.thread);
     const flagLabel = m.flagged ? "Remove flag" : "Flag";
     const pinLabel = pinned ? "Unpin" : "Pin";
+    const where = messageBox(m);
+    const canArchive = !opts.child && where !== "archive" && where !== "trash" && where !== "drafts" && where !== "outbox" && !m.pendingSend;
     const actions = `<span class="row-actions">
+      ${canArchive ? `<button type="button" class="row-act" data-row-archive="${esc(m.id)}" title="Archive" aria-label="Archive">${rowArchiveIcon}</button>` : ""}
       <button type="button" class="row-act" data-row-flag="${esc(m.id)}" aria-pressed="${m.flagged ? "true" : "false"}" title="${esc(flagLabel)}" aria-label="${esc(flagLabel)}">${rowFlagIcon}</button>
       <button type="button" class="row-act pin" data-row-pin="${esc(opts.thread)}" aria-pressed="${pinned ? "true" : "false"}" title="${esc(pinLabel)}" aria-label="${esc(pinLabel)}">${rowPinIcon}</button>
       <button type="button" class="row-act" data-row-delete="${esc(m.id)}" data-row-only="${opts.child ? "1" : ""}" title="Delete" aria-label="Delete">${rowTrashIcon}</button>
@@ -5598,6 +5642,16 @@ function bindListPart(part) {
       ev.stopPropagation();
       ev.preventDefault();
       togglePin(btn.dataset.rowPin);
+    };
+  });
+  all("[data-row-archive]").forEach(btn => {
+    btn.onclick = (ev) => {
+      ev.stopPropagation();
+      ev.preventDefault();
+      const conv = conversationFor(btn.dataset.rowArchive);
+      if (!conv) return;
+      moveConversation(conv, "archive");
+      toastMove("Archived");
     };
   });
   all("[data-row-delete]").forEach(btn => {
@@ -6501,8 +6555,9 @@ function searchEvents(q, limit) {
   if (needle.length < 2) return [];
   const soon = Date.now() - 86400000;
   const seen = new Set();
-  return events
-    .filter(ev => ev && !ev.hidden && (!ev.account || accountInProfile(ev.account)) && [ev.title, ev.where, ev.organizer, ev.notes].filter(Boolean).join(" ").toLowerCase().includes(needle))
+  const text = (value) => (value && typeof value === "object" ? [value.name, value.email].filter(Boolean).join(" ") : String(value || ""));
+  return events.concat(allday)
+    .filter(ev => ev && !ev.hidden && (!ev.account || accountInProfile(ev.account)) && [ev.title, ev.where, text(ev.organizer), ev.notes].filter(Boolean).join(" ").toLowerCase().includes(needle))
     .map(ev => ({ ev, at: dateFromDay(ev.day).getTime() + (Number(ev.start) || 0) * 60000 }))
     // Coming up first, nearest first; then the past, latest first.
     .sort((a, b) => {
@@ -6854,7 +6909,7 @@ const SHORTCUTS = [
   ["Ctrl+R", "Reply"], ["Ctrl+Shift+R", "Reply all"], ["Ctrl+Shift+F", "Forward"],
   ["Ctrl+P", "Print the message"],
   ["Ctrl+Enter", "Send, while writing"],
-  ["Delete", "Delete"], ["E", "Archive"], ["V", "Move to a folder"], ["Ctrl+Y", "Go to a folder"],
+  ["Delete", "Delete"], ["E", "Archive"], ["V", "Move to a folder"], ["Ctrl+Y", "Go to a folder"], ["Ctrl+K", "Search or run a command"],
   ["Ctrl+Q", "Mark as read"], ["Ctrl+U", "Mark as unread"], ["Insert", "Flag or unflag"],
   ["↓ or J", "Next conversation"], ["↑ or K", "Previous conversation"],
   ["Ctrl+A", "Select every conversation in the list"], ["Ctrl+Z", "Undo the last move"],
@@ -7099,6 +7154,11 @@ document.addEventListener("keydown", (ev) => {
     }
   }
   if (sideWindow) return;
+  // Ctrl+K works from the search box too, but never while writing a message.
+  if (ctrl && key.toLowerCase() === "k" && !ev.altKey && !composingAt(ev.target) && !(ev.target.closest && ev.target.closest("#compose-form, .dialog, #choose-layer")) && !popRoot.firstElementChild) {
+    ev.preventDefault();
+    return showCommandBar();
+  }
   if (typingIn(ev.target) || ev.altKey) return;
   if (composingAt(ev.target)) return;
   if (document.getElementById("choose-layer") || document.getElementById("discard-confirm")) return;
@@ -7316,11 +7376,52 @@ function messageStamp(m) {
   if (/^(Draft|Sending|Outbox|Now)$/.test(status)) return status;
   const date = messageInstant(m);
   if (!date) return status;
-  const weekday = date.toLocaleDateString([], { weekday: "short" });
-  const numeric = date.toLocaleDateString([], { day: "2-digit", month: "2-digit", year: "numeric" });
-  if (!messageHasClock(m)) return weekday + " " + numeric;
+  // Said the way people say it: Today, Yesterday, then "Thu 15 Oct" in the
+  // order this computer's region writes dates, with the year once it is
+  // not this one. The whole date is on the tooltip (messageStampFull).
+  const today = startOfDay(todayDate());
+  const days = Math.round((today - startOfDay(date)) / 86400000);
+  const day = days === 0 ? "Today" : days === 1 ? "Yesterday"
+    : date.toLocaleDateString([], Object.assign({ weekday: "short", day: "numeric", month: "short" }, date.getFullYear() === today.getFullYear() ? {} : { year: "numeric" }));
+  if (!messageHasClock(m)) return day;
   const time = date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
-  return weekday + " " + numeric + " " + time;
+  return day + (days > 1 || days < 0 ? ", " : " ") + time;
+}
+
+function messageStampFull(m) {
+  const date = messageInstant(m);
+  if (!date) return "";
+  const day = date.toLocaleDateString([], { weekday: "long", day: "numeric", month: "long", year: "numeric" });
+  return messageHasClock(m) ? day + ", " + date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false }) : day;
+}
+
+// Your day around an invite, an hour to a square: grey where you are busy,
+// the calendar's colour where the meeting would sit. It answers "am I free?"
+// without a trip to the calendar.
+function inviteDayStrip(m) {
+  const inv = m && m.liveInvite;
+  if (!inv || inv.allDay || inv.cancelled || inv.organizer) return "";
+  const from = new Date(inv.start);
+  let to = new Date(inv.end);
+  if (isNaN(from)) return "";
+  if (isNaN(to) || to <= from) to = new Date(from.getTime() + 1800000);
+  const mark = calendarSynced.get(m.account);
+  if (!mark || from < new Date(mark.start) || to > new Date(mark.end)) return "";
+  const day = dayFromDate(from);
+  if (dayFromDate(new Date(to.getTime() - 1)) !== day) return "";
+  const begin = from.getHours() * 60 + from.getMinutes();
+  const finish = begin + Math.round((to - from) / 60000);
+  const first = Math.max(0, Math.min(16, Math.floor(begin / 60) - 2));
+  const same = ev => (inv.eventId && (ev.eventId === inv.eventId || ev.seriesMasterId === inv.eventId))
+    || (String(ev.title || "") === String(inv.subject || m.subject || "") && ev.tentative);
+  const busy = events.filter(ev => ev.day === day && ev.start != null && ev.account === m.account && !ev.hidden && ev.response !== "declined" && showAsOf(ev) !== "free" && !same(ev));
+  const cells = [];
+  for (let hour = first; hour < first + 8; hour++) {
+    const a = hour * 60, b = a + 60;
+    const kind = begin < b && finish > a ? "this" : busy.some(ev => ev.start < b && ev.end > a) ? "busy" : "";
+    cells.push(`<span class="strip-cell ${kind}"><i></i><small>${hour}</small></span>`);
+  }
+  return `<div class="invite-strip" aria-hidden="true">${cells.join("")}</div>`;
 }
 
 function senderMail(m) {
@@ -7365,7 +7466,7 @@ function messageBlock(m, open, many) {
       <span class="thread-chevron" aria-hidden="true">${chevron}</span>
       <span class="avatar" style="background:${esc(m.color)}">${esc(m.initials)}</span>
       <span class="fold-copy"><span class="who">${esc(m.from)}</span><span class="preview">${esc(m.preview)}</span></span>
-      <span class="fold-side">${foldClip(m)}<span class="${whenClass}">${esc(stamp)}</span></span>
+      <span class="fold-side">${foldClip(m)}<span class="${whenClass}" title="${esc(messageStampFull(m))}">${esc(stamp)}</span></span>
     </button>`;
   }
   const outgoing = !!m.meeting && (messageBox(m) === "sent" || ownAddresses().has((m.email || "").toLowerCase()));
@@ -7376,9 +7477,9 @@ function messageBlock(m, open, many) {
       <div class="when-block">${esc(m.meeting.title)}</div>
       <div>${esc(m.meeting.when)}</div>
       ${m.meeting.where ? `<div>${esc(m.meeting.where)}</div>` : ""}
-      ${outgoing || closed ? "" : inviteClashHtml(m)}
+      ${outgoing || closed ? "" : inviteDayStrip(m) + inviteClashHtml(m)}
       ${outgoing ? `<div class="invite-note">Invite sent</div>` : closed ? `<div class="invite-note">${m.liveInvite.cancelled ? "This meeting was cancelled." : "You organise this meeting."}</div>` : `
-      <div class="rsvp" role="group" aria-label="Respond" data-rsvp-msg="${esc(m.id)}">
+      <div class="rsvp${answered ? "" : " unanswered"}" role="group" aria-label="Respond" data-rsvp-msg="${esc(m.id)}">
         ${["accepted", "tentative", "declined"].map(key => `
           <button type="button" data-rsvp="${key}" aria-pressed="${answered === key}">${label(key)}</button>
         `).join("")}
@@ -7397,7 +7498,7 @@ function messageBlock(m, open, many) {
         <button class="party-line" type="button" data-party="${esc(m.id)}" data-party-role="to">${esc(audience(m))}</button>
       </div>
       <div class="thread-side">
-        <span class="${whenClass}">${esc(stamp)}</span>
+        <span class="${whenClass}" title="${esc(messageStampFull(m))}">${esc(stamp)}</span>
         <button class="icon-btn light-toggle" type="button" data-light-view="${esc(m.id)}" aria-pressed="${lightView.has(m.id)}" title="${lightView.has(m.id) ? "Show in dark mode" : "Show with a light background"}" aria-label="${lightView.has(m.id) ? "Show in dark mode" : "Show with a light background"}"><svg width="18" height="18" viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="3.2" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M10 2.6v2M10 15.4v2M2.6 10h2M15.4 10h2M4.8 4.8l1.4 1.4M13.8 13.8l1.4 1.4M15.2 4.8l-1.4 1.4M6.2 13.8l-1.4 1.4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button>
         <div class="thread-actions"${many ? "" : " hidden"}>
           <button class="icon-btn" type="button" data-reply="${m.id}" title="Reply" aria-label="Reply">${replyIcon}</button>
@@ -9282,6 +9383,154 @@ function showGoToFolder() {
   filter.focus();
 }
 
+// ---- The command bar (Ctrl+K) ----
+// One box for getting anywhere and doing anything: a command, a folder, an
+// event, a person, or a search of your mail. Each command shows its
+// shortcut, which is how the shortcuts get learned.
+function openFoundEvent(id) {
+  const ev = events.find(e => e.id === id) || allday.find(e => e.id === id);
+  if (!ev) return setView("calendar");
+  if (accounts[ev.account] && !calendarAccountVisible(ev.account)) {
+    calendarBoth = false;
+    rememberCalendarBoth();
+    activeProfile = accountProfile(ev.account);
+    rememberActiveProfile();
+  }
+  const shown = dateFromDay(ev.day);
+  calFocus = calView === "month" ? new Date(shown.getFullYear(), shown.getMonth(), 1) : shown;
+  setView("calendar");
+  openEventEditor(ev.id, ev.start == null ? "all" : "timed");
+}
+
+function searchMailFor(text) {
+  query = text;
+  searchPick = "";
+  document.getElementById("q").value = text;
+  if (view !== "mail") setView("mail");
+  applySearch();
+}
+
+function commandChoices() {
+  const out = [];
+  const add = (label, keys, run, words) => out.push({ group: "Commands", label, keys: keys || "", run, words: (label + " " + (words || "")).toLowerCase() });
+  const press = (id) => () => { const btn = document.getElementById(id); if (btn) btn.click(); };
+  if (view === "mail" && currentConversation() && !readWindow) {
+    [["reply", "Reply", "R"], ["reply-all", "Reply all", "Shift+R"], ["forward", "Forward", "F"], ["archive", "Archive", "E"], ["delete", "Delete", "Delete"],
+      ["snooze", "Snooze", ""], ["flag", "Flag or unflag", ""], ["mark-unread", "Mark as unread", ""], ["move-to", "Move to a folder", "V"], ["print", "Print", "Ctrl+P"]]
+      .forEach(([id, label, keys]) => { if (document.getElementById(id)) add(label + " this conversation", keys, press(id), "message mail"); });
+  }
+  add("New mail", "Ctrl+N", () => { if (view !== "mail") setView("mail"); openCompose(); }, "compose write message email");
+  add("New event", "", () => { if (view !== "calendar") setView("calendar"); openEventForm(); }, "meeting appointment calendar");
+  add("Go to Mail", "", () => setView("mail"), "inbox");
+  add("Go to Calendar", "", () => setView("calendar"), "week month day");
+  add("Go to People", "", () => setView("people"), "contacts");
+  add("Go to a folder…", "Ctrl+Y", () => showGoToFolder(), "move jump");
+  add("Check for new mail", "F5", () => checkMailNow(), "refresh sync");
+  add("Settings", "", () => setView("settings"), "preferences options accounts");
+  add("Keyboard shortcuts", "?", () => showShortcuts(), "keys help");
+  add("Theme: light", "", () => setTheme("light"), "appearance look colour color");
+  add("Theme: dark", "", () => setTheme("dark"), "appearance look colour color night");
+  add("Theme: follow the system", "", () => setTheme("system"), "appearance look auto");
+  if (omarchyLook) add("Theme: Omarchy", "", () => setTheme("omarchy"), "appearance look");
+  LIST_DENSITIES.forEach(kind => add("Message list: " + kind, "", () => {
+    listDensity = kind;
+    document.body.dataset.listDensity = kind;
+    try { localStorage.setItem("mailroom-list-density", kind); } catch (e) {}
+  }, "density spacing rows"));
+  add(folderList === "short" ? "Folder list: show every folder" : "Folder list: show the short list", "", () => {
+    folderList = folderList === "short" ? "full" : "short";
+    try { localStorage.setItem("mailroom-folder-list", folderList); } catch (e) {}
+    render();
+  }, "sidebar folders full short");
+  return out;
+}
+
+function commandBarResults(text) {
+  const q = text.trim().toLowerCase();
+  const commands = commandChoices();
+  if (!q) return commands.slice(0, 9);
+  const words = q.split(/\s+/);
+  // A match in the command's own name comes before one in its other words.
+  const named = (item) => words.every(word => item.label.toLowerCase().includes(word));
+  const matched = commands.filter(item => words.every(word => item.words.includes(word)));
+  const out = matched.filter(named).concat(matched.filter(item => !named(item))).slice(0, 6);
+  goToFolderChoices().filter(item => item.label.toLowerCase().includes(q)).slice(0, 5).forEach(item => out.push({
+    group: "Folders", label: item.label, meta: item.group === "Favorites" ? item.meta : item.group, icon: folderIcon(item.key, item.acct),
+    run: () => { if (view !== "mail") setView("mail"); openFolder(item.acct, item.key, folderIdFor(item.acct, item.key), item.fav ? "fav" : "folder"); }
+  }));
+  searchEvents(q, 5).forEach(ev => out.push({ group: "Calendar", label: ev.title || "(No title)", meta: eventWhen(ev, ev.start == null ? "all" : "timed"), run: () => openFoundEvent(ev.id) }));
+  peopleMatches(q, 4).forEach(person => out.push({
+    group: "People", label: person.name, meta: person.email,
+    run: () => {
+      const contact = contacts.find(c => String(c.email || "").toLowerCase() === person.email.toLowerCase());
+      if (!contact) return searchMailFor(person.email);
+      selectedContact = contact.id;
+      if (!accountInProfile(contact.account)) { activeProfile = accountProfile(contact.account); rememberActiveProfile(); }
+      const ids = profileAccountIds();
+      contactAccount = ids.length > 1 ? "all" : (contact.account || ids[0] || "all");
+      setView("people");
+    }
+  }));
+  out.push({ group: "Mail", label: "Search mail for “" + text.trim() + "”", keys: "", run: () => searchMailFor(text.trim()) });
+  return out;
+}
+
+function showCommandBar() {
+  if (sideWindow) return;
+  popRoot.innerHTML = `<div class="backdrop" id="backdrop"></div>
+    <div class="dialog command-bar" role="dialog" aria-modal="true" aria-label="Search or run a command">
+      <input id="command-input" placeholder="Search, jump to a folder, or run a command" autocomplete="off" spellcheck="false" aria-label="Search or run a command" role="combobox" aria-controls="command-list" aria-expanded="true">
+      <div class="move-list command-list" id="command-list" role="listbox" aria-label="Results"></div>
+    </div>`;
+  const list = popRoot.querySelector("#command-list");
+  const input = popRoot.querySelector("#command-input");
+  let shown = [];
+  let at = 0;
+  const highlight = () => {
+    list.querySelectorAll("[data-command]").forEach(el => {
+      const on = Number(el.dataset.command) === at;
+      el.setAttribute("aria-selected", on ? "true" : "false");
+      if (on) el.scrollIntoView({ block: "nearest" });
+    });
+  };
+  const paint = () => {
+    shown = commandBarResults(input.value);
+    at = 0;
+    let group = null;
+    list.innerHTML = shown.map((item, i) => {
+      const head = item.group !== group ? `<p class="move-group">${esc(item.group)}</p>` : "";
+      group = item.group;
+      const side = item.keys ? `<kbd class="meta">${esc(item.keys)}</kbd>` : item.meta ? `<span class="meta">${esc(item.meta)}</span>` : "";
+      return head + `<button type="button" role="option" class="move-choice" data-command="${i}">${item.icon || ""}<span class="folder-name">${esc(item.label)}</span>${side}</button>`;
+    }).join("");
+    highlight();
+  };
+  const choose = (i) => {
+    const item = shown[i];
+    if (!item) return;
+    closePop();
+    item.run();
+  };
+  list.addEventListener("click", ev => {
+    const btn = ev.target.closest("[data-command]");
+    if (btn) choose(Number(btn.dataset.command));
+  });
+  input.addEventListener("input", paint);
+  input.addEventListener("keydown", ev => {
+    if (ev.key === "ArrowDown" || ev.key === "ArrowUp") {
+      ev.preventDefault();
+      if (!shown.length) return;
+      at = (at + (ev.key === "ArrowDown" ? 1 : -1) + shown.length) % shown.length;
+      highlight();
+    }
+    if (ev.key === "Enter") { ev.preventDefault(); choose(at); }
+    if (ev.key === "Escape") { ev.preventDefault(); closePop(); }
+  });
+  popRoot.querySelector("#backdrop").onclick = closePop;
+  paint();
+  input.focus();
+}
+
 function rowTargets(id, child) {
   const msg = messages.find(m => m.id === id);
   if (!msg) return [];
@@ -11022,7 +11271,8 @@ function omarchyVars(look) {
   const mix = (a, b, share) => `color-mix(in srgb, ${a} ${share}%, ${b})`;
   const accent = pick("accent", "blue") || fg;
   const hue = (...keys) => pick(...keys) || accent;
-  const soft = (colour) => mix(colour, bg, light ? 14 : 22);
+  // A calendar's tint has to stand clear of a dark grid, not blend into it.
+  const soft = (colour) => mix(colour, bg, light ? 14 : 30);
   const ink = (colour) => mix(colour, fg, light ? 62 : 58);
   const lifted = pick("lighter_background") || mix(fg, bg, 8);
   const sunk = pick("dark_background") || bg;
@@ -12873,7 +13123,11 @@ function renderCalendar() {
     }).join("");
     const lines = Array.from({ length: 24 }, (_, i) => `<div class="hour-line" style="top:${(i / 24) * 100}%"></div>`).join("");
     const now = today ? `<div class="now" style="top:${(clockMinutes() - start) / span * 100}%"></div>` : "";
-    return `<div class="daycol" data-slot="time" data-day="${day}">${lines}${now}${blocks}</div>`;
+    // The hours outside your working day sit a shade back, and today's
+    // column is tinted, so "now" is found without reading the dates.
+    const hours = workHours();
+    const edge = (minute) => Math.max(0, Math.min(100, (minute - start) / span * 100)).toFixed(3) + "%";
+    return `<div class="daycol${today ? " today" : ""}" data-slot="time" data-day="${day}" style="--work-from:${edge(hours.start)};--work-to:${edge(hours.end)}">${lines}${now}${blocks}</div>`;
   }).join("");
   cal.innerHTML = `
     <div class="cal-sticky">
@@ -15244,7 +15498,8 @@ function fitWideMail(root) {
 
 // Message list: Comfortable shows a preview line and the first attachment;
 // Compact is two lines a message, with a paperclip for attachments.
-let listDensity = (() => { try { return localStorage.getItem("mailroom-list-density") === "compact" ? "compact" : "comfortable"; } catch (e) { return "comfortable"; } })();
+const LIST_DENSITIES = ["compact", "comfortable", "roomy"];
+let listDensity = (() => { try { const saved = localStorage.getItem("mailroom-list-density"); return LIST_DENSITIES.includes(saved) ? saved : "comfortable"; } catch (e) { return "comfortable"; } })();
 document.body.dataset.listDensity = listDensity;
 // Preview text under each message: none, one line or two, as Outlook's
 // Settings > Layout has it (#122). Compact has none whatever this says.
@@ -15839,13 +16094,24 @@ function renderMailSettings(body) {
       <p class="field-hint" id="spell-note">Right-click a word underlined in red to choose a correction.</p>
     </section>
     <section class="notify-setting">
+      <h2>Folder list</h2>
+      <label class="field">Show
+        <select id="folder-list">
+          <option value="short"${folderList === "short" ? " selected" : ""}>Short: folders with something in them</option>
+          <option value="full"${folderList === "full" ? " selected" : ""}>Full: every folder, as in Outlook</option>
+        </select>
+        <span class="field-hint">Short keeps the Inbox, the folder you are in, folders with unread mail, and Drafts or Outbox while something waits there. The rest are one click away under More folders.</span>
+      </label>
+    </section>
+    <section class="notify-setting">
       <h2>Message list</h2>
       <label class="field">Density
         <select id="list-density">
           <option value="comfortable"${listDensity === "comfortable" ? " selected" : ""}>Comfortable</option>
           <option value="compact"${listDensity === "compact" ? " selected" : ""}>Compact</option>
+          <option value="roomy"${listDensity === "roomy" ? " selected" : ""}>Roomy</option>
         </select>
-        <span class="field-hint">Compact shows two lines a message and a paperclip for attachments, so about twice as many fit.</span>
+        <span class="field-hint">Compact shows two lines a message and a paperclip for attachments, so about twice as many fit. Roomy gives each message more air, for a large or touch screen.</span>
       </label>
       <label class="field">Preview text
         <select id="list-preview">
@@ -15916,12 +16182,18 @@ function renderMailSettings(body) {
     tidyInvites = tidyBox.checked;
     try { localStorage.setItem("mailroom-tidy-invites", tidyInvites ? "on" : "off"); } catch (e) {}
   };
+  const folderListSelect = body.querySelector("#folder-list");
+  folderListSelect.onchange = () => {
+    folderList = folderListSelect.value === "full" ? "full" : "short";
+    try { localStorage.setItem("mailroom-folder-list", folderList); } catch (e) {}
+    toast(folderList === "full" ? "Full folder list" : "Short folder list");
+  };
   const densitySelect = body.querySelector("#list-density");
   densitySelect.onchange = () => {
-    listDensity = densitySelect.value === "compact" ? "compact" : "comfortable";
+    listDensity = LIST_DENSITIES.includes(densitySelect.value) ? densitySelect.value : "comfortable";
     document.body.dataset.listDensity = listDensity;
     try { localStorage.setItem("mailroom-list-density", listDensity); } catch (e) {}
-    toast(listDensity === "compact" ? "Compact message list" : "Comfortable message list");
+    toast(listDensity === "compact" ? "Compact message list" : listDensity === "roomy" ? "Roomy message list" : "Comfortable message list");
   };
   const previewSelect = body.querySelector("#list-preview");
   previewSelect.onchange = () => {
@@ -16165,8 +16437,26 @@ const EMPTY_MARK = `<svg class="empty-mark" aria-hidden="true" viewBox="0 0 64 6
 <path d="M10 19 L32 36 L54 19" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
 </svg>`;
 
+// With nothing open, the pane says what is waiting: unread mail in this
+// folder, and the next meeting today.
 function emptyReadingHtml() {
-  return `<div class="empty empty-reading">${EMPTY_MARK}<p class="empty-title">Select a message to read</p></div>`;
+  let notes = "";
+  if (view === "mail" && !searchActive()) {
+    const unread = isCategoryBox(box) || isSearchBox(box) ? 0 : folderUnread(account, box);
+    if (unread) notes += `<p class="empty-note">${unread === 1 ? "1 unread message" : unread + " unread messages"} in this folder</p>`;
+    const next = nextMeetingToday();
+    if (next) notes += `<button type="button" class="empty-next" data-extra-event="${esc(next.id)}">Next: ${esc(next.title || "(No title)")}, ${fmt(next.start)}</button>`;
+  }
+  return `<div class="empty empty-reading">${EMPTY_MARK}<p class="empty-title">Select a message to read</p>${notes}</div>`;
+}
+
+function nextMeetingToday() {
+  const now = new Date();
+  const today = dayFromDate(now);
+  const minute = now.getHours() * 60 + now.getMinutes();
+  return events
+    .filter(ev => ev.day === today && ev.start != null && ev.start > minute && !ev.hidden && ev.response !== "declined" && (!ev.account || accountInProfile(ev.account)))
+    .sort((a, b) => a.start - b.start)[0] || null;
 }
 
 function askCardHtml() {
@@ -20048,6 +20338,25 @@ function paintSearchSuggest() {
     if (box) { box.hidden = true; box.innerHTML = ""; }
     return;
   }
+  // In Calendar the box searches the calendar: matching events, soonest
+  // first, each opening on its day.
+  if (view === "calendar") {
+    const found = searchEvents(q, 8);
+    box.hidden = false;
+    box.innerHTML = found.length
+      ? found.map(ev => `<button type="button" data-suggest-event="${esc(ev.id)}"><span>${esc(ev.title || "(No title)")}</span><small>${esc(eventWhen(ev, ev.start == null ? "all" : "timed") + (ev.where ? " · " + ev.where : ""))}</small></button>`).join("")
+      : (q.length < 2 ? "" : `<p class="suggest-none">No events match.</p>`);
+    if (!box.innerHTML) box.hidden = true;
+    box.querySelectorAll("[data-suggest-event]").forEach(btn => {
+      btn.addEventListener("mousedown", (e) => e.preventDefault());
+      btn.onclick = () => {
+        box.hidden = true;
+        document.getElementById("q").value = "";
+        openFoundEvent(btn.dataset.suggestEvent);
+      };
+    });
+    return;
+  }
   const hits = peopleMatches(q, 6);
   if (!hits.length) {
     box.hidden = true;
@@ -20089,6 +20398,7 @@ function paintSearchSuggest() {
 document.getElementById("q").addEventListener("input", (e) => {
   searchPick = "";
   const value = e.target.value;
+  if (view === "calendar") return paintSearchSuggest();
   if (view === "people" || (!value.trim() && query.trim())) {
     query = value;
     applySearch();
@@ -20098,12 +20408,23 @@ document.getElementById("q").addEventListener("input", (e) => {
 document.getElementById("q").addEventListener("keydown", (e) => {
   if (e.key !== "Enter" || e.isComposing) return;
   e.preventDefault();
+  if (view === "calendar") {
+    // Enter opens the nearest match.
+    const first = searchEvents(e.target.value, 1)[0];
+    if (first) {
+      e.target.value = "";
+      paintSearchSuggest();
+      openFoundEvent(first.id);
+    } else if (e.target.value.trim()) toast("No events match “" + e.target.value.trim() + "”");
+    return;
+  }
   searchPick = "";
   query = e.target.value;
   const box = document.getElementById("q-suggest");
   if (box) { box.hidden = true; box.innerHTML = ""; }
   applySearch();
 });
+document.getElementById("command-open").onclick = (e) => { e.preventDefault(); e.stopPropagation(); showCommandBar(); };
 const searchPanel = document.getElementById("search-panel");
 document.getElementById("search-toggle").onclick = (e) => {
   e.preventDefault();
@@ -20837,7 +21158,7 @@ const folderBusy = new Set();
 let syncNote = "";
 const folderRun = new Map();
 const bodyLoads = new Set();
-const APP_VERSION = "1.8.1";
+const APP_VERSION = "1.9.0";
 let appVersion = APP_VERSION;
 
 prepareDesktopAccounts();

@@ -27,6 +27,8 @@ compares them with this list, and opens an issue for anything new.
 | Choose when mail is marked as read | ✅ when opened, after 5 seconds, when you move on, or never (Settings > Mail) |
 | Group by date | ✅ Today, Yesterday, weekdays, Last week… |
 | Message preview lines | ✅ none, 1 line or 2 lines (Settings > Mail) |
+| Density | ✅ Compact, Comfortable or Roomy (Settings > Mail) |
+| Toolbar | ✅ Reply, Forward, Archive, Delete and Snooze by name; the rest under More; Archive, Flag, Pin and Delete on a row as you point at it |
 | Sort by | ✅ Date, From, Subject, Size, Importance, Flag due date, Attachments, either way round, kept per folder; size and due date show on the row; sorts the mail on this computer |
 | Dark mode for designed mail | ✅ recoloured colour by colour, sun button for the original |
 | Quoted text folded | ✅ Outlook, Gmail and Apple replies; legal footers too |
@@ -79,7 +81,8 @@ compares them with this list, and opens an issue for anything new.
 | Forwarding warning | **M** a banner while a rule that is on forwards mail elsewhere; Review rule or Dismiss |
 | Automatic replies | **M** |
 | Favourites | ✅ any folder, category or search folder |
-| Search | ✅ mail, people and calendar in one box; dates in plain words; top results first |
+| Search | ✅ mail, people and calendar in one box; dates in plain words; top results first; in Calendar the box lists matching events and Enter opens the nearest |
+| Folder list | ✅ Short (the Inbox, the folder you are in, anything unread, Drafts and Outbox while something waits) or Full, as in Outlook (Settings > Mail) |
 | Search folders | **M** |
 | Create, rename, delete folders | ✅ from the folder right-click menu, subfolders too; Outlook's own folders stay put (Gmail: labels) |
 | Sort subfolders A to Z | ✅ from a parent folder's right-click menu, with Undo |
@@ -123,6 +126,7 @@ compares them with this list, and opens an issue for anything new.
 | Works offline | ✅ local cache; Outbox survives a restart; read, flag, archive, delete and move made offline wait (with a clock on the row) and reach the server in order when it can be reached, for up to seven days |
 | Keyboard shortcuts | ✅ Outlook's (Ctrl+R, Ctrl+Shift+R, Insert, Ctrl+Q…) |
 | Go to Folder (Ctrl+Y) | ✅ every folder in the profile, Favorites first, type to find |
+| Search or run a command (Ctrl+K) | ✅ commands with their shortcuts, folders, events, people, or a search of your mail, from one box |
 | Default mail app | ✅ mailto: links (Omarchy) |
 | Links to a message | ✅ mailroom://message/… opens one message, even after it was moved; it only opens, and marks nothing read (Omarchy) |
 | Follows the desktop theme | ✅ Omarchy colours, font and corners, live |
