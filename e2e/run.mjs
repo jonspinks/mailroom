@@ -47,6 +47,39 @@ function helpers(p) {
 
 // ---------------------------------------------------------------- security
 
+test("a message body is parsed once for its classes and folds; colours read the same off a canvas (#105)", { fake: true }, async ({ p }) => {
+  const got = await p.evaluate(() => {
+    const legal = "This email and any attachments are confidential and may be privileged. If you are not the intended recipient, please delete it and notify the sender. Any unauthorised use, disclosure or copying is prohibited.";
+    const html = `<div class="x"><p>Hi Jon,</p><p>See below.</p></div><div><p>${legal}</p></div><div id="divRplyFwdMsg"><p>From: Ada</p><p>OLD TEXT</p></div>`;
+    let parses = 0;
+    const real = DOMParser.prototype.parseFromString;
+    DOMParser.prototype.parseFromString = function (...args) { parses++; return real.apply(this, args); };
+    remoteMailMemo.clear();
+    remoteMailHtml(html, false);
+    const before = parses;
+    const out = fittedMailHtml(html, false, "t105", false);
+    const after = parses - before;
+    DOMParser.prototype.parseFromString = real;
+    const d = document.createElement("div");
+    d.innerHTML = out;
+    // Innermost legal block only, even when its parents read as legal too.
+    const nested = document.createElement("div");
+    nested.innerHTML = `<div><div><p>${legal}</p></div></div>`;
+    const blocks = legalBlocks(nested);
+    const colours = ["#336699", "rgb(10, 20, 30)", "rgba(10,20,30,0.5)", "white", "hsl(120, 100%, 25%)", "not-a-colour"].map(c => {
+      const viaCanvas = sampleColour(c);
+      const probe = document.createElement("span"); probe.style.backgroundColor = c; document.body.appendChild(probe);
+      const m = getComputedStyle(probe).backgroundColor.match(/[\d.]+/g).map(Number); probe.remove();
+      return JSON.stringify(viaCanvas) === JSON.stringify({ r: m[0], g: m[1], b: m[2], a: m[3] == null ? 1 : m[3] });
+    });
+    return { after, classes: !!d.querySelector(".m-x"), quote: !!d.querySelector(".mail-quote:not(.mail-legal)"), legal: !!d.querySelector(".mail-legal"), blocks: blocks.map(b => b.tagName), colours };
+  });
+  same(got.after, 1, "one parse after the cached remote step");
+  same([got.classes, got.quote, got.legal], [true, true, true], "classes prefixed, quote and legal notice folded");
+  same(got.blocks, ["P"], "the innermost legal block");
+  same(got.colours, [true, true, true, true, true, true], "canvas and page agree on every colour");
+});
+
 test("mail HTML cannot run code, through the real reading pane", { fake: true, setup: () => {
   const payload = [
     `<p>Hello</p><img src=x onerror="window.__pwned='img'">`,
