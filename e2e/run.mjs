@@ -1842,6 +1842,63 @@ test("calendar: drag moves an event and refuses someone else's", { fake: true, t
   same((await calls("save_event")).length, 0, "someone else's meeting not moved");
 });
 
+test("calendar: drag an all-day chip to another day; Month moves a timed one, keeping its time (#101)", { fake: true, tz: true, setup: () => { window.__allDay = true; } }, async ({ p, calls, clear }) => {
+  await p.evaluate(() => { calFocus = new Date(Date.now() + 86400000); setView("calendar"); calView = "week"; render(); }); await wait(1000);
+  const dragTo = async (from, to) => {
+    const a = await (await p.$(from)).boundingBox();
+    const b = await (await p.$(to)).boundingBox();
+    await p.mouse.move(a.x + 8, a.y + a.height / 2); await p.mouse.down();
+    for (let i = 1; i <= 8; i++) await p.mouse.move(a.x + 8 + (b.x + b.width / 2 - a.x - 8) * i / 8, a.y + a.height / 2 + (b.y + b.height / 2 - a.y - a.height / 2) * i / 8);
+    await p.mouse.up(); await wait(500);
+  };
+  const home = await p.$eval('.chip[data-event="hol-1"]', c => Number(c.closest("[data-day]").dataset.day));
+  const other = await p.evaluate(h => [...document.querySelectorAll(".allday-cell[data-day]")].map(c => Number(c.dataset.day)).find(d => d !== h), home);
+  await clear();
+  await dragTo('.chip[data-event="hol-1"]', `.allday-cell[data-day="${other}"]`);
+  const saved = await calls("save_event");
+  same(saved.map(a => [a.eventId, a.fields.allDay, a.fields.start, a.fields.end]),
+    [["hol-1", true, await p.evaluate(d => isoFromDay(d) + "T00:00:00", other), await p.evaluate(d => isoFromDay(d + 1) + "T00:00:00", other)]], "moved to that day, still all day");
+  same((await calls("event_series")).length, 0, "a one-off does not ask about a series");
+  // Month: a timed chip keeps its time on the new day.
+  await p.evaluate(() => { calView = "month"; render(); }); await wait(600);
+  const single = await p.evaluate(() => events.find(e => e.title === "Single" && e.live).id);
+  const day = await p.$eval(`.chip[data-event="${single}"]`, c => Number(c.closest("[data-day]").dataset.day));
+  const next = await p.evaluate(d => document.querySelector(`.month-day[data-day="${d + 1}"]`) ? d + 1 : d - 1, day);
+  await clear();
+  await dragTo(`.chip[data-event="${single}"]`, `.month-day[data-day="${next}"]`);
+  same((await calls("save_event")).map(a => [a.fields.start, a.fields.end]), [[await p.evaluate(d => isoFromDay(d) + "T09:00:00", next), await p.evaluate(d => isoFromDay(d) + "T10:00:00", next)]], "same hour, the next day");
+});
+
+test("calendar: an event over two days moves as a whole; a series occurrence asks this one or all (#101)", { fake: true, tz: true, setup: () => { window.__span = true; } }, async ({ p, calls, clear }) => {
+  await p.evaluate(() => { calFocus = new Date(Date.now() + 86400000); setView("calendar"); calView = "week"; render(); }); await wait(1000);
+  const hourPx = await p.evaluate(() => document.querySelector('.daycol[data-slot="time"]').getBoundingClientRect().height / 24);
+  const boxOf = id => p.evaluate(id => { const el = document.querySelector('.event[data-event="' + CSS.escape(id) + '"]'); el.scrollIntoView({ block: "center" }); const r = el.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.top + 8 }; }, id);
+  const drag = async (b, dy) => { await p.mouse.move(b.x, b.y); await p.mouse.down(); for (let i = 1; i <= 6; i++) await p.mouse.move(b.x, b.y + dy * i / 6); await p.mouse.up(); await wait(500); };
+  const piece = await p.evaluate(() => events.find(e => e.eventId === "span-1" && e.start === 22 * 60).id);
+  expect(piece.includes("@"), "the event shows as a piece a day", piece);
+  await clear();
+  await drag(await boxOf(piece), -hourPx);
+  const tomorrow = await p.evaluate(() => isoFromDay(dayFromDate(new Date(Date.now() + 86400000))));
+  const after = await p.evaluate(() => isoFromDay(dayFromDate(new Date(Date.now() + 2 * 86400000))));
+  same((await calls("save_event")).map(a => [a.eventId, a.fields.start, a.fields.end]), [["span-1", tomorrow + "T21:00:00", after + "T01:00:00"]], "both ends moved an hour earlier");
+  // A weekly occurrence: All events moves the series master an hour.
+  await clear();
+  await drag(await boxOf("occ-1"), hourPx);
+  expect(await p.$(".choose-dialog"), "asks this one or the series");
+  same(await p.$$eval(".choose-dialog [data-choose]", bs => bs.map(b => b.textContent.trim())), ["This event", "All events in the series"], "the two choices");
+  await p.click('.choose-dialog [data-choose="all"]'); await wait(600);
+  const series = await calls("save_event");
+  same(series.map(a => [a.eventId, a.fields.start, a.fields.end, a.fields.recurrence && a.fields.recurrence.pattern.daysOfWeek]), [["ser-1", "2026-10-01T16:00:00", "2026-10-01T16:30:00", ["thursday"]]], "the series, an hour later, same weekday");
+  await clear();
+  await drag(await boxOf("occ-1"), hourPx);
+  await p.click('.choose-dialog [data-choose="this"]'); await wait(600);
+  same((await calls("save_event")).map(a => [a.eventId, a.fields.recurrence]), [["occ-1", undefined]], "This event moves only the occurrence");
+  // A weekly series moved a day keeps its weekday in step.
+  same(await p.evaluate(() => shiftedRecurrence({ pattern: { type: "weekly", interval: 1, daysOfWeek: ["thursday", "saturday"] }, range: { type: "noEnd", startDate: "2026-10-01" } }, 1)),
+    { pattern: { type: "weekly", interval: 1, daysOfWeek: ["friday", "sunday"] }, range: { type: "noEnd", startDate: "2026-10-02" } }, "Thursday and Saturday become Friday and Sunday");
+  same(await p.evaluate(() => shiftedRecurrence({ pattern: { type: "absoluteMonthly", dayOfMonth: 3 }, range: {} }, 1)), undefined, "a monthly series is left to the editor");
+});
+
 test("Teams' underscore lines in event notes are one thin rule, and notes of only rules are none", { fake: true, tz: true }, async ({ p }) => {
   await p.evaluate(() => { calFocus = new Date(Date.now() + 86400000); setView("calendar"); calView = "week"; render(); }); await wait(1000);
   const line = "_".repeat(80);
