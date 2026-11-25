@@ -1657,6 +1657,7 @@
     font-size: 13px;
   }
   .row-menu button:hover { background: var(--hover); }
+  .row-menu button:disabled { color: var(--muted); cursor: default; background: none; }
   .row-menu button.file-item { display: flex; align-items: center; gap: 8px; min-width: 240px; max-width: 360px; }
   .row-menu .file-item .file-item-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .row-menu .file-item .file-size { color: var(--muted); font-size: 12px; }
