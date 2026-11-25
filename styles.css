@@ -873,6 +873,17 @@
     align-items: center;
     gap: 6px;
   }
+  /* The Settings list's heading: bigger and brighter than its pages, with a
+     rule under it, so it reads as a title and not as one more page. */
+  .settings-nav-title {
+    margin: 12px 8px 8px;
+    padding: 0 0 10px;
+    font-size: 20px;
+    font-weight: 700;
+    line-height: 26px;
+    color: var(--ink);
+    border-bottom: 1px solid var(--line-strong, var(--line));
+  }
   button.acct-label.section {
     width: 100%;
     margin: 10px 0 2px;
