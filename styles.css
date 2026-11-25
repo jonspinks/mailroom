@@ -1073,6 +1073,8 @@
   .more-folders[aria-expanded="true"] svg { transform: rotate(90deg); }
   body[data-list-density="compact"] .row { padding: 6px 14px 7px; grid-template-columns: 28px minmax(0, 1fr); gap: 8px; }
   body[data-list-density="compact"] .row .avatar { width: 28px; height: 28px; font-size: 11px; }
+  body[data-list-preview="none"] .conv .row .preview { display: none; }
+  body[data-list-preview="2"] .conv .row .preview { white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
   body[data-list-density="compact"] .row .preview,
   body[data-list-density="compact"] .row-files { display: none; }
   body[data-list-density="compact"] .row-clip { display: inline-flex; align-items: center; }
