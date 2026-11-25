@@ -3589,6 +3589,34 @@ test("Settings > Mail has the Mark as read choice, and it is kept", { fake: true
   same(await p.evaluate(() => [markReadWhen, localStorage.getItem("mailroom-mark-read")]), ["leave", "leave"], "picked and stored");
 });
 
+test("Sent Items catches up on mail sent elsewhere: on going back, and on each mail check", { fake: true }, async ({ p, calls, clear }) => {
+  const acct = await p.evaluate(() => Object.keys(accounts)[0]);
+  await p.evaluate(a => openFolder(a, "sent", "f-sent", "folder"), acct); await wait(400);
+  same(await p.$$eval(".list .row", r => r.length), 0, "Sent starts empty");
+  await p.evaluate(a => openFolder(a, "inbox", "f-inbox", "folder"), acct); await wait(300);
+  // Sent from Outlook on the web while Mailroom was open.
+  await p.evaluate(() => {
+    const at = new Date(Date.now() - 60000).toISOString().replace(/\.\d+Z$/, "Z");
+    window.__folderMail = { "f-sent": [{ id: "owa-1", thread: "conv-owa-1", subject: "Agenda for tomorrow", fromName: "Jon", fromEmail: "jon@example.com", received: at, preview: "Agenda", bodyHtml: "", unread: false, flagged: false, hasAttachments: false, files: [], to: [{ name: "Andre", email: "andre@example.org" }], cc: [], bcc: [] }] };
+  });
+  await clear();
+  await p.evaluate(a => openFolder(a, "sent", "f-sent", "folder"), acct); await wait(400);
+  expect((await calls("sync_folder")).some(c => c.folderId === "f-sent"), "going back asks the server again");
+  same(await p.$$eval(".list .row", r => r.map(x => x.dataset.id)), ["owa-1"], "the message sent elsewhere shows");
+  // Left open: the regular check brings the next one, once the gap has passed.
+  await p.evaluate(() => {
+    folderRefreshAt.clear();
+    const at = new Date().toISOString().replace(/\.\d+Z$/, "Z");
+    window.__folderMail["f-sent"] = [{ id: "owa-2", thread: "conv-owa-2", subject: "Draft - Functional spec", fromName: "Jon", fromEmail: "jon@example.com", received: at, preview: "Spec", bodyHtml: "", unread: false, flagged: false, hasAttachments: true, files: [], to: [{ name: "Andre", email: "andre@example.org" }], cc: [], bcc: [] }];
+  });
+  await p.evaluate(() => pollMail()); await wait(500);
+  same(await p.$$eval(".list .row", r => r.map(x => x.dataset.id)), ["owa-2", "owa-1"], "a mail check refreshes the open folder");
+  // Back and forth quickly: one request, not one per click.
+  await clear();
+  await p.evaluate(a => { openFolder(a, "inbox", "f-inbox", "folder"); openFolder(a, "sent", "f-sent", "folder"); }, acct); await wait(300);
+  same((await calls("sync_folder")).filter(c => c.folderId === "f-sent").length, 0, "no second request inside the gap");
+});
+
 test("Ctrl+Y opens Go to folder: type, arrow, Enter; it works from Calendar too", { fake: true }, async ({ p, calls }) => {
   await p.keyboard.down("Control"); await p.keyboard.press("y"); await p.keyboard.up("Control"); await wait(200);
   expect(await p.$(".goto-dialog"), "Ctrl+Y opens the dialog");
