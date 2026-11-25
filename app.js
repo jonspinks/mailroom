@@ -3539,7 +3539,7 @@ function calendarSidebarHtml() {
 function renderFolders() {
   if (view === "settings") {
     folders.innerHTML = `
-      <div class="acct-label">Settings</div>
+      <h2 class="settings-nav-title">Settings</h2>
       <button class="nav-item" type="button" id="settings-accounts" aria-current="${settingsPage === "accounts" || settingsPage === "add-account" || settingsPage === "account"}">Accounts</button>
       <button class="nav-item" type="button" id="settings-mail" aria-current="${settingsPage === "mail"}">Mail</button>
       <button class="nav-item" type="button" id="settings-calendar" aria-current="${settingsPage === "calendar"}">Calendar</button>
@@ -20741,7 +20741,7 @@ const folderBusy = new Set();
 let syncNote = "";
 const folderRun = new Map();
 const bodyLoads = new Set();
-const APP_VERSION = "1.8.0";
+const APP_VERSION = "1.8.1";
 let appVersion = APP_VERSION;
 
 prepareDesktopAccounts();

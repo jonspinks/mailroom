@@ -3871,6 +3871,17 @@ test("Settings > Mail: preview text none, 1 line or 2 lines, kept (#122)", { fak
   same(await lines(), 0, "none hides it");
 });
 
+test("the Settings list has a heading that reads as a title, not a page", { fake: true }, async ({ p }) => {
+  await p.evaluate(() => showSettings("mail")); await wait(300);
+  const got = await p.evaluate(() => {
+    const h = document.querySelector("#folders .settings-nav-title");
+    const item = document.querySelector("#folders .nav-item");
+    const px = el => parseFloat(getComputedStyle(el).fontSize);
+    return { tag: h && h.tagName, text: h && h.textContent, bigger: px(h) > px(item), rule: getComputedStyle(h).borderBottomStyle };
+  });
+  same(got, { tag: "H2", text: "Settings", bigger: true, rule: "solid" }, "a heading, larger than the pages, with a rule under it");
+});
+
 test("Settings > Mail has the Mark as read choice, and it is kept", { fake: true }, async ({ p }) => {
   await p.evaluate(() => showSettings("mail")); await wait(300);
   expect(await p.$("#mark-read-when"), "the choice is on the Mail page");
