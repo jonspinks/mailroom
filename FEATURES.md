@@ -33,7 +33,7 @@ compares them with this list, and opens an issue for anything new.
 | Unsubscribe | ✅ one-click (RFC 8058) or the sender's page |
 | Invite clashes | ✅ an invite says what it clashes with |
 | Print | ✅ one message, or save it as a PDF (Ctrl+P) |
-| Open in new window | ✅ double-click a message; reply, reply all, forward, print |
+| Open in new window | ✅ double-click a message; reply, reply all, forward (the compose window replaces it), print |
 | Translate | ➖ |
 | Immersive reader | ➖ |
 
