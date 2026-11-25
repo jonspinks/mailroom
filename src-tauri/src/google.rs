@@ -928,6 +928,8 @@ pub fn parse_message(value: &Value) -> Option<(LiveMessage, Vec<String>)> {
         },
         invite: bodies.calendar,
         focus,
+        size: value["sizeEstimate"].as_i64().unwrap_or(0).max(0),
+        due: String::new(),
     };
     Some((message, labels))
 }
@@ -948,7 +950,7 @@ fn mime_part_fields(depth: usize) -> String {
 /// of `fields`, so the HTML is not downloaded with the list.
 fn list_message_url(id: &str) -> String {
     let fields = format!(
-        "id,threadId,labelIds,snippet,internalDate,payload(mimeType,filename,headers,body(size,attachmentId),parts({}))",
+        "id,threadId,labelIds,snippet,internalDate,sizeEstimate,payload(mimeType,filename,headers,body(size,attachmentId),parts({}))",
         mime_part_fields(LIST_PART_DEPTH)
     );
     format!("{GMAIL}/messages/{}?format=full&fields={}", seg(id), seg(&fields))
@@ -1628,6 +1630,24 @@ pub fn delete_folder(email: &str, folder_id: &str) -> Result<(), String> {
 }
 
 /// Some headers of a message, for unsubscribing.
+/// Sizes of messages cached without one, for sorting by size (#121): one
+/// small request each, a few at a time.
+pub fn message_sizes(email: &str, ids: &[String]) -> Result<Vec<(String, i64)>, String> {
+    let token = auth::access_token_for(email)?;
+    let client = graph::http_client()?;
+    let found = parallel(ids, |id| {
+        let id = id.trim();
+        if id.is_empty() {
+            return None;
+        }
+        let url = format!("{GMAIL}/messages/{}?format=minimal&fields=id,sizeEstimate", seg(id));
+        let value = get(&client, &token, &url).ok()?;
+        let size = value["sizeEstimate"].as_i64().unwrap_or(0);
+        (size > 0).then(|| (id.to_string(), size))
+    });
+    Ok(found.into_iter().flatten().collect())
+}
+
 pub fn headers(email: &str, message_id: &str, names: &[&str]) -> Result<Vec<(String, String)>, String> {
     let id = message_id.trim();
     if id.is_empty() {
@@ -2445,7 +2465,7 @@ mod tests {
             id: id.into(), thread: id.into(), subject: String::new(), from_name: String::new(), from_email: String::new(),
             received: received.into(), preview: String::new(), body_html: String::new(), unread: false, flagged: false,
             has_attachments: false, files: Vec::new(), to: Vec::new(), cc: Vec::new(), bcc: Vec::new(), reply_to: Vec::new(), categories: Vec::new(),
-            importance: String::new(), invite: false, focus: String::new(),
+            importance: String::new(), invite: false, focus: String::new(), size: 0, due: String::new(),
         };
         let cached = vec![at("kept", "2026-10-20T10:00:00Z"), at("archived", "2026-10-21T10:00:00Z"), at("old", "2026-01-01T10:00:00Z")];
         let server: BTreeSet<String> = ["kept".to_string()].into_iter().collect();

@@ -48,6 +48,7 @@ fn main() {
             "sync_folder",
             "search_mail",
             "search_cached",
+            "fetch_sizes",
             "conversation_mail",
             "spelling",
             "pdf_texts",

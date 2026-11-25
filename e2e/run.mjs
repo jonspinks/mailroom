@@ -3620,6 +3620,44 @@ test("Mark as read when I move to another message, or never", { fake: true, setu
   same(await unread("m2"), false, "Ctrl+Q still marks it read");
 });
 
+test("Sort the list: size with its bands and value, from, due date, kept per folder (#121)", { fake: true, setup: () => {
+  const day = n => { const d = new Date(); d.setDate(d.getDate() + n); return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); };
+  Object.assign(window.__inbox[0], { flagged: true, due: day(30) });
+  Object.assign(window.__inbox[1], { flagged: true, due: day(-1) });
+  window.__sizes = [["m1", 2 * 1024 * 1024], ["m2", 6 * 1024 * 1024]];
+} }, async ({ p, calls, menu }) => {
+  await wait(400);
+  const order = () => p.$$eval("#rows .conv-line > .row-wrap > .row", rs => rs.map(r => r.dataset.id));
+  const groups = () => p.$$eval("#rows .date-group", gs => gs.map(g => g.textContent.trim()));
+  const pick = async sel => { await p.click("#list-sort"); await wait(150); await p.click("#row-menu " + sel); await wait(400); };
+  same(await order(), ["m3", "m2", "m1"], "newest first to start with");
+  await p.click("#list-sort"); await wait(150);
+  same(await menu(), ["Date", "From", "Subject", "Size", "Importance", "Flag due date", "Attachments", "Newest on top", "Oldest on top"], "the Sort by menu");
+  await p.evaluate(() => hideRowMenu());
+  await pick('[data-sort="size"]');
+  expect((await calls("fetch_sizes")).some(c => c.folderId === "f-inbox"), "sizes are asked for", await calls("fetch_sizes"));
+  same(await order(), ["m2", "m1", "m3"], "largest on top; no size yet goes last");
+  same(await groups(), ["Enormous (over 5 MB)", "Huge (1 to 5 MB)", "Size not known yet"], "size bands, not dates");
+  same(await p.$eval('.row[data-id="m2"] .when', e => e.textContent), "6 MB", "the size shows where the time was");
+  expect(/Sorted by Size, largest on top, from the 3 messages on this computer/.test(await p.$eval(".list-note", e => e.textContent)), "the footer says what it sorted");
+  same((await calls("fetch_sizes")).length, 1, "asked once, not on every paint");
+  await pick('[data-sort-way="1"]');
+  same(await order(), ["m1", "m2", "m3"], "smallest on top; unknown still last");
+  await pick('[data-sort="from"]');
+  same(await order(), ["m1", "m3", "m2"], "From: A to Z (Ada, Bob, Maya), as From's own first way");
+  same(await groups(), ["A", "B", "M"], "grouped by initial");
+  await pick('[data-sort="due"]');
+  same(await order(), ["m2", "m1", "m3"], "overdue, then later, then not flagged");
+  same(await groups(), ["Overdue", "Due later", "Not flagged"], "grouped by when it's due");
+  expect(/^Due /.test(await p.$eval('.row[data-id="m2"] .when', e => e.textContent)), "the due date shows on the row");
+  same(await p.evaluate(() => JSON.parse(localStorage.getItem("mailroom-list-sort")).inbox), { by: "due", reverse: false }, "kept for Inbox");
+  await p.evaluate(() => openFolder(Object.keys(accounts)[0], "sent", "f-sent", "folder")); await wait(300);
+  same(await p.$eval("#list-sort", b => b.title), "Sorted by Date, newest on top", "Sent keeps its own sort");
+  await p.evaluate(() => openFolder(Object.keys(accounts)[0], "inbox", "f-inbox", "folder")); await wait(300);
+  await pick('[data-sort="date"]');
+  same([await order(), await p.evaluate(() => localStorage.getItem("mailroom-list-sort"))], [["m3", "m2", "m1"], "{}"], "back to Date, and nothing kept");
+});
+
 test("Settings > Mail: preview text none, 1 line or 2 lines, kept (#122)", { fake: true, setup: () => {
   window.__inbox[2].preview = "A long preview that goes on and on about the site plans, the drawings, the revisions, the schedule, the budget and every other thing a project manager might want to know before the meeting on Thursday";
 } }, async ({ p }) => {

@@ -4170,6 +4170,185 @@ function mailGroupFor(m) {
   return { id: "older", label: "Older" };
 }
 
+// ---- Sort the message list (#121), as Outlook's Sort by does ----
+// Each folder kind keeps its own choice. `reverse` flips the key's natural
+// order: newest, A to Z, largest, high first, soonest due, with files first.
+// Pinned mail and top results stay on top whatever the sort.
+const SORT_KEYS = {
+  date: { label: "Date", ways: ["Newest on top", "Oldest on top"] },
+  from: { label: "From", ways: ["A to Z", "Z to A"] },
+  subject: { label: "Subject", ways: ["A to Z", "Z to A"] },
+  size: { label: "Size", ways: ["Largest on top", "Smallest on top"] },
+  importance: { label: "Importance", ways: ["High on top", "Low on top"] },
+  due: { label: "Flag due date", ways: ["Soonest on top", "Latest on top"] },
+  files: { label: "Attachments", ways: ["With attachments on top", "Without on top"] }
+};
+// A Map, not an object: a folder key comes from the server or the address,
+// and one named __proto__ must not reach the object's prototype.
+const listSorts = (() => {
+  try {
+    const saved = JSON.parse(localStorage.getItem("mailroom-list-sort") || "{}");
+    if (!saved || typeof saved !== "object" || Array.isArray(saved)) return new Map();
+    return new Map(Object.entries(saved).filter(([, v]) => v && typeof v === "object" && isSortKey(v.by)));
+  } catch (e) { return new Map(); }
+})();
+
+function isSortKey(by) {
+  return typeof by === "string" && Object.prototype.hasOwnProperty.call(SORT_KEYS, by);
+}
+const sizesAsked = new Set();
+
+function listSort() {
+  const saved = listSorts.get(box);
+  const by = saved && isSortKey(saved.by) ? saved.by : "date";
+  return { by, reverse: !!(saved && saved.reverse) };
+}
+
+function setListSort(by, reverse) {
+  if (!isSortKey(by)) return;
+  if (by === "date" && !reverse) listSorts.delete(box);
+  else listSorts.set(box, { by, reverse: !!reverse });
+  try { localStorage.setItem("mailroom-list-sort", JSON.stringify(Object.fromEntries(listSorts))); } catch (e) {}
+  if (by === "size") askSizes();
+  render();
+}
+
+function sortLabel(sort) {
+  return "Sorted by " + SORT_KEYS[sort.by].label + ", " + SORT_KEYS[sort.by].ways[sort.reverse ? 1 : 0].toLowerCase();
+}
+
+// Sizes are not part of the sync; sorting by size asks for them once per
+// folder and session, and the list redraws as they come.
+function askSizes() {
+  if (!inDesktop() || listSort().by !== "size" || searchActive() || isCategoryBox(box) || isSearchBox(box)) return;
+  const ids = account === "all" ? profileAccountIds() : [account];
+  ids.forEach(async id => {
+    const acct = accounts[id];
+    const folder = acct && (acct.liveFolders || []).find(item => item.key === box);
+    const folderId = graphFolderId(folder);
+    const mark = id + "\n" + box;
+    if (!acct || !acct.signedIn || !acct.email || !folderId || sizesAsked.has(mark)) return;
+    sizesAsked.add(mark);
+    try {
+      const pairs = await tauriInvoke("fetch_sizes", { email: acct.email, folderId, folder_id: folderId });
+      const sizes = new Map((Array.isArray(pairs) ? pairs : []).map(pair => [String(pair[0]), Number(pair[1]) || 0]));
+      if (!sizes.size) return;
+      messages.forEach(m => { if (m.account === id && sizes.has(m.id)) m.size = sizes.get(m.id); });
+      if (view === "mail" && box === folder.key) renderList();
+    } catch (err) {
+      sizesAsked.delete(mark);
+    }
+  });
+}
+
+function sortSubject(conv, head) {
+  return cleanSubject(conv.topic || head.subject || "").replace(/^\s*((re|fw|fwd|aw|wg|sv)\s*:\s*)+/i, "").trim();
+}
+
+// The value a conversation sorts by. Missing values (no size yet, no due
+// date) are null and always go last.
+function sortValue(by, conv, head, shown) {
+  if (by === "from") return String(head.from || head.email || "").trim().toLowerCase() || null;
+  if (by === "subject") return sortSubject(conv, head).toLowerCase() || null;
+  if (by === "size") { const n = Math.max(0, ...shown.map(m => m.size || 0)); return n > 0 ? n : null; }
+  if (by === "importance") return shown.some(m => m.importance === "high") ? 2 : shown.some(m => m.importance === "low") ? 0 : 1;
+  if (by === "due") { const days = shown.filter(m => m.flagged && m.due).map(m => m.due).sort(); return days[0] || null; }
+  if (by === "files") return shown.some(m => m.hasAttachment) ? 1 : 0;
+  return null;
+}
+
+function compareSortValues(by, a, b, reverse) {
+  if (a === b) return 0;
+  if (a === null) return 1;
+  if (b === null) return -1;
+  // Natural order: text A to Z and due dates soonest first; numbers largest first.
+  const ascending = by === "from" || by === "subject" || by === "due";
+  let n = typeof a === "string" ? a.localeCompare(b, undefined, { sensitivity: "base", numeric: true }) : a - b;
+  if (!ascending) n = -n;
+  return reverse ? -n : n;
+}
+
+const SIZE_BANDS = [
+  [5 * 1024 * 1024, "enormous", "Enormous (over 5 MB)"],
+  [1024 * 1024, "huge", "Huge (1 to 5 MB)"],
+  [500 * 1024, "very-large", "Very large (500 KB to 1 MB)"],
+  [100 * 1024, "large", "Large (100 to 500 KB)"],
+  [25 * 1024, "medium", "Medium (25 to 100 KB)"],
+  [10 * 1024, "small", "Small (10 to 25 KB)"],
+  [0, "tiny", "Tiny (under 10 KB)"]
+];
+
+function sortGroupFor(by, value, head) {
+  if (by === "from" || by === "subject") {
+    const first = (value || "").charAt(0).toUpperCase();
+    const letter = /\p{L}/u.test(first) ? first : "#";
+    return { id: "sort-" + by + "-" + letter, label: letter === "#" ? "Other" : letter };
+  }
+  if (by === "size") {
+    if (value === null) return { id: "sort-size-unknown", label: "Size not known yet" };
+    const band = SIZE_BANDS.find(item => value > item[0]) || SIZE_BANDS[SIZE_BANDS.length - 1];
+    return { id: "sort-size-" + band[1], label: band[2] };
+  }
+  if (by === "importance") return value === 2 ? { id: "sort-imp-high", label: "High importance" } : value === 0 ? { id: "sort-imp-low", label: "Low importance" } : { id: "sort-imp-normal", label: "Normal importance" };
+  if (by === "files") return value ? { id: "sort-files-yes", label: "With attachments" } : { id: "sort-files-no", label: "Without attachments" };
+  if (by === "due") {
+    if (value === null) return head && head.flagged ? { id: "sort-due-none", label: "No due date" } : { id: "sort-due-unflagged", label: "Not flagged" };
+    const today = localDayKey(todayDate());
+    const tomorrow = localDayKey(addDays(todayDate(), 1));
+    const weekEnd = localDayKey(addDays(startOfWeek(todayDate()), 7));
+    if (value < today) return { id: "sort-due-overdue", label: "Overdue" };
+    if (value === today) return { id: "sort-due-today", label: "Due today" };
+    if (value === tomorrow) return { id: "sort-due-tomorrow", label: "Due tomorrow" };
+    if (value < weekEnd) return { id: "sort-due-week", label: "Due this week" };
+    return { id: "sort-due-later", label: "Due later" };
+  }
+  return mailGroupFor(head);
+}
+
+function localDayKey(d) {
+  return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+}
+
+// What the row shows where the time goes, when sorting by size or due date:
+// Outlook's extra column.
+function sortWhen(by, m, shown) {
+  if (by === "size") { const n = Math.max(0, ...(shown || [m]).map(x => x.size || 0)); return n ? fileSizeLabel(n) : ""; }
+  if (by === "due") {
+    const day = (shown || [m]).filter(x => x.flagged && x.due).map(x => x.due).sort()[0];
+    if (!day) return "";
+    const [y, mo, d] = day.split("-").map(Number);
+    return "Due " + new Date(y, mo - 1, d).toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short" });
+  }
+  return "";
+}
+
+function showSortMenu(x, y) {
+  hideThemeMenu();
+  const sort = listSort();
+  const menu = document.getElementById("row-menu");
+  const keys = Object.entries(SORT_KEYS).map(([key, item]) =>
+    `<button type="button" role="menuitemradio" aria-checked="${sort.by === key}" data-sort="${key}">${esc(item.label)}</button>`).join("");
+  const ways = SORT_KEYS[sort.by].ways.map((label, i) =>
+    `<button type="button" role="menuitemradio" aria-checked="${sort.reverse === (i === 1)}" data-sort-way="${i}">${esc(label)}</button>`).join("");
+  menu.innerHTML = keys + `<div class="menu-rule"></div>` + ways;
+  menu.dataset.id = "";
+  menu.dataset.kind = "";
+  menu.dataset.child = "";
+  menu.dataset.menu = "sort";
+  menu.setAttribute("aria-label", "Sort by");
+  placeMenu(menu, x, y);
+}
+
+function paintSortButton() {
+  const btn = document.getElementById("list-sort");
+  if (!btn) return;
+  const sort = listSort();
+  const label = sortLabel(sort);
+  btn.title = label;
+  btn.setAttribute("aria-label", label);
+  btn.classList.toggle("on", sort.by !== "date" || sort.reverse);
+}
+
 // ---- Focused Inbox (2026-10-23): Microsoft sorts the Inbox into Focused
 // and Other; Mailroom shows the two as tabs, as Outlook does. A message it
 // hasn't sorted counts as Focused. Off in Settings > Mail.
@@ -5046,6 +5225,8 @@ function paintList() {
   listTitle.textContent = listHeading();
   listTitle.title = listTitle.textContent;
   paintFocusTabs();
+  paintSortButton();
+  askSizes();
   paintScheduledPanel();
   const summary = document.getElementById("search-summary");
   const summaryText = searchSummary();
@@ -5106,7 +5287,7 @@ function paintList() {
   const rowTrashIcon = `<svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M3.2 4.6h9.6M6.2 4.5V3.2h3.6v1.3M5.6 4.6l.4 8h4l.4-8" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
   const rowHtml = (m, opts) => {
     const who = (m.draft || m.pendingSend) ? "To: " + (m.toName || m.to || "someone") : m.from;
-    const when = m.draft && !m.pendingSend ? "Draft" : m.time;
+    const when = m.draft && !m.pendingSend ? "Draft" : ((sort.by === "size" || sort.by === "due") && sortWhen(sort.by, m, opts.shownAll)) || m.time;
     const folderPill = searchScope === "all" ? `<span class="pill">${esc(boxLabel(messageBox(m), m.account))}</span>` : "";
     const count = opts.count > 1 ? `<span class="thread-n">${opts.count}</span>` : "";
     const flag = opts.flagged ? flagSvg : "";
@@ -5137,10 +5318,16 @@ function paintList() {
     </div>`;
   };
   const top = topResultIds(items);
+  const sort = listSort();
+  const sorted = sort.by !== "date";
+  const sortValues = new Map();
   // Each conversation's place is worked out once, not once per comparison.
   const orderedItems = items.map(conv => {
-    const head = listSummary(conv).summary;
-    return { conv, pin: pinnedOrder.indexOf(conv.id), top: top.indexOf(conv.id), day: +messageDay(head), seq: head.seq || 0 };
+    const listed = listSummary(conv);
+    const head = listed.summary;
+    const value = sorted ? sortValue(sort.by, conv, head, listed.shown) : null;
+    if (sorted) sortValues.set(conv.id, value);
+    return { conv, pin: pinnedOrder.indexOf(conv.id), top: top.indexOf(conv.id), day: +messageDay(head), seq: head.seq || 0, value };
   }).sort((a, b) => {
     const ap = a.pin >= 0;
     const bp = b.pin >= 0;
@@ -5148,6 +5335,12 @@ function paintList() {
     if (ap && bp) return a.pin - b.pin;
     if ((a.top < 0) !== (b.top < 0)) return a.top >= 0 ? -1 : 1;
     if (a.top >= 0) return a.top - b.top;
+    if (sorted) {
+      const n = compareSortValues(sort.by, a.value, b.value, sort.reverse);
+      if (n) return n;
+    } else if (sort.reverse) {
+      return (a.day - b.day) || (a.seq - b.seq);
+    }
     return (b.day - a.day) || (b.seq - a.seq);
   }).map(item => item.conv);
   let lastGroup = "";
@@ -5158,7 +5351,7 @@ function paintList() {
     const head = listed.summary;
     const many = shown.length > 1;
     const open = many && openThreads.has(c.id);
-    const group = isPinned(c.id) ? { id: "pinned", label: "Pinned" } : top.includes(c.id) ? { id: "top", label: "Top results" } : mailGroupFor(head);
+    const group = isPinned(c.id) ? { id: "pinned", label: "Pinned" } : top.includes(c.id) ? { id: "top", label: "Top results" } : sorted ? sortGroupFor(sort.by, sortValues.get(c.id), head) : mailGroupFor(head);
     const hidden = collapsedMailGroups.has(group.id);
     const heading = group.id === lastGroup ? "" : `<button class="date-group" type="button" data-mail-group="${esc(group.id)}" aria-expanded="${hidden ? "false" : "true"}" aria-label="${esc((hidden ? "Expand " : "Collapse ") + group.label)}">${sectionChevron()}${esc(group.label)}</button>`;
     lastGroup = group.id;
@@ -5193,12 +5386,17 @@ function paintList() {
           count: shown.length,
           topic: c.topic,
           draft: box !== "drafts" && shown.some(item => item.draft),
-          shortcut: open ? attachmentOwner([head]) : attachmentOwner(shown)
+          shortcut: open ? attachmentOwner([head]) : attachmentOwner(shown),
+          shownAll: open ? null : shown
         })}
       </div>
       ${kids}
     </div>` });
   });
+  if (sorted) {
+    const count = items.reduce((n, c) => n + listSummary(c).shown.length, 0);
+    parts.push({ key: "sort-note", html: `<div class="list-note">${esc(sortLabel(sort))}, from the ${count} ${count === 1 ? "message" : "messages"} on this computer.</div>` });
+  }
   if (moreListMail()) parts.push({ key: "older", html: `<button class="list-more" type="button" id="list-older">Older mail</button>` });
   placeListParts(parts);
   if (listEl && keepScroll) listEl.scrollTop = keepScroll;
@@ -11232,6 +11430,12 @@ document.getElementById("row-menu").onclick = (ev) => {
     if (!msg) return;
     if (btn.dataset.filesAll) startDownloadAll(msg);
     else openAttachment(msg, { id: btn.dataset.fileId || "", name: btn.dataset.fileName || "", unknown: btn.dataset.fileUnknown === "1" });
+    return;
+  }
+  if (menuKind === "sort") {
+    const sort = listSort();
+    if (btn.dataset.sort) setListSort(btn.dataset.sort, btn.dataset.sort === sort.by ? sort.reverse : false);
+    else if (btn.dataset.sortWay) setListSort(sort.by, btn.dataset.sortWay === "1");
     return;
   }
   if (menuKind === "section") {
@@ -18787,6 +18991,15 @@ document.querySelectorAll("[data-focus-tab]").forEach(btn => {
   };
 });
 
+const listSortBtn = document.getElementById("list-sort");
+if (listSortBtn) listSortBtn.onclick = (ev) => {
+  ev.stopPropagation();
+  const menu = document.getElementById("row-menu");
+  if (menu && !menu.hidden && menu.dataset.menu === "sort") return hideRowMenu();
+  const r = listSortBtn.getBoundingClientRect();
+  showSortMenu(r.left, r.bottom + 4);
+};
+
 mailFilterEl.onchange = () => {
   mailFilter = mailFilterEl.value;
   keptRead = null;
@@ -19833,7 +20046,7 @@ const folderBusy = new Set();
 let syncNote = "";
 const folderRun = new Map();
 const bodyLoads = new Set();
-const APP_VERSION = "1.7.6";
+const APP_VERSION = "1.7.7";
 let appVersion = APP_VERSION;
 
 prepareDesktopAccounts();
@@ -20231,6 +20444,8 @@ function liveMessage(accountId, item, boxKey) {
     importance: item.importance === "high" || item.importance === "low" ? item.importance : "",
     invite: !!item.invite,
     focus: item.focus === "other" ? "other" : item.focus === "focused" ? "focused" : "",
+    size: Math.max(0, Number(item.size) || 0),
+    due: /^\d{4}-\d{2}-\d{2}$/.test(String(item.due || "")) ? item.due : "",
     draft: boxKey === "drafts",
     bodyHtml: item.bodyHtml || "",
     needsBody: !item.bodyHtml

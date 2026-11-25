@@ -974,7 +974,13 @@
   .list-head .check-mail { grid-column: 4; grid-row: 1; margin-left: 8px; justify-self: end; }
   .list-head .search-summary,
   .list-head .focus-tabs { grid-column: 2; grid-row: 2; }
-  .list-head .list-filter { grid-column: 3 / 5; grid-row: 2; margin-left: 8px; justify-self: end; }
+  /* Sort sits under Check mail, so the title keeps the filter's width. */
+  .list-head .list-filter { grid-column: 3; grid-row: 2; margin-left: 8px; justify-self: end; }
+  .list-head .list-sort { grid-column: 4; grid-row: 2; margin-left: 4px; justify-self: end; }
+  .list-sort { color: var(--muted); }
+  .list-sort.on { color: var(--blue-ink); }
+  body:not([data-view="mail"]) .list-sort { display: none; }
+  .list-note { padding: 10px 14px 14px; color: var(--muted); font-size: 12px; text-align: center; }
   .list-head .list-filter select { padding: 2px 4px; }
   /* Search deeper and Ask sit under the header rows, full width. */
   .list-head #search-deeper-bar { grid-column: 1 / -1; grid-row: 3; }

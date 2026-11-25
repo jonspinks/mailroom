@@ -81,6 +81,12 @@ pub struct LiveMessage {
     /// Focused Inbox: "focused" or "other"; empty when not said.
     #[serde(default)]
     pub focus: String,
+    /// The message's size in bytes, as the server counts it; 0 when not known.
+    #[serde(default)]
+    pub size: i64,
+    /// A flag's due date (YYYY-MM-DD); empty without one.
+    #[serde(default)]
+    pub due: String,
 }
 
 #[derive(Clone, Serialize)]
@@ -642,7 +648,72 @@ fn parse_message(value: serde_json::Value) -> Option<LiveMessage> {
             "other" => "other".into(),
             _ => String::new(),
         },
+        size: message_size(&value),
+        due: if flagged { flag_due(&value["flag"]) } else { String::new() },
     })
+}
+
+/// PidTagMessageSize, asked for with `SIZE_EXPAND`.
+const SIZE_PROPERTY: &str = "Integer 0x0E08";
+const SIZE_EXPAND: &str = "singleValueExtendedProperties($filter=id eq 'Integer 0x0E08')";
+
+fn message_size(value: &serde_json::Value) -> i64 {
+    value["singleValueExtendedProperties"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|prop| prop["id"].as_str().is_some_and(|id| id.eq_ignore_ascii_case(SIZE_PROPERTY)))
+        .and_then(|prop| prop["value"].as_str())
+        .and_then(|text| text.trim().parse::<i64>().ok())
+        .filter(|size| *size > 0)
+        .unwrap_or(0)
+}
+
+/// The day a flag is due. Graph gives a local date and time with its zone;
+/// a due date is a day, so the day is kept as written.
+fn flag_due(flag: &serde_json::Value) -> String {
+    let text = flag["dueDateTime"]["dateTime"].as_str().unwrap_or("").trim();
+    let day = text.get(..10).unwrap_or("");
+    let bytes = day.as_bytes();
+    if day.len() == 10 && bytes[4] == b'-' && bytes[7] == b'-' && day.bytes().all(|b| b.is_ascii_digit() || b == b'-') {
+        day.to_string()
+    } else {
+        String::new()
+    }
+}
+
+/// Sizes of the newest messages in a folder, for sorting by size (#121).
+/// The sync leaves size out, so this walks the folder's list once, 100 a
+/// page, newest first, up to `limit` messages.
+pub fn folder_sizes(email: &str, folder_id: &str, limit: usize) -> Result<Vec<(String, i64)>, String> {
+    let id = folder_id.trim();
+    if id.is_empty() {
+        return Err("Choose a folder.".into());
+    }
+    let token = auth::access_token_for(email)?;
+    let client = http_client()?;
+    let mut url = format!(
+        "https://graph.microsoft.com/v1.0/me/mailFolders/{}/messages?$select=id&$orderby=receivedDateTime%20desc&$top=100&$expand={}",
+        path_segment(id),
+        path_segment(SIZE_EXPAND)
+    );
+    let mut out = Vec::new();
+    for _ in 0..limit.div_ceil(100).max(1) {
+        let page = graph_get(&client, &token, &url)?;
+        for row in page["value"].as_array().into_iter().flatten() {
+            if let Some(id) = row["id"].as_str() {
+                let size = message_size(row);
+                if size > 0 {
+                    out.push((id.to_string(), size));
+                }
+            }
+        }
+        match page["@odata.nextLink"].as_str() {
+            Some(next) if out.len() < limit && next.starts_with("https://graph.microsoft.com/") => url = next.to_string(),
+            _ => break,
+        }
+    }
+    Ok(out)
 }
 
 #[derive(Clone)]
@@ -667,6 +738,8 @@ pub struct MessagePatch {
     pub categories: Option<Vec<String>>,
     pub importance: Option<String>,
     pub focus: Option<String>,
+    /// The flag's due date when the flag changed; empty when it has none.
+    pub due: Option<String>,
 }
 
 #[derive(Clone)]
@@ -874,6 +947,7 @@ fn parse_patch(value: &serde_json::Value) -> Option<MessagePatch> {
         }),
         importance: value.get("importance").map(|v| level(v.as_str().unwrap_or(""), ["high", "low"])),
         focus: value.get("inferenceClassification").map(|v| level(v.as_str().unwrap_or(""), ["focused", "other"])),
+        due: value.get("flag").map(flag_due),
     })
 }
 
@@ -3149,6 +3223,24 @@ pub fn delete_search_folder(email: &str, folder_id: &str) -> Result<(), String> 
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_message_keeps_its_size_and_its_flag_due_date() {
+        let flagged = serde_json::json!({
+            "id": "m", "conversationId": "c", "subject": "Big",
+            "flag": { "flagStatus": "flagged", "dueDateTime": { "dateTime": "2026-12-01T00:00:00.0000000", "timeZone": "UTC" } },
+            "singleValueExtendedProperties": [{ "id": "Integer 0x0e08", "value": "5242880" }]
+        });
+        let m = super::parse_message(flagged).unwrap();
+        assert_eq!((m.size, m.due.as_str()), (5_242_880, "2026-12-01"));
+        let done = serde_json::json!({
+            "id": "n", "subject": "Done",
+            "flag": { "flagStatus": "complete", "dueDateTime": { "dateTime": "2026-12-01T00:00:00", "timeZone": "UTC" } }
+        });
+        let m = super::parse_message(done).unwrap();
+        assert_eq!((m.size, m.due.as_str()), (0, ""), "no size asked for; a finished flag has no due date");
+        assert_eq!(super::flag_due(&serde_json::json!({ "dueDateTime": { "dateTime": "soon" } })), "");
+    }
+
     #[test]
     fn a_mailbox_never_has_more_than_three_calls_in_flight() {
         use std::sync::atomic::{AtomicUsize, Ordering};

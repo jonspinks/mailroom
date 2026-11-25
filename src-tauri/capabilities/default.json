@@ -19,6 +19,7 @@
     "allow-sync-folder",
     "allow-search-mail",
     "allow-search-cached",
+    "allow-fetch-sizes",
     "allow-conversation-mail",
     "allow-spelling",
     "allow-pdf-texts",
