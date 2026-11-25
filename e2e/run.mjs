@@ -1538,6 +1538,37 @@ test("a rule that forwards mail elsewhere shows a warning until it is off or dis
   expect((await banner()).includes("new@elsewhere.example"), "a changed address warns again", await banner());
 });
 
+test("Sort subfolders A to Z, with Undo; collapse or expand all accounts (#119)", { fake: true, setup: () => {
+  window.__folders.push(
+    { id: "f-zeta", parentId: "f-jobs", name: "Zeta", key: "f-zeta", unread: 0, total: 0, depth: 1 },
+    { id: "f-alpha", parentId: "f-jobs", name: "alpha", key: "f-alpha", unread: 0, total: 0, depth: 1 }
+  );
+} }, async ({ p, menu }) => {
+  await wait(400);
+  const acct = await p.evaluate(() => Object.keys(accounts)[0]);
+  const folderMenu = async key => { await p.evaluate((a, k) => showFolderMenu(100, 100, a, k), acct, key); await wait(150); return menu(); };
+  const shown = () => p.evaluate(a => orderedFolderKeys(a).filter(k => ["f-kiln", "f-zeta", "f-alpha"].includes(k)), acct);
+  same(await shown(), ["f-kiln", "f-zeta", "f-alpha"], "the server's order at first");
+  expect(!(await folderMenu("f-kiln")).includes("Sort subfolders A to Z"), "not offered on a folder with nothing inside");
+  await p.evaluate(() => hideRowMenu());
+  expect((await folderMenu("f-jobs")).includes("Sort subfolders A to Z"), "offered on a folder with subfolders");
+  await p.click('#row-menu [data-act="sort-subfolders"]'); await wait(300);
+  same(await shown(), ["f-alpha", "f-kiln", "f-zeta"], "A to Z, ignoring case");
+  same(await p.evaluate(a => JSON.parse(localStorage.getItem("mailroom-folder-order"))[a]["f-jobs"], acct), ["f-alpha", "f-kiln", "f-zeta"], "kept like a dragged order");
+  await p.click("#toast .toast-action"); await wait(300);
+  same(await shown(), ["f-kiln", "f-zeta", "f-alpha"], "Undo puts the old order back");
+  // Account headings: right-click for all of them; Alt+click does the same.
+  const head = `#folders [data-section="${acct}"]`;
+  await p.click(head, { button: "right" }); await wait(150);
+  same(await menu(), ["Collapse all accounts", "Expand all accounts"], "the account heading's menu");
+  same(await p.$eval('#row-menu [data-act="expand-all"]', b => b.disabled), true, "Expand is off when all are open");
+  await p.click('#row-menu [data-act="collapse-all"]'); await wait(200);
+  same(await p.$eval(head, b => b.getAttribute("aria-expanded")), "false", "collapsed");
+  same(JSON.parse(await p.evaluate(() => localStorage.getItem("mailroom-mail-collapse"))).sections.includes(acct), true, "and remembered");
+  await p.keyboard.down("Alt"); await p.click(head); await p.keyboard.up("Alt"); await wait(200);
+  same(await p.$eval(head, b => b.getAttribute("aria-expanded")), "true", "Alt+click opens them all again");
+});
+
 test("folders can be made, renamed and deleted from the folder menu; Outlook's own cannot (#59)", { fake: true }, async ({ p, calls, clear, menu }) => {
   await wait(400);
   const acct = await p.evaluate(() => Object.keys(accounts)[0]);

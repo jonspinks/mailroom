@@ -2075,6 +2075,68 @@ function moveFolder(acct, key, targetKey, before) {
   render();
 }
 
+// The folders right inside `key`, in the order the pane shows them.
+function childFolderKeys(acct, key) {
+  if (!key) return [];
+  return orderedFolderKeys(acct).filter(item => siblingKey(acct, item) === key);
+}
+
+// "Sort subfolders A to Z" on a parent folder, as Outlook has it (#119).
+// It saves the order a drag would, so a later drag still moves one folder.
+function sortSubfolders(acct, key) {
+  const children = childFolderKeys(acct, key);
+  if (children.length < 2) return;
+  if (!folderOrder[acct] || typeof folderOrder[acct] !== "object" || Array.isArray(folderOrder[acct])) folderOrder[acct] = {};
+  const had = Object.prototype.hasOwnProperty.call(folderOrder[acct], key);
+  const before = had ? folderOrder[acct][key].slice() : null;
+  const name = item => boxLabel(item, acct);
+  folderOrder[acct][key] = children.slice().sort((a, b) =>
+    name(a).localeCompare(name(b), undefined, { sensitivity: "base", numeric: true }) || (a < b ? -1 : a > b ? 1 : 0));
+  rememberFolderOrder();
+  render();
+  toast("Sorted the folders in " + boxLabel(key, acct) + " A to Z", {
+    label: "Undo",
+    run: () => {
+      if (!folderOrder[acct]) folderOrder[acct] = {};
+      if (before) folderOrder[acct][key] = before;
+      else delete folderOrder[acct][key];
+      rememberFolderOrder();
+      render();
+    }
+  });
+}
+
+// The account sections of the folder pane, All accounts too.
+function accountSectionKeys() {
+  const ids = profileEntries().map(([id]) => id);
+  return ids.length > 1 ? ["all", ...ids] : ids;
+}
+
+function setAllAccountSections(open) {
+  accountSectionKeys().forEach(key => {
+    if (open) collapsedSections.delete(key);
+    else collapsedSections.add(key);
+  });
+  rememberMailCollapse();
+  render();
+}
+
+function showSectionMenu(x, y, key) {
+  hideThemeMenu();
+  const keys = accountSectionKeys();
+  const menu = document.getElementById("row-menu");
+  const anyOpen = keys.some(item => sectionOpen(item));
+  const anyShut = keys.some(item => !sectionOpen(item));
+  menu.innerHTML = `<button type="button" role="menuitem" data-act="collapse-all"${anyOpen ? "" : " disabled"}>Collapse all accounts</button>
+    <button type="button" role="menuitem" data-act="expand-all"${anyShut ? "" : " disabled"}>Expand all accounts</button>`;
+  menu.dataset.id = key;
+  menu.dataset.kind = "";
+  menu.dataset.child = "";
+  menu.dataset.menu = "section";
+  menu.setAttribute("aria-label", "Accounts");
+  placeMenu(menu, x, y);
+}
+
 function folderDescendant(acct, key, ancestor) {
   let cursor = key;
   const seen = new Set();
@@ -3547,13 +3609,22 @@ function renderFolders() {
     };
   });
   folders.querySelectorAll("[data-section]").forEach(btn => {
-    btn.onclick = () => {
-      const key = btn.dataset.section;
+    const key = btn.dataset.section;
+    const accountSection = accountSectionKeys().includes(key);
+    btn.onclick = (ev) => {
+      // Alt+click on an account opens or closes every account, as file managers do.
+      if (ev && ev.altKey && accountSection) return setAllAccountSections(!sectionOpen(key));
       if (collapsedSections.has(key)) collapsedSections.delete(key);
       else collapsedSections.add(key);
       rememberMailCollapse();
       render();
     };
+    if (accountSection) {
+      btn.addEventListener("contextmenu", (ev) => {
+        ev.preventDefault();
+        showSectionMenu(ev.clientX, ev.clientY, key);
+      });
+    }
   });
   folders.querySelectorAll("[data-fold]").forEach(btn => {
     btn.onclick = (ev) => {
@@ -11048,7 +11119,8 @@ function showFolderMenu(x, y, acct, folder) {
   const folderItems = acct === "all" || !accounts[acct] ? "" : `
     <div class="menu-rule"></div>
     <button type="button" role="menuitem" data-act="new-folder">New folder</button>${holdsFolders(acct, folder) ? `
-    <button type="button" role="menuitem" data-act="new-subfolder">New subfolder</button>` : ""}${own ? `
+    <button type="button" role="menuitem" data-act="new-subfolder">New subfolder</button>` : ""}${childFolderKeys(acct, folder).length > 1 ? `
+    <button type="button" role="menuitem" data-act="sort-subfolders">Sort subfolders A to Z</button>` : ""}${own ? `
     <button type="button" role="menuitem" data-act="rename-folder">Rename…</button>
     <button type="button" role="menuitem" data-act="delete-folder">Delete folder</button>` : ""}`;
   menu.innerHTML = `<button type="button" role="menuitem" data-act="${on ? "unfav" : "fav"}">${on ? "Remove from favorites" : "Add to favorites"}</button>${counting}${markable ? `
@@ -11162,6 +11234,11 @@ document.getElementById("row-menu").onclick = (ev) => {
     else openAttachment(msg, { id: btn.dataset.fileId || "", name: btn.dataset.fileName || "", unknown: btn.dataset.fileUnknown === "1" });
     return;
   }
+  if (menuKind === "section") {
+    if (btn.dataset.act === "collapse-all") setAllAccountSections(false);
+    else if (btn.dataset.act === "expand-all") setAllAccountSections(true);
+    return;
+  }
   if (menuKind === "folder") {
     if (btn.dataset.act === "readall") markFolderRead(id, eventKind);
     else if (btn.dataset.act === "count-total") setFolderCountMode(id, eventKind, "total");
@@ -11172,6 +11249,7 @@ document.getElementById("row-menu").onclick = (ev) => {
     else if (btn.dataset.act === "fav") addFavorite(id, eventKind);
     else if (btn.dataset.act === "new-folder") newFolder(id, "");
     else if (btn.dataset.act === "new-subfolder") newFolder(id, eventKind);
+    else if (btn.dataset.act === "sort-subfolders") sortSubfolders(id, eventKind);
     else if (btn.dataset.act === "rename-folder") renameFolder(id, eventKind);
     else if (btn.dataset.act === "delete-folder") deleteFolder(id, eventKind);
     return;
@@ -19736,7 +19814,7 @@ const folderBusy = new Set();
 let syncNote = "";
 const folderRun = new Map();
 const bodyLoads = new Set();
-const APP_VERSION = "1.7.4";
+const APP_VERSION = "1.7.5";
 let appVersion = APP_VERSION;
 
 prepareDesktopAccounts();
