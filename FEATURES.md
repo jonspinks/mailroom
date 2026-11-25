@@ -120,7 +120,7 @@ compares them with this list, and opens an issue for anything new.
 | Outlook | Mailroom |
 |---|---|
 | Notifications | ✅ once per message, Focused only; a burst of 4 or more is one summary that opens the Inbox |
-| Works offline | ✅ local cache; Outbox survives a restart |
+| Works offline | ✅ local cache; Outbox survives a restart; read, flag, archive, delete and move made offline wait (with a clock on the row) and reach the server in order when it can be reached, for up to seven days |
 | Keyboard shortcuts | ✅ Outlook's (Ctrl+R, Ctrl+Shift+R, Insert, Ctrl+Q…) |
 | Go to Folder (Ctrl+Y) | ✅ every folder in the profile, Favorites first, type to find |
 | Default mail app | ✅ mailto: links (Omarchy) |

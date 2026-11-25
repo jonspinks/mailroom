@@ -3987,3 +3987,6 @@ html body[data-read="window"] .close-message { display: inline-grid; }
 .avail-count { color: var(--muted); font-size: 12px; margin-right: 8px; white-space: nowrap; }
 .work-hours { display: flex; flex-direction: column; gap: 4px; }
 .work-hours-pick { display: flex; align-items: center; gap: 6px; }
+
+/* A change made offline, waiting for the server (#67). */
+.pending-mark { display: inline-flex; align-items: center; color: var(--muted); margin-right: 4px; }
