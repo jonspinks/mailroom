@@ -14283,6 +14283,10 @@ function fitWideMail(root) {
 // Compact is two lines a message, with a paperclip for attachments.
 let listDensity = (() => { try { return localStorage.getItem("mailroom-list-density") === "compact" ? "compact" : "comfortable"; } catch (e) { return "comfortable"; } })();
 document.body.dataset.listDensity = listDensity;
+// Preview text under each message: none, one line or two, as Outlook's
+// Settings > Layout has it (#122). Compact has none whatever this says.
+let listPreview = (() => { try { const v = localStorage.getItem("mailroom-list-preview"); return v === "none" || v === "2" ? v : "1"; } catch (e) { return "1"; } })();
+document.body.dataset.listPreview = listPreview;
 
 // Reading text: Comfortable lifts small mail text to 16 px, Compact to 14 px.
 let readSize = (() => { try { return localStorage.getItem("mailroom-read-size") === "compact" ? "compact" : "comfortable"; } catch (e) { return "comfortable"; } })();
@@ -14869,6 +14873,14 @@ function renderMailSettings(body) {
         </select>
         <span class="field-hint">Compact shows two lines a message and a paperclip for attachments, so about twice as many fit.</span>
       </label>
+      <label class="field">Preview text
+        <select id="list-preview">
+          <option value="none"${listPreview === "none" ? " selected" : ""}>None</option>
+          <option value="1"${listPreview === "1" ? " selected" : ""}>1 line</option>
+          <option value="2"${listPreview === "2" ? " selected" : ""}>2 lines</option>
+        </select>
+        <span class="field-hint">The start of each message under its subject. Compact never shows it.</span>
+      </label>
     </section>
     <section class="notify-setting">
       <h2>Reading text</h2>
@@ -14936,6 +14948,13 @@ function renderMailSettings(body) {
     document.body.dataset.listDensity = listDensity;
     try { localStorage.setItem("mailroom-list-density", listDensity); } catch (e) {}
     toast(listDensity === "compact" ? "Compact message list" : "Comfortable message list");
+  };
+  const previewSelect = body.querySelector("#list-preview");
+  previewSelect.onchange = () => {
+    listPreview = previewSelect.value === "none" || previewSelect.value === "2" ? previewSelect.value : "1";
+    document.body.dataset.listPreview = listPreview;
+    try { localStorage.setItem("mailroom-list-preview", listPreview); } catch (e) {}
+    toast(listPreview === "none" ? "No preview text" : listPreview === "2" ? "Two lines of preview text" : "One line of preview text");
   };
   const readSelect = body.querySelector("#read-size");
   readSelect.onchange = () => {
@@ -19814,7 +19833,7 @@ const folderBusy = new Set();
 let syncNote = "";
 const folderRun = new Map();
 const bodyLoads = new Set();
-const APP_VERSION = "1.7.5";
+const APP_VERSION = "1.7.6";
 let appVersion = APP_VERSION;
 
 prepareDesktopAccounts();

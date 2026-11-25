@@ -3620,6 +3620,28 @@ test("Mark as read when I move to another message, or never", { fake: true, setu
   same(await unread("m2"), false, "Ctrl+Q still marks it read");
 });
 
+test("Settings > Mail: preview text none, 1 line or 2 lines, kept (#122)", { fake: true, setup: () => {
+  window.__inbox[2].preview = "A long preview that goes on and on about the site plans, the drawings, the revisions, the schedule, the budget and every other thing a project manager might want to know before the meeting on Thursday";
+} }, async ({ p }) => {
+  const lines = () => p.$eval('.conv .row[data-id="m3"] .preview', e => {
+    const cs = getComputedStyle(e);
+    if (cs.display === "none") return 0;
+    const line = parseFloat(cs.lineHeight) || parseFloat(cs.fontSize) * 1.2;
+    return Math.round(e.getBoundingClientRect().height / line);
+  });
+  await wait(300);
+  same(await lines(), 1, "one line by default");
+  await p.evaluate(() => showSettings("mail")); await wait(300);
+  await p.select("#list-preview", "2"); await wait(100);
+  same(await p.evaluate(() => [listPreview, localStorage.getItem("mailroom-list-preview"), document.body.dataset.listPreview]), ["2", "2", "2"], "picked and stored");
+  await p.evaluate(() => setView("mail")); await wait(300);
+  same(await lines(), 2, "two lines, cut off after the second");
+  await p.evaluate(() => showSettings("mail")); await wait(300);
+  await p.select("#list-preview", "none"); await wait(100);
+  await p.evaluate(() => setView("mail")); await wait(300);
+  same(await lines(), 0, "none hides it");
+});
+
 test("Settings > Mail has the Mark as read choice, and it is kept", { fake: true }, async ({ p }) => {
   await p.evaluate(() => showSettings("mail")); await wait(300);
   expect(await p.$("#mark-read-when"), "the choice is on the Mail page");
