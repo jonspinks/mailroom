@@ -19732,7 +19732,7 @@ const folderBusy = new Set();
 let syncNote = "";
 const folderRun = new Map();
 const bodyLoads = new Set();
-const APP_VERSION = "1.7.2";
+const APP_VERSION = "1.7.3";
 let appVersion = APP_VERSION;
 
 prepareDesktopAccounts();
@@ -20260,7 +20260,10 @@ async function ensureUnifiedFolder(key) {
   let clearedBusy = false;
   for (const id of profileAccountIds()) {
     const mark = folderMark(id, key);
-    if (loadedLiveFolders.has(mark)) continue;
+    if (loadedLiveFolders.has(mark)) {
+      refreshLoadedFolder(id, key);
+      continue;
+    }
     const acct = accounts[id];
     const folder = acct && (acct.liveFolders || []).find(item => item.key === key);
     if (!acct || !acct.signedIn || !graphFolderId(folder)) {
@@ -20305,10 +20308,59 @@ async function ensureUnifiedFolder(key) {
   }
 }
 
+// A folder loaded once in a session was never asked again: mail sent from
+// Outlook on the web or a phone stayed out of Sent Items until a restart
+// (2026-11-25). Going back to a loaded folder, and each mail check while it
+// is open, catches it up quietly from its delta link. Inbox has its own poll.
+const folderRefreshAt = new Map();
+const folderRefreshing = new Set();
+const FOLDER_REFRESH_GAP = 20 * 1000;
+
+async function refreshLoadedFolder(accountId, key) {
+  const mark = folderMark(accountId, key);
+  const acct = accounts[accountId];
+  if (key === "inbox" || isSearchBox(key) || isCategoryBox(key)) return;
+  if (!loadedLiveFolders.has(mark) || folderRefreshing.has(mark)) return;
+  if (!acct || !acct.signedIn || !inDesktop() || accountNeedsSignIn(accountId)) return;
+  const last = folderRefreshAt.get(mark) || 0;
+  if (Date.now() - last < FOLDER_REFRESH_GAP) return;
+  const folder = (acct.liveFolders || []).find(item => item.key === key);
+  if (!graphFolderId(folder)) return;
+  folderRefreshing.add(mark);
+  folderRefreshAt.set(mark, Date.now());
+  try {
+    const raw = await pullFolderMessages(accountId, folder);
+    // A full load started meanwhile (a send, a new sync window) wins.
+    if (!raw || !loadedLiveFolders.has(mark)) return;
+    // Always merged: a replace could drop a draft being written here.
+    const page = asMailPayload(raw);
+    const removed = page.merged ? page.removed : [];
+    mergeFolderMessages(accountId, key, page.messages, removed);
+    if (viewingMailFolder(accountId, key) && (page.messages.length || removed.length)) {
+      if (!selected || !messages.some(m => m.id === selected)) settleOpenFolder();
+      renderFolders();
+      renderList();
+    }
+  } catch (err) {
+    // A missed check waits for the next visit or poll.
+  } finally {
+    folderRefreshing.delete(mark);
+  }
+}
+
+function refreshOpenFolder() {
+  if (view !== "mail" || box === "inbox" || isSearchBox(box) || isCategoryBox(box)) return;
+  const ids = account === "all" ? profileAccountIds() : [account];
+  ids.forEach(id => { if (accounts[id]) refreshLoadedFolder(id, box); });
+}
+
 async function ensureFolderMessages(accountId, key, explicitId) {
   const mark = folderMark(accountId, key);
   const acct = accounts[accountId];
-  if (loadedLiveFolders.has(mark)) return;
+  if (loadedLiveFolders.has(mark)) {
+    refreshLoadedFolder(accountId, key);
+    return;
+  }
   if (!acct || !acct.signedIn || !inDesktop()) {
     if (folderBusy.delete(mark) && viewingMailFolder(accountId, key)) render();
     return;
@@ -21316,6 +21368,8 @@ async function pollMail() {
   } finally {
     mailPolling = false;
   }
+  // Sent Items or Drafts left open: mail sent elsewhere shows up too.
+  refreshOpenFolder();
   if (missed) noteUnreachable(missed);
   else if (reachProblem || couldNotReach(authProblem)) clearReachProblem();
 }

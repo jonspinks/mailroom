@@ -30,7 +30,7 @@ Reminders, Teams links, and free/busy lookup stay out of this decision.
 
 The client does not create, rename, or delete ordinary mail folders. A search can be saved as a search folder. A search folder holds no mail of its own: it lists messages that match, and it can be deleted. It is stored on the server, so it also appears in Outlook on the web.
 
-It reads each account’s mail folders from the server, including folders beyond Inbox, Drafts, Sent, Archive, and Deleted Items. Nested folders are shown nested, in the order the server gives them. Opening a folder shows the messages stored there. Unread counts and read state come from the server. A folder the server removes disappears on the next sync. Search folders stay out of Move and out of the unread counts.
+It reads each account’s mail folders from the server, including folders beyond Inbox, Drafts, Sent, Archive, and Deleted Items. Nested folders are shown nested, in the order the server gives them. Opening a folder shows the messages stored there, and going back to it, or leaving it open through a mail check, catches up on mail moved or sent elsewhere (Outlook on the web, a phone). Unread counts and read state come from the server. A folder the server removes disappears on the next sync. Search folders stay out of Move and out of the unread counts.
 
 The sample mock only has the five fixed folders. A real mailbox may have more, and those are listed. Search across all folders includes them. A favourite can pin any folder the server returned, and a category or a search folder too.
 

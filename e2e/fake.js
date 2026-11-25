@@ -82,7 +82,8 @@
       return { messages, boxes: messages.map(m => m.box || "inbox"), more };
     },
     cached_body: (a) => { const m = window.__inbox.find(x => x.id === a.messageId); return m ? m.bodyHtml : ""; },
-    sync_folder: () => [],
+    // __folderMail: folder id -> what the next catch-up of it brings.
+    sync_folder: (a) => { const m = (window.__folderMail || {})[a.folderId]; return m ? { messages: m, removed: [], merged: true, more: false } : []; },
     // Server search, 25 a page as Microsoft does; __search is every match.
     search_mail: (a) => {
       const all = window.__search || [];
