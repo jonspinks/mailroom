@@ -1993,10 +1993,7 @@
     .event-where, .event-body, .event-people { display: none; }
   }
   @container (max-height: 66px) {
-    .event-body, .event-people { display: none; }
-  }
-  @container (max-height: 82px) {
-    .event-body { display: none; }
+    .event-people { display: none; }
   }
   .chip {
     display: block;
