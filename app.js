@@ -5268,6 +5268,7 @@ function paintList() {
   const listEl = document.querySelector(".list");
   const keepScroll = listEl ? listEl.scrollTop : 0;
   ensureSearchCache();
+  applyQueuedActions();
   maybeFillShortList();
   prunePicked();
   syncDeeperKey();
@@ -5361,7 +5362,7 @@ function paintList() {
       <button class="row${opts.child ? " child" : ""}${opts.unread ? " unread" : ""}${!opts.child && picked.has(opts.thread) ? " picked" : ""}" type="button" data-thread="${opts.thread}" data-id="${m.id}" aria-current="${opts.current ? "true" : "false"}"${!opts.child && picked.size ? ` aria-selected="${picked.has(opts.thread)}"` : ""}>
         <span class="avatar" style="background:${esc(m.color)}">${esc(m.initials)}</span>
         <span>
-          <span class="who-line"><span class="who"><span class="who-name">${esc(who)}</span><span class="pill acct-pill ${accounts[m.account].cls}">${esc(accounts[m.account].name)}</span></span>${externalPill(m)}${folderPill}${importanceMark(m)}${categoryDots(m)}${flag}${opts.shortcut ? `<span class="row-clip" title="Has attachments" aria-label="Has attachments">${rowClipIcon}</span>` : ""}<span class="when${when === "Draft" ? " draft-when" : ""}">${esc(when)}</span></span>
+          <span class="who-line"><span class="who"><span class="who-name">${esc(who)}</span><span class="pill acct-pill ${accounts[m.account].cls}">${esc(accounts[m.account].name)}</span></span>${externalPill(m)}${folderPill}${importanceMark(m)}${categoryDots(m)}${flag}${opts.shortcut ? `<span class="row-clip" title="Has attachments" aria-label="Has attachments">${rowClipIcon}</span>` : ""}${m.pendingAction ? `<span class="pending-mark" title="Waiting to reach the server" aria-label="Waiting to reach the server"><svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><circle cx="6" cy="6" r="4.6" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M6 3.4V6l1.8 1.2" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg></span>` : ""}<span class="when${when === "Draft" ? " draft-when" : ""}">${esc(when)}</span></span>
           ${subjectLine}
           <span class="preview">${esc(m.preview)}</span>
         </span>
@@ -10553,12 +10554,150 @@ function followMovedIds(moved) {
 
 const MAIL_ACTION_BATCH = 40;
 
+// ---- Mail actions made offline (#67) ----
+// Read, flag, archive, delete and move are kept in a journal beside the
+// Outbox when the server can't be reached, and sent in order once it can.
+// The list keeps showing the change, with a clock on the row, and the cache
+// is only changed when the server has it. Mail the server no longer has
+// counts as done. A change still waiting after seven days is dropped.
+const ACTION_QUEUE_KEY = "mailroom-action-queue";
+const ACTION_QUEUE_DAYS = 7;
+// var, not let: a paint that runs before this line still finds it.
+var actionQueue = (() => {
+  try {
+    const rows = JSON.parse(localStorage.getItem(ACTION_QUEUE_KEY) || "[]");
+    return Array.isArray(rows) ? rows.filter(row => row && row.kind && row.email && Array.isArray(row.messageIds)) : [];
+  } catch (e) { return []; }
+})();
+var actionReplaying = false;
+
+function rememberActionQueue() {
+  if (!ownsOutbox()) return;
+  try {
+    if (actionQueue.length) localStorage.setItem(ACTION_QUEUE_KEY, JSON.stringify(actionQueue));
+    else localStorage.removeItem(ACTION_QUEUE_KEY);
+  } catch (e) {}
+}
+
+function queueMailAction(kind, batch, destination, prior) {
+  const account = (prior[0] && prior[0].account) || Object.keys(accounts).find(id => accounts[id].email === batch.email) || "";
+  actionQueue.push({
+    at: Date.now(),
+    kind,
+    email: batch.email,
+    account,
+    source: batch.source || "",
+    destination: destination ? { id: destination.id || "", key: destination.key || "" } : null,
+    messageIds: batch.messageIds.slice(),
+    prior
+  });
+  rememberActionQueue();
+}
+
+// Where a queued action leaves a message, for the list.
+function queuedBox(entry) {
+  const kind = entry.kind === "notjunk" ? "inbox" : entry.kind;
+  if (kind === "archive" || kind === "trash" || kind === "inbox") return kind;
+  if (kind === "move" || kind === "junk") return entry.destination && entry.destination.key || "";
+  return "";
+}
+
+// A folder or cache load can bring the old state back while a change waits:
+// put the change on again, and mark the rows.
+function applyQueuedActions() {
+  if (!actionQueue || !actionQueue.length) {
+    messages.forEach(m => { if (m.pendingAction) m.pendingAction = false; });
+    return;
+  }
+  const waiting = new Set();
+  actionQueue.forEach(entry => {
+    const ids = new Set(entry.messageIds);
+    const dest = queuedBox(entry);
+    messages.forEach(m => {
+      if (!ids.has(m.id) || (entry.account && m.account !== entry.account)) return;
+      if (entry.kind === "read") m.unread = false;
+      else if (entry.kind === "unread") m.unread = true;
+      else if (entry.kind === "flag") m.flagged = true;
+      else if (entry.kind === "unflag") m.flagged = false;
+      else if (dest && messageBox(m) !== dest) {
+        if (dest === "trash") m.previousBox = messageBox(m);
+        m.box = dest;
+        if (dest === "trash" || dest === "archive") m.unread = false;
+      }
+      m.pendingAction = true;
+      waiting.add(m);
+    });
+  });
+  messages.forEach(m => { if (m.pendingAction && !waiting.has(m)) m.pendingAction = false; });
+}
+
+async function sendQueuedAction(entry) {
+  const args = { kind: entry.kind, email: entry.email, destination: entry.destination ? entry.destination.id || null : null, source: entry.source || null };
+  try {
+    followMovedIds(await tauriInvoke("apply_mail", Object.assign({ messageIds: entry.messageIds }, args)));
+    return "done";
+  } catch (err) {
+    if (couldNotReach(err)) return "offline";
+    if (!mailItemGone(err)) return "failed";
+  }
+  // Some of them are gone from the server: send the rest one at a time.
+  for (const id of entry.messageIds) {
+    try {
+      followMovedIds(await tauriInvoke("apply_mail", Object.assign({ messageIds: [id] }, args)));
+    } catch (err) {
+      if (couldNotReach(err)) return "offline";
+      if (!mailItemGone(err)) return "failed";
+    }
+  }
+  return "done";
+}
+
+async function replayQueuedActions() {
+  if (actionReplaying || !actionQueue || !actionQueue.length || !ownsOutbox()) return;
+  actionReplaying = true;
+  let sent = 0, dropped = 0;
+  try {
+    while (actionQueue.length) {
+      const entry = actionQueue[0];
+      if (Date.now() - entry.at > ACTION_QUEUE_DAYS * 86400000) {
+        actionQueue.shift();
+        dropped += 1;
+        continue;
+      }
+      const acct = accounts[entry.account];
+      if (acct && (!acct.signedIn || accountNeedsSignIn(entry.account))) break;
+      const result = await sendQueuedAction(entry);
+      if (result === "offline") break;
+      actionQueue.shift();
+      if (result === "done") {
+        applyMailShifts(entry.prior, entry.kind, queuedBox(entry));
+        sent += 1;
+      } else {
+        dropped += 1;
+      }
+      rememberActionQueue();
+    }
+  } finally {
+    actionReplaying = false;
+    rememberActionQueue();
+  }
+  if (sent || dropped) {
+    applyQueuedActions();
+    if (dropped) toast(dropped === 1 ? "A change made offline could not be made on the server" : dropped + " changes made offline could not be made on the server");
+    else toast(sent === 1 ? "A change made offline reached the server" : sent + " changes made offline reached the server");
+    if (dropped) pollMail();
+    render();
+  }
+}
+
 async function pushMailAction(targets, kind, revert, prior, destination) {
   if (readWindow) return;
   const live = (targets || []).filter(serverMessage);
   if (!live.length) return;
   const snapshot = prior || rememberMessages(live);
   let sentSome = false;
+  // Changes made offline go first, so the server sees them in order.
+  if (actionQueue && actionQueue.length) await replayQueuedActions();
   try {
     // A Gmail move takes the label of the folder the mail was in, so send
     // that folder along; Microsoft ignores it.
@@ -10574,12 +10713,28 @@ async function pushMailAction(targets, kind, revert, prior, destination) {
       if (!groups.has(key)) groups.set(key, { email, source, messageIds: [] });
       groups.get(key).messageIds.push(message.id);
     });
+    // The server takes forty at a time.
+    const batches = [];
     for (const { email, source, messageIds } of groups.values()) {
-      // The server takes forty at a time.
-      for (let at = 0; at < messageIds.length; at += MAIL_ACTION_BATCH) {
-        const moved = await tauriInvoke("apply_mail", { kind, messageIds: messageIds.slice(at, at + MAIL_ACTION_BATCH), email, destination: destination ? destination.id : null, source: source || null });
+      for (let at = 0; at < messageIds.length; at += MAIL_ACTION_BATCH) batches.push({ email, source, messageIds: messageIds.slice(at, at + MAIL_ACTION_BATCH) });
+    }
+    for (let i = 0; i < batches.length; i++) {
+      const { email, source, messageIds } = batches[i];
+      try {
+        const moved = await tauriInvoke("apply_mail", { kind, messageIds, email, destination: destination ? destination.id : null, source: source || null });
         followMovedIds(moved);
         sentSome = true;
+      } catch (err) {
+        // Offline: keep the change on screen and send it later (#67).
+        if (!couldNotReach(err) || !ownsOutbox()) throw err;
+        const waiting = batches.slice(i);
+        const ids = new Set(waiting.flatMap(batch => batch.messageIds));
+        waiting.forEach(batch => queueMailAction(kind, batch, destination, (snapshot || []).filter(item => batch.messageIds.includes(item.id))));
+        applyMailShifts((snapshot || []).filter(item => !ids.has(item.id)), kind, destination ? destination.key : "");
+        noteUnreachable(err);
+        toast("Offline · " + (ids.size === 1 ? "this change goes" : "these changes go") + " to the server when Mailroom can reach it");
+        render();
+        return;
       }
     }
     applyMailShifts(snapshot, kind, destination ? destination.key : "");
@@ -20572,7 +20727,7 @@ const folderBusy = new Set();
 let syncNote = "";
 const folderRun = new Map();
 const bodyLoads = new Set();
-const APP_VERSION = "1.7.11";
+const APP_VERSION = "1.7.12";
 let appVersion = APP_VERSION;
 
 prepareDesktopAccounts();
@@ -21794,6 +21949,7 @@ async function retryReach() {
     return;
   }
   clearReachProblem();
+  replayQueuedActions();
   if (view === "mail") {
     render();
     if (account === "all") ensureUnifiedFolder(box);
@@ -22026,6 +22182,7 @@ async function bootLiveMail() {
       else ensureFolderMessages(account, box);
     }
     backfillInboxes();
+    if (!reachProblem) replayQueuedActions();
     await syncAccountDirectory(null, true);
     refreshAuthBanner();
   } catch (err) {
@@ -22214,6 +22371,7 @@ async function pollMail() {
   refreshOpenFolder();
   if (missed) noteUnreachable(missed);
   else if (reachProblem || couldNotReach(authProblem)) clearReachProblem();
+  if (!missed) replayQueuedActions();
 }
 
 // Check every account now, from the button or F5.

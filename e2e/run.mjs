@@ -80,6 +80,34 @@ test("a message body is parsed once for its classes and folds; colours read the 
   same(got.colours, [true, true, true, true, true, true], "canvas and page agree on every colour");
 });
 
+test("offline: archive and read are kept, stay shown through a sync, and reach the server in order later (#67)", { fake: true }, async ({ p, calls, clear }) => {
+  await wait(400);
+  await p.evaluate(() => { window.__applyFail = "Could not reach Microsoft Graph: error sending request"; });
+  await p.evaluate(() => moveConversation({ messages: [messages.find(m => m.id === "m1")] }, "archive")); await wait(300);
+  expect(/^Offline · this change goes to the server/.test(await p.$eval("#toast", t => t.textContent)), "says it will go later", await p.$eval("#toast", t => t.textContent));
+  await p.evaluate(() => setUnread([messages.find(m => m.id === "m2")], false, true)); await wait(300);
+  const queued = await p.evaluate(() => JSON.parse(localStorage.getItem("mailroom-action-queue")).map(e => [e.kind, e.messageIds]));
+  same(queued, [["archive", ["m1"]], ["read", ["m2"]]], "both kept, in order");
+  // A sync brings the server's old state back; the list keeps the changes.
+  await p.evaluate(() => pollMail()); await wait(600);
+  same(await p.evaluate(() => [!!document.querySelector('#rows .row[data-id="m1"]'), document.querySelector('#rows .row[data-id="m2"]').classList.contains("unread"), !!document.querySelector('#rows .row[data-id="m2"] .pending-mark')]), [false, false, true], "m1 still archived, m2 still read, with a clock");
+  same((await p.evaluate(() => JSON.parse(localStorage.getItem("mailroom-action-queue")))).length, 2, "still waiting while offline");
+  // Back online: the next check sends them, oldest first.
+  await p.evaluate(() => { window.__applyFail = null; });
+  await clear();
+  await p.evaluate(() => pollMail()); await wait(800);
+  same((await calls("apply_mail")).map(c => [c.kind, c.messageIds]), [["archive", ["m1"]], ["read", ["m2"]]], "sent in order");
+  same(await p.evaluate(() => localStorage.getItem("mailroom-action-queue")), null, "nothing left waiting");
+  expect(/2 changes made offline reached the server/.test(await p.$eval("#toast", t => t.textContent)), "and says so");
+  same(await p.evaluate(() => !!document.querySelector("#rows .pending-mark")), false, "no clocks left");
+  // A change that waited more than a week is dropped.
+  await p.evaluate(() => { actionQueue.push({ at: Date.now() - 8 * 86400000, kind: "flag", email: "jon@example.com", account: Object.keys(accounts)[0], source: "", destination: null, messageIds: ["m3"], prior: [] }); });
+  await clear();
+  await p.evaluate(() => replayQueuedActions()); await wait(400);
+  same([(await calls("apply_mail")).length, await p.evaluate(() => actionQueue.length)], [0, 0], "not sent, and gone");
+  expect(/could not be made on the server/.test(await p.$eval("#toast", t => t.textContent)), "says it was given up");
+});
+
 test("mail HTML cannot run code, through the real reading pane", { fake: true, setup: () => {
   const payload = [
     `<p>Hello</p><img src=x onerror="window.__pwned='img'">`,
