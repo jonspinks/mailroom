@@ -2652,6 +2652,17 @@ test("a reply popped out shows the message it answers, open", { fake: true }, as
   expect(tall > 500, "folded away, the reply fills the window again", tall);
 });
 
+test("list rows keep their element when selected or read, and rows off screen are not laid out (#80)", { fake: true }, async ({ p }) => {
+  await wait(400);
+  await p.evaluate(() => { window.__row = document.querySelector('.row[data-id="m1"]'); window.__wrap = window.__row.closest(".conv"); });
+  await p.click('.row[data-id="m1"]'); await wait(400);
+  await p.click('.row[data-id="m2"]'); await wait(400);
+  same(await p.evaluate(() => [window.__row === document.querySelector('.row[data-id="m1"]'), window.__wrap.isConnected]), [true, true], "the same element after selecting and reading");
+  same(await p.evaluate(() => [document.querySelector('.row[data-id="m1"]').classList.contains("unread"), document.querySelector('.row[data-id="m1"]').getAttribute("aria-current"), document.querySelector('.row[data-id="m2"]').getAttribute("aria-current")]), [false, "false", "true"], "but showing the new state");
+  same(await p.evaluate(() => getComputedStyle(document.querySelector("#rows > .conv")).contentVisibility), "auto", "skipped while off screen");
+  same(await p.evaluate(() => [document.querySelector('.row[data-id="m3"]').closest(".row-wrap").classList.contains("has-files"), document.querySelector('.row[data-id="m1"]').closest(".row-wrap").classList.contains("has-files")]), [true, false], "a class, not :has(), marks rows with files");
+});
+
 test("a double-clicked message opens in a window of its own; a single click still reads it here", { fake: true }, async ({ p, calls, rightClick, menu }) => {
   await p.click('.row[data-id="m2"]'); await wait(400);
   same(await calls("pop_message"), [], "one click opens no window");

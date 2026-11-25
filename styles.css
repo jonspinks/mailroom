@@ -1030,6 +1030,9 @@
   }
   .conv-line:hover { background: var(--hover); }
   .conv-line:has(.row[aria-current="true"]) { background: var(--row-on); }
+  /* Rows off screen are not laid out (#80). A row keeps its element when it
+     is selected or read (morphListNode), so double-click still finds it. */
+  #rows > .conv { content-visibility: auto; contain-intrinsic-size: auto 62px; }
   .conv-line .row,
   .conv-line .row:hover { background: transparent; }
   .twist, .twist-gap {
@@ -1110,7 +1113,7 @@
   .row-wrap:has(.row:focus-visible) .flag,
   .row-wrap:has(.row-act:focus-visible) .flag { visibility: hidden; }
   .row-wrap:has(.row[aria-current="true"]) .row-actions { background: var(--row-on); }
-  .row-wrap:has(.row.child) .row-actions { top: 2px; }
+  .row-wrap.child-wrap .row-actions { top: 2px; }
   .row-act {
     width: 28px;
     height: 24px;
@@ -2574,10 +2577,10 @@
     max-width: calc(100% - 76px);
     z-index: 1;
   }
-  .row-wrap:has(.row.child) .row-files { left: 80px; bottom: 5px; max-width: calc(100% - 96px); }
-  .row-wrap:has(.row-files) .row { padding-bottom: 42px; }
-  .row-wrap:has(.row.child):has(.row-files) .row { padding-bottom: 32px; }
-  body[data-list-density="compact"] .row-wrap:has(.row-files) .row { padding-bottom: 7px; }
+  .row-wrap.child-wrap .row-files { left: 80px; bottom: 5px; max-width: calc(100% - 96px); }
+  .row-wrap.has-files .row { padding-bottom: 42px; }
+  .row-wrap.child-wrap.has-files .row { padding-bottom: 32px; }
+  body[data-list-density="compact"] .row-wrap.has-files .row { padding-bottom: 7px; }
   .file-chip.compact {
     max-width: 180px;
     gap: 6px;
