@@ -20876,7 +20876,7 @@ function setFoldersOpen(open) {
 function foldersFit() {
   const set = parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--folders-width"));
   const folders = set > 0 ? set : FOLDERS_WIDTH.start;
-  if (view === "calendar" || view === "settings") return window.innerWidth >= folders + CALENDAR_COMFORT;
+  if (view === "calendar") return window.innerWidth >= folders + CALENDAR_COMFORT;
   return window.innerWidth >= folders + 8 + LIST_WIDTH_MIN + READING_COMFORT;
 }
 function fitFolders() {
