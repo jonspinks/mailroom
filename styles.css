@@ -74,7 +74,6 @@
     --search: #f1f3f5;
     --field: #fff;
     --soft: #f8f9fa;
-    --rail: #f7f8f9;
     --side: #fff;
     --list-width: 360px;
     --seg: #eceef1;
@@ -158,7 +157,6 @@
     --search: #1b1a19;
     --field: #292827;
     --soft: #323130;
-    --rail: #000;
     --side: #000;
     --seg: #1b1a19;
     --seg-on: #3b3a39;
@@ -232,7 +230,6 @@
       --search: #1b1a19;
       --field: #292827;
       --soft: #323130;
-      --rail: #000;
       --side: #000;
       --seg: #1b1a19;
       --seg-on: #3b3a39;
@@ -585,11 +582,14 @@
   body[data-folders="closed"][data-view="settings"] .shell { grid-template-columns: 48px minmax(0, 1fr); }
   body[data-folders="closed"][data-view="calendar"] .shell { grid-template-columns: 48px minmax(0, 1fr); }
   body[data-folders="closed"] #folder-nav { display: none; }
-  /* Folder pane hidden: the pane shrinks to a slim column holding only the
-     view tabs, stacked, with Settings at the foot (1.9.1, #132). */
-  body[data-folders="closed"] .folders { padding: 8px 4px; overflow: visible; background: var(--rail); border-right: 1px solid var(--line); }
-  body[data-folders="closed"] .folder-tools { margin: 0; flex: 1 1 auto; flex-direction: column; align-items: center; background: transparent; }
-  body[data-folders="closed"] #hide-folders { display: none; }
+  /* Folder pane hidden: the pane shrinks to a slim column holding the menu
+     button and the view tabs, stacked, with Settings at the foot (1.9.1,
+     #132). It keeps the open pane's surface and edge, and the menu button
+     stays where it was, so folding reads as the same pane getting narrower
+     rather than a different one taking its place (2.0.4). */
+  body[data-folders="closed"] .folders { padding: 8px 4px; overflow: visible; }
+  body[data-folders="closed"] .folder-tools { margin: 0; flex: 1 1 auto; flex-direction: column; align-items: center; gap: 4px; }
+  body[data-folders="closed"] #hide-folders { width: 40px; height: 40px; flex: none; }
   .folders, .list, .reading, .calendar, .settings {
     min-width: 0;
     min-height: 0;
@@ -1007,7 +1007,6 @@
     row-gap: 2px;
   }
   .list-head .list-titles { display: contents; }
-  .list-head .list-show-folders { grid-column: 1; grid-row: 1 / span 2; margin-right: 8px; }
   .list-head h1 { grid-column: 2 / 4; grid-row: 1; }
   .list-head .check-mail { grid-column: 4; grid-row: 1; margin-left: 8px; justify-self: end; }
   .list-head .search-summary,
@@ -1826,23 +1825,6 @@
   .empty { padding: 48px 20px; color: var(--muted); text-align: center; }
   .empty .auth-link { display: block; margin: 8px auto; }
   .calendar { display: none; flex-direction: column; min-width: 0; }
-  .cal-show-folders, .list-show-folders {
-    display: none;
-    width: 28px;
-    height: 28px;
-    border: 0;
-    border-radius: min(4px, var(--r-max));
-    background: transparent;
-    color: var(--muted);
-    place-items: center;
-    flex: none;
-    margin-right: 4px;
-  }
-  body[data-folders="closed"][data-view="calendar"] .cal-show-folders,
-  body[data-folders="closed"][data-view="settings"] #show-settings-folders,
-  body[data-folders="closed"][data-view="mail"] .list-show-folders,
-  body[data-folders="closed"][data-view="people"] .list-show-folders { display: grid; }
-  .cal-show-folders:hover, .list-show-folders:hover { background: var(--hover); color: var(--ink); }
   body[data-view="calendar"] .calendar { display: flex; }
   .cal-scroll {
     overflow: auto;

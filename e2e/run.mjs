@@ -809,7 +809,7 @@ test("a narrow window folds the folders away and brings them back", { fake: fals
     same(await state(), "open", "wide: folders open");
     await p.setViewport({ width: 900, height: 800 }); await wait(150);
     same(await state(), "closed", "narrow: folders fold away");
-    await p.click("#show-mail-folders"); await wait(50);
+    await p.click("#hide-folders"); await wait(50);
     same(await state(), "open", "the burger still opens them while narrow");
     await p.setViewport({ width: 1400, height: 800 }); await wait(150);
     same(await state(), "open", "wide again: open");
@@ -818,7 +818,11 @@ test("a narrow window folds the folders away and brings them back", { fake: fals
     await p.setViewport({ width: 900, height: 800 }); await wait(150);
     await p.setViewport({ width: 1400, height: 800 }); await wait(150);
     same(await state(), "closed", "your own choice comes back, not open");
-    await p.click("#show-mail-folders"); await wait(50);
+    const spot = () => p.$eval("#hide-folders", b => { const r = b.getBoundingClientRect(); return Math.round(r.top + r.height / 2); });
+    const closedAt = await spot();
+    await p.click("#hide-folders"); await wait(50);
+    same(await state(), "open", "the same burger opens them again");
+    expect(Math.abs(await spot() - closedAt) <= 6, "the burger stays put when the pane folds", closedAt);
   } finally {
     if (vp) await p.setViewport(vp);
   }
@@ -903,18 +907,18 @@ test("Settings fold their menu in a small window, like Mail and Calendar", { fak
   const state = () => p.evaluate(() => ({
     folders: document.body.dataset.folders,
     nav: (() => { const n = document.getElementById("folder-nav"); return !!n && getComputedStyle(n).display !== "none" && n.getBoundingClientRect().width > 0; })(),
-    burger: (() => { const b = document.getElementById("show-settings-folders"); return !!b && getComputedStyle(b).display !== "none"; })()
+    burger: (() => { const b = document.getElementById("hide-folders"); return !!b && getComputedStyle(b).display !== "none" && b.getBoundingClientRect().width > 0; })()
   }));
   try {
     await p.setViewport({ width: 900, height: 800 }); await wait(150);
     await p.click("#rail-settings"); await wait(300);
-    same(await state(), { folders: "closed", nav: false, burger: true }, "small: the settings menu folds away, with a menu button in the header");
+    same(await state(), { folders: "closed", nav: false, burger: true }, "small: the settings menu folds away, the menu button still at the top of the slim pane");
     const width = await p.evaluate(() => Math.round(document.querySelector(".settings").getBoundingClientRect().width));
     expect(width > 800, "the settings page gets the room", width);
-    await p.click("#show-settings-folders"); await wait(150);
+    await p.click("#hide-folders"); await wait(150);
     same(await state().then(s => [s.folders, s.nav]), ["open", true], "the menu button brings the menu back");
     await p.setViewport({ width: 1400, height: 800 }); await wait(150);
-    same(await state().then(s => [s.folders, s.burger]), ["open", false], "wide: the menu is open and the button gone");
+    same(await state().then(s => [s.folders, s.burger]), ["open", true], "wide: the menu is open, the same button there to fold it");
     await p.click("#rail-mail"); await wait(200);
   } finally {
     if (vp) await p.setViewport(vp);
