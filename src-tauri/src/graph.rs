@@ -1776,6 +1776,10 @@ pub fn mail_action_request(kind: &str, message_id: &str) -> Result<MailRequest, 
         return Err("Choose a message.".into());
     }
     let message = format!("https://graph.microsoft.com/v1.0/me/messages/{}", path_segment(id));
+    // markAsJunk and markAsNotJunk are beta-only: v1.0 has neither, and
+    // answered "'moveToInbox' ... is not a valid parameter" (1.3.16 to 2.0.2).
+    // Beta's parameters are PascalCase, and OData names are case-sensitive.
+    let beta = format!("https://graph.microsoft.com/beta/me/messages/{}", path_segment(id));
     let (method, url, body) = match kind {
         "read" => ("PATCH", message, serde_json::json!({ "isRead": true })),
         "unread" => ("PATCH", message, serde_json::json!({ "isRead": false })),
@@ -1786,11 +1790,11 @@ pub fn mail_action_request(kind: &str, message_id: &str) -> Result<MailRequest, 
         "inbox" => ("POST", format!("{message}/move"), serde_json::json!({ "destinationId": "inbox" })),
         // Outlook's Report junk and Not junk: moves the message and adds the
         // sender to, or takes them off, the blocked senders list.
-        "junk" => ("POST", format!("{message}/markAsJunk"), serde_json::json!({ "moveToJunk": true })),
-        "notjunk" => ("POST", format!("{message}/markAsNotJunk"), serde_json::json!({ "moveToInbox": true })),
+        "junk" => ("POST", format!("{beta}/markAsJunk"), serde_json::json!({ "MoveToJunk": true })),
+        "notjunk" => ("POST", format!("{beta}/markAsNotJunk"), serde_json::json!({ "MoveToInbox": true })),
         // Not junk without moving: only unblocks the sender (undo of a report
         // that sends the mail back somewhere other than the Inbox).
-        "unblock" => ("POST", format!("{message}/markAsNotJunk"), serde_json::json!({ "moveToInbox": false })),
+        "unblock" => ("POST", format!("{beta}/markAsNotJunk"), serde_json::json!({ "MoveToInbox": false })),
         _ => return Err("That mail action is not available.".into()),
     };
     Ok(MailRequest {
@@ -2248,7 +2252,7 @@ fn apply_each(
         };
         applied.done.push(id.clone());
         // A move gives the message a new id; so do junk and not junk.
-        if request.url.ends_with("/move") || (request.url.ends_with("/markAsJunk") || request.url.ends_with("/markAsNotJunk")) && request.body.get("moveToJunk").or(request.body.get("moveToInbox")) == Some(&serde_json::json!(true)) {
+        if request.url.ends_with("/move") || (request.url.ends_with("/markAsJunk") || request.url.ends_with("/markAsNotJunk")) && request.body.get("MoveToJunk").or(request.body.get("MoveToInbox")) == Some(&serde_json::json!(true)) {
             applied.moved.extend(moved_id(id.trim(), &reply));
         }
     }
@@ -4192,14 +4196,14 @@ mod tests {
         assert_eq!(mail_action_request("trash", "m").unwrap().body["destinationId"], "deleteditems");
         assert_eq!(mail_action_request("inbox", "m").unwrap().body["destinationId"], "inbox");
         let junk = mail_action_request("junk", "m").unwrap();
-        assert!(junk.url.ends_with("/me/messages/m/markAsJunk"));
-        assert_eq!((junk.method.as_str(), junk.body["moveToJunk"].clone()), ("POST", serde_json::json!(true)));
+        assert_eq!(junk.url, "https://graph.microsoft.com/beta/me/messages/m/markAsJunk");
+        assert_eq!((junk.method.as_str(), junk.body["MoveToJunk"].clone()), ("POST", serde_json::json!(true)));
         let not_junk = mail_action_request("notjunk", "m").unwrap();
-        assert!(not_junk.url.ends_with("/me/messages/m/markAsNotJunk"));
-        assert_eq!(not_junk.body["moveToInbox"], true);
+        assert_eq!(not_junk.url, "https://graph.microsoft.com/beta/me/messages/m/markAsNotJunk");
+        assert_eq!(not_junk.body, serde_json::json!({ "MoveToInbox": true }));
         let unblock = mail_action_request("unblock", "m").unwrap();
-        assert!(unblock.url.ends_with("/markAsNotJunk"));
-        assert_eq!(unblock.body["moveToInbox"], false);
+        assert!(unblock.url.ends_with("/beta/me/messages/m/markAsNotJunk"));
+        assert_eq!(unblock.body, serde_json::json!({ "MoveToInbox": false }));
         assert!(mail_action_request("send", "m").is_err());
         assert!(mail_action_request("read", "  ").is_err());
     }
