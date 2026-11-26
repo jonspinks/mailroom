@@ -1776,6 +1776,10 @@ pub fn mail_action_request(kind: &str, message_id: &str) -> Result<MailRequest, 
         return Err("Choose a message.".into());
     }
     let message = format!("https://graph.microsoft.com/v1.0/me/messages/{}", path_segment(id));
+    // markAsJunk and markAsNotJunk are beta-only: v1.0 has neither, and
+    // answered "'moveToInbox' ... is not a valid parameter" (1.3.16 to 2.0.2).
+    // Beta's parameters are PascalCase, and OData names are case-sensitive.
+    let beta = format!("https://graph.microsoft.com/beta/me/messages/{}", path_segment(id));
     let (method, url, body) = match kind {
         "read" => ("PATCH", message, serde_json::json!({ "isRead": true })),
         "unread" => ("PATCH", message, serde_json::json!({ "isRead": false })),
@@ -1786,11 +1790,11 @@ pub fn mail_action_request(kind: &str, message_id: &str) -> Result<MailRequest, 
         "inbox" => ("POST", format!("{message}/move"), serde_json::json!({ "destinationId": "inbox" })),
         // Outlook's Report junk and Not junk: moves the message and adds the
         // sender to, or takes them off, the blocked senders list.
-        "junk" => ("POST", format!("{message}/markAsJunk"), serde_json::json!({ "moveToJunk": true })),
-        "notjunk" => ("POST", format!("{message}/markAsNotJunk"), serde_json::json!({ "moveToInbox": true })),
+        "junk" => ("POST", format!("{beta}/markAsJunk"), serde_json::json!({ "MoveToJunk": true })),
+        "notjunk" => ("POST", format!("{beta}/markAsNotJunk"), serde_json::json!({ "MoveToInbox": true })),
         // Not junk without moving: only unblocks the sender (undo of a report
         // that sends the mail back somewhere other than the Inbox).
-        "unblock" => ("POST", format!("{message}/markAsNotJunk"), serde_json::json!({ "moveToInbox": false })),
+        "unblock" => ("POST", format!("{beta}/markAsNotJunk"), serde_json::json!({ "MoveToInbox": false })),
         _ => return Err("That mail action is not available.".into()),
     };
     Ok(MailRequest {
@@ -2248,7 +2252,7 @@ fn apply_each(
         };
         applied.done.push(id.clone());
         // A move gives the message a new id; so do junk and not junk.
-        if request.url.ends_with("/move") || (request.url.ends_with("/markAsJunk") || request.url.ends_with("/markAsNotJunk")) && request.body.get("moveToJunk").or(request.body.get("moveToInbox")) == Some(&serde_json::json!(true)) {
+        if request.url.ends_with("/move") || (request.url.ends_with("/markAsJunk") || request.url.ends_with("/markAsNotJunk")) && request.body.get("MoveToJunk").or(request.body.get("MoveToInbox")) == Some(&serde_json::json!(true)) {
             applied.moved.extend(moved_id(id.trim(), &reply));
         }
     }
@@ -3434,7 +3438,19 @@ pub fn list_search_folders(email: &str) -> Result<Vec<SearchFolder>, String> {
         "https://graph.microsoft.com/v1.0/me/mailFolders/searchfolders/childFolders?$top=50",
         4,
     )?;
-    Ok(listed.iter().filter_map(search_folder_from).collect())
+    Ok(listed.iter().filter(|item| !outlook_internal_search_folder(item)).filter_map(search_folder_from).collect())
+}
+
+/// Search folders Outlook keeps for itself, not ones a person made: anything
+/// marked hidden, and Outlook on the web's filtered views ("OwaFV15.1AllFocused…",
+/// "…AllOther…", "…UnreadFocused…"), which back its Focused, Other and Unread
+/// filters. Listed, they showed as folders with machine names; deleted, OWA's
+/// filters would break. So they are left alone and not shown.
+fn outlook_internal_search_folder(value: &serde_json::Value) -> bool {
+    if value.get("isHidden").and_then(|item| item.as_bool()).unwrap_or(false) {
+        return true;
+    }
+    value.get("displayName").and_then(|item| item.as_str()).is_some_and(|name| name.trim_start().starts_with("OwaFV"))
 }
 
 pub fn create_search_folder(email: &str, name: &str, query: &str, sources: &[String]) -> Result<SearchFolder, String> {
@@ -3844,6 +3860,16 @@ mod tests {
     }
 
     #[test]
+    fn outlooks_own_search_folders_are_not_listed() {
+        use super::outlook_internal_search_folder as internal;
+        assert!(internal(&serde_json::json!({"id": "a", "displayName": "OwaFV15.1AllFocusedAQMkADAw"})));
+        assert!(internal(&serde_json::json!({"id": "b", "displayName": "OwaFV15.1UnreadFocusedAQMk"})));
+        assert!(internal(&serde_json::json!({"id": "c", "displayName": "Anything", "isHidden": true})));
+        assert!(!internal(&serde_json::json!({"id": "d", "displayName": "From the boss"})));
+        assert!(!internal(&serde_json::json!({"id": "e", "displayName": "Owing invoices", "isHidden": false})));
+    }
+
+    #[test]
     fn a_search_folder_is_a_mail_search_folder() {
         let body = search_folder_body("Weekly digests", "weekly digest", &["inbox-id".into()]).unwrap();
         assert_eq!(body["@odata.type"], "microsoft.graph.mailSearchFolder");
@@ -4170,14 +4196,14 @@ mod tests {
         assert_eq!(mail_action_request("trash", "m").unwrap().body["destinationId"], "deleteditems");
         assert_eq!(mail_action_request("inbox", "m").unwrap().body["destinationId"], "inbox");
         let junk = mail_action_request("junk", "m").unwrap();
-        assert!(junk.url.ends_with("/me/messages/m/markAsJunk"));
-        assert_eq!((junk.method.as_str(), junk.body["moveToJunk"].clone()), ("POST", serde_json::json!(true)));
+        assert_eq!(junk.url, "https://graph.microsoft.com/beta/me/messages/m/markAsJunk");
+        assert_eq!((junk.method.as_str(), junk.body["MoveToJunk"].clone()), ("POST", serde_json::json!(true)));
         let not_junk = mail_action_request("notjunk", "m").unwrap();
-        assert!(not_junk.url.ends_with("/me/messages/m/markAsNotJunk"));
-        assert_eq!(not_junk.body["moveToInbox"], true);
+        assert_eq!(not_junk.url, "https://graph.microsoft.com/beta/me/messages/m/markAsNotJunk");
+        assert_eq!(not_junk.body, serde_json::json!({ "MoveToInbox": true }));
         let unblock = mail_action_request("unblock", "m").unwrap();
-        assert!(unblock.url.ends_with("/markAsNotJunk"));
-        assert_eq!(unblock.body["moveToInbox"], false);
+        assert!(unblock.url.ends_with("/beta/me/messages/m/markAsNotJunk"));
+        assert_eq!(unblock.body, serde_json::json!({ "MoveToInbox": false }));
         assert!(mail_action_request("send", "m").is_err());
         assert!(mail_action_request("read", "  ").is_err());
     }
