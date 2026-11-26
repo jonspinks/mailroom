@@ -2192,6 +2192,21 @@ async fn sync_calendar(email: Option<String>, start: String, end: String) -> Res
     .await
 }
 
+/// Events on the server whose title (Microsoft) or text (Google) matches,
+/// for the calendar search (2.0, #138). `start` and `end` bound the search
+/// and the occurrence a series opens on.
+#[tauri::command]
+async fn search_events(email: String, text: String, start: String, end: String) -> Result<Vec<LiveEvent>, String> {
+    in_background(move || {
+        if auth::is_google(email.trim()) {
+            gcal::search_events(email.trim(), &text, start.trim(), end.trim())
+        } else {
+            graph::search_events(email.trim(), &text, start.trim(), end.trim())
+        }
+    })
+    .await
+}
+
 #[tauri::command]
 async fn sync_contacts(email: Option<String>) -> Result<Vec<LiveContact>, String> {
     in_background(move || {
@@ -2541,6 +2556,7 @@ pub fn run() {
             pop_message,
             saved_inbox,
             sync_calendar,
+            search_events,
             sync_contacts,
             create_contact,
             ai_status,

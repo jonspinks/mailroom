@@ -645,6 +645,12 @@
           "markdownDescription": "Enables the search_cached command without any pre-configured scope."
         },
         {
+          "description": "Enables the search_events command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-search-events",
+          "markdownDescription": "Enables the search_events command without any pre-configured scope."
+        },
+        {
           "description": "Enables the search_mail command without any pre-configured scope.",
           "type": "string",
           "const": "allow-search-mail",
@@ -1255,6 +1261,12 @@
           "type": "string",
           "const": "deny-search-cached",
           "markdownDescription": "Denies the search_cached command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the search_events command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-search-events",
+          "markdownDescription": "Denies the search_events command without any pre-configured scope."
         },
         {
           "description": "Denies the search_mail command without any pre-configured scope.",

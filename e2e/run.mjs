@@ -1925,6 +1925,79 @@ test("calendar: drag moves an event and refuses someone else's", { fake: true, t
   same((await calls("save_event")).length, 0, "someone else's meeting not moved");
 });
 
+test("calendar: Join shows on an online meeting from ten minutes before, opens it without the editor, and drag still works (#136)", { fake: true, tz: true }, async ({ p, calls, clear }) => {
+  await p.evaluate(() => { calFocus = new Date(Date.now() + 86400000); setView("calendar"); calView = "week"; render(); }); await wait(1000);
+  const url = "https://teams.microsoft.com/l/meetup-join/abc";
+  const setClock = (minutesBefore) => p.evaluate((m) => {
+    const ev = events.find(e => e.title === "Single");
+    const at = eventStart(ev) - m * 60000;
+    window.__realNow = window.__realNow || Date.now;
+    Date.now = () => at;
+    refreshJoinable(); renderCalendar();
+  }, minutesBefore);
+  await p.evaluate((url) => { events.find(e => e.title === "Single").joinUrl = url; window.__edited = 0; const real = openEventEditor; window.openEventEditor = (...a) => { window.__edited++; return real(...a); }; }, url);
+  const joins = () => p.evaluate(() => [...document.querySelectorAll(".event .event-join")].map(j => events.find(e => e.id === j.closest(".event").dataset.event).title));
+  await setClock(11);
+  same(await joins(), [], "no Join eleven minutes before");
+  await setClock(5);
+  same(await joins(), ["Single"], "Join five minutes before, on the online meeting only");
+  const titleClear = await p.evaluate(() => {
+    const block = document.querySelector(".event .event-join").closest(".event");
+    const t = block.querySelector("strong").getBoundingClientRect(), j = block.querySelector(".event-join").getBoundingClientRect();
+    return j.top >= t.bottom - 0.5 || j.left >= t.right - 0.5;
+  });
+  expect(titleClear, "Join never covers the title");
+  await clear();
+  await p.evaluate(() => document.querySelector(".event .event-join").scrollIntoView({ block: "center" }));
+  await p.click(".event .event-join"); await wait(300);
+  same((await calls("open_link")).map(a => a.url), [url], "the meeting opens through open_link");
+  same(await p.evaluate(() => window.__edited), 0, "the editor does not open");
+  const hourPx = await p.evaluate(() => document.querySelector('.daycol[data-slot="time"]').getBoundingClientRect().height / 24);
+  const b = await p.evaluate(() => { const el = document.querySelector(".event .event-join").closest(".event"); const r = el.getBoundingClientRect(); return { x: r.x + 12, y: r.top + 8 }; });
+  await clear();
+  await p.mouse.move(b.x, b.y); await p.mouse.down(); for (let i = 1; i <= 6; i++) await p.mouse.move(b.x, b.y + hourPx * i / 6); await p.mouse.up(); await wait(400);
+  same((await calls("save_event")).length, 1, "dragging the event still moves it");
+  await setClock(-200);
+  expect(!(await joins()).includes("Single"), "no Join once it has ended", await joins());
+  await p.evaluate((url) => { const ev = events.find(e => e.title === "Single"); ev.day = dayFromDate(new Date(Date.now())); ev.start = 600; ev.end = 660; ev.joinUrl = url; }, url);
+  await p.evaluate(() => { const ev = events.find(e => e.title === "Single"); const at = eventStart(ev) - 3 * 60000; Date.now = () => at; selected = null; setView("mail"); render(); });
+  await wait(300);
+  const empty = await p.evaluate(() => { const j = document.querySelector("#reading .empty-join"); return j ? document.querySelector("#reading .empty-next").textContent : null; });
+  expect(empty && empty.startsWith("Next: Single"), "the empty reading pane offers Join beside the next meeting", empty);
+  await clear();
+  await p.click("#reading .empty-join"); await wait(200);
+  same((await calls("open_link")).map(a => a.url), [url], "and it opens the meeting");
+  await p.evaluate(() => { Date.now = window.__realNow; });
+});
+
+test("calendar search reaches the server: a match outside the loaded range opens on its day (#138)", { fake: true, tz: true, setup: () => {
+  const far = new Date(Date.now() + 500 * 86400000); far.setHours(14, 0, 0, 0);
+  const end = new Date(far.getTime() + 3600000);
+  const z = d => d.toISOString().replace(/\.\d+Z$/, "Z");
+  window.__farEvent = { id: "far-1", title: "Board retreat", start: z(far), end: z(end), location: "Lakeside" };
+  window.__serverHits = [Object.assign({ calendarId: "AAMkCal1", allDay: false, showAs: "busy", notes: "", organizerName: "", organizerEmail: "", attendees: [], response: "", isOrganizer: true, kind: "singleInstance", seriesMasterId: "" }, window.__farEvent),
+    { id: "Single", calendarId: "AAMkCal1", title: "Single board prep", start: z(new Date()), end: z(new Date(Date.now() + 3600000)), allDay: false, kind: "singleInstance" }];
+} }, async ({ p, calls }) => {
+  await p.evaluate(() => { setView("calendar"); render(); }); await wait(1000);
+  same(await p.evaluate(() => events.some(e => e.title === "Board retreat")), false, "the far event is not loaded");
+  await p.click("#q"); await p.type("#q", "board"); await wait(100);
+  expect(await p.$eval("#q-suggest", b => b.textContent.includes("Searching the server")), "says it is asking the server");
+  await wait(700);
+  const rows = await p.$$eval("#q-suggest button", bs => bs.map(b => b.textContent.trim()));
+  expect(rows.some(r => r.startsWith("Board retreat") && r.includes("Lakeside")), "the server's match is listed", rows);
+  expect(rows[rows.length - 1].startsWith("Search mail for"), "the last line searches mail", rows);
+  same((await calls("search_events")).map(a => a.text), ["board"], "asked once, after a pause");
+  // Arrow keys move through the list; Enter takes the chosen line.
+  const at = rows.findIndex(r => r.startsWith("Board retreat"));
+  for (let i = 0; i <= at; i++) await p.keyboard.press("ArrowDown");
+  same(await p.$eval("#q-suggest button.active", b => b.textContent.trim().slice(0, 13)), "Board retreat", "Down reaches it");
+  await p.keyboard.press("Enter"); await wait(1500);
+  const opened = await p.evaluate(() => ({ focus: dayFromDate(calFocus), loaded: events.some(e => e.title === "Board retreat"), editor: !!document.querySelector(".event-editor:not([hidden]), #event-editor:not([hidden])") }));
+  same(opened.focus, await p.evaluate(() => dayFromDate(new Date(window.__farEvent.start))), "the calendar moved to its day");
+  expect(opened.loaded, "its range was synced");
+  expect(opened.editor, "and the event is open", opened);
+});
+
 test("calendar: drag an all-day chip to another day; Month moves a timed one, keeping its time (#101)", { fake: true, tz: true, setup: () => { window.__allDay = true; } }, async ({ p, calls, clear }) => {
   await p.evaluate(() => { calFocus = new Date(Date.now() + 86400000); setView("calendar"); calView = "week"; render(); }); await wait(1000);
   const dragTo = async (from, to) => {
@@ -1998,6 +2071,34 @@ test("Teams' underscore lines in event notes are one thin rule, and notes of onl
   same(body.text.trim().split("\n").filter(Boolean), ["Microsoft Teams meeting", "Join: https://teams.microsoft.com/l/meetup-join/x"], "no blank lines around the rules");
   expect(body.link, "the join link still works");
   same(body.empty, null, "notes of only rules show nothing");
+});
+
+test("event notes end on a whole line at every hour height (#139)", { fake: true, tz: true }, async ({ p }) => {
+  await p.evaluate(() => { calFocus = new Date(Date.now() + 86400000); setView("calendar"); calView = "week"; render(); }); await wait(1000);
+  await p.evaluate(() => {
+    events.find(e => e.title === "Single").notes = Array.from({ length: 30 }, (_, i) => "Agenda line " + (i + 1) + " with a few words").join("\n");
+    render();
+  }); await wait(300);
+  const cutLines = () => p.evaluate(() => {
+    const body = document.querySelector('.event[data-event="' + CSS.escape(events.find(e => e.title === "Single").id) + '"] .event-body');
+    if (!body || getComputedStyle(body).display === "none") return { shown: false };
+    const box = body.getBoundingClientRect();
+    const block = body.closest(".event").getBoundingClientRect();
+    const range = document.createRange(); range.selectNodeContents(body);
+    const straddle = [...range.getClientRects()].filter(r => r.height > 0 && r.top < box.bottom - 0.5 && r.bottom > box.bottom + 0.5).length;
+    return { shown: true, straddle, inside: box.bottom <= block.bottom + 0.5, lines: Math.round(box.height / 16) };
+  });
+  const seen = [];
+  for (const h of [600, 700, 820, 1000, 1300]) {
+    await p.setViewport({ width: 1400, height: h }); await wait(400);
+    const got = await cutLines();
+    seen.push(got.shown ? got.lines : 0);
+    if (got.shown) {
+      same(got.straddle, 0, "no line cut through at height " + h);
+      expect(got.inside, "the notes stay inside the block at height " + h);
+    }
+  }
+  expect(seen.some(n => n > 0), "the notes show at some height", seen);
 });
 
 test("an all-day event fills its day", { fake: true, tz: true, setup: () => { window.__allDay = true; } }, async ({ p }) => {
@@ -4331,7 +4432,8 @@ test("in Calendar the search box finds events, and Enter opens the nearest", { f
   await p.keyboard.press("Escape"); await wait(200);
   await p.evaluate(() => closePop());
   await p.click("#q"); await p.type("#q", "zzzz"); await wait(300);
-  same(await p.$eval("#q-suggest", e => e.textContent.trim()), "No events match.", "nothing found says so");
+  same(await p.$eval("#q-suggest .suggest-none", e => e.textContent.trim()), "No events match.", "nothing found says so");
+  expect(await p.$eval("#q-suggest", e => e.textContent.includes("Search mail for")), "and offers to search mail");
 });
 
 test("dates read the way people say them, with the whole date on the tooltip", { fake: false }, async ({ p }) => {

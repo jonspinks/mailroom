@@ -2373,6 +2373,84 @@ pub fn fetch_calendar(email: &str, start: &str, end: &str) -> Result<(Vec<LiveCa
     Ok((calendars, events))
 }
 
+// ---- Searching the calendar on the server (2.0, #138) ----------------------
+// The page searches the events it has loaded; this finds the rest, by title,
+// on every calendar of the account. A series comes back as its master; the
+// next occurrence after now is asked for, so the result opens on a real day.
+
+pub const SEARCH_EVENTS_MAX: usize = 25;
+
+/// The text as an OData string literal's inside: quotes doubled, control
+/// characters dropped, at most 80 characters.
+pub fn odata_text(text: &str) -> String {
+    text.trim().chars().filter(|c| !c.is_control()).take(80).collect::<String>().replace('\'', "''")
+}
+
+pub fn search_events_url(calendar_id: &str, text: &str) -> Result<String, String> {
+    let id = calendar_id.trim();
+    if id.is_empty() {
+        return Err("Choose a calendar.".into());
+    }
+    let text = odata_text(text);
+    if text.chars().count() < 2 {
+        return Err("Type at least two letters.".into());
+    }
+    let filter = format!("contains(subject,'{text}')");
+    Ok(format!(
+        "https://graph.microsoft.com/v1.0/me/calendars/{}/events?$filter={}&$top={SEARCH_EVENTS_MAX}&$select={EVENT_SELECT}",
+        path_segment(id),
+        path_segment(&filter)
+    ))
+}
+
+pub fn next_instance_url(event_id: &str, from: &str, to: &str) -> String {
+    format!(
+        "https://graph.microsoft.com/v1.0/me/events/{}/instances?startDateTime={}&endDateTime={}&$top=1&$select={EVENT_SELECT}",
+        path_segment(event_id.trim()),
+        path_segment(from),
+        path_segment(to)
+    )
+}
+
+pub fn search_events(email: &str, text: &str, from: &str, to: &str) -> Result<Vec<LiveEvent>, String> {
+    let token = auth::access_token_for(email)?;
+    let client = http_client()?;
+    let listed = graph_pages(
+        &client,
+        &token,
+        "https://graph.microsoft.com/v1.0/me/calendars?$top=50&$select=id,name,color,isDefaultCalendar,allowedOnlineMeetingProviders,canEdit,owner",
+        CALENDAR_LIST_PAGES,
+    )?;
+    let calendars = listed.iter().filter_map(|item| calendar_from_value(item, email)).collect::<Vec<_>>();
+    let mut read = Vec::new();
+    for calendar in calendars.iter().take(24) {
+        let url = search_events_url(&calendar.id, text)?;
+        read.push((calendar.id.as_str(), graph_pages(&client, &token, &url, 1)));
+    }
+    let found = events_of_readable(read)?;
+    let mut out = Vec::new();
+    let mut masters = 0usize;
+    for event in found {
+        if event.kind == "seriesMaster" {
+            // At most five series are followed to their next occurrence.
+            masters += 1;
+            if masters > 5 {
+                continue;
+            }
+            let url = next_instance_url(&event.id, from, to);
+            if let Ok(items) = graph_pages(&client, &token, &url, 1) {
+                if let Some(next) = items.iter().find_map(|item| event_from_value(item, &event.calendar_id)) {
+                    out.push(next);
+                    continue;
+                }
+            }
+        }
+        out.push(event);
+    }
+    out.truncate(SEARCH_EVENTS_MAX * 2);
+    Ok(out)
+}
+
 /// The events of the calendars that answered. A calendar shared with you can
 /// refuse its events (or time out); the others still show. When every one
 /// failed there is nothing to show, so the first error is the answer.
@@ -4107,6 +4185,25 @@ mod tests {
         assert!(calendar_view_url("cal", "today", "2026-10-20T00:00:00Z").is_err());
         assert_eq!(CALENDAR_LIST_PAGES, 4);
         assert_eq!(CALENDAR_EVENT_PAGES, 20);
+    }
+
+    #[test]
+    fn search_events_url_escapes_quotes_and_encodes_the_filter() {
+        let url = search_events_url("cal/id", "  O'Brien review ").unwrap();
+        assert!(url.contains("/me/calendars/cal%2Fid/events?$filter="));
+        assert!(url.contains(&path_segment("contains(subject,'O''Brien review')")));
+        assert!(url.contains("&$top=25&$select="));
+        assert!(search_events_url("cal", "a").is_err());
+        assert!(search_events_url("", "review").is_err());
+        assert_eq!(odata_text("a\u{0}b'c"), "ab''c");
+        assert_eq!(odata_text(&"x".repeat(200)).len(), 80);
+    }
+
+    #[test]
+    fn next_instance_url_asks_for_one() {
+        let url = next_instance_url("AAM=", "2026-11-26T00:00:00Z", "2027-11-26T00:00:00Z");
+        assert!(url.starts_with("https://graph.microsoft.com/v1.0/me/events/AAM%3D/instances?startDateTime=2026-11-26T00%3A00%3A00Z"));
+        assert!(url.contains("&$top=1&"));
     }
 
     #[test]

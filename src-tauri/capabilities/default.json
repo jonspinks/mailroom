@@ -46,6 +46,7 @@
     "allow-pop-compose",
     "allow-saved-inbox",
     "allow-sync-calendar",
+    "allow-search-events",
     "allow-sync-contacts",
     "allow-create-contact",
     "allow-ai-status",
