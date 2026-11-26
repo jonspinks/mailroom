@@ -21,7 +21,8 @@ Omarchy theme.
 
 **All your accounts, one window.** Sign in to as many Microsoft 365,
 Outlook.com and Gmail accounts as you have. Group them into Work and
-Personal, flip between the two, or put both calendars side by side.
+Personal, flip between the two, see every inbox at once with All, or put
+both calendars side by side.
 
 **Mail that reads properly.** Conversations, newest first, with your own
 replies in place. Quoted history and legal footers fold away. Designed
@@ -33,9 +34,19 @@ sanitised before it is ever shown.
 **A calendar you can live in.** Work week, week and month, every calendar in
 its own colour. Answer invites, drag meetings to move them, edit one
 occurrence or the whole series, see who's free and when (Microsoft), and
-join Teams, Zoom, Google Meet or Webex from the reminder.
+join Teams, Zoom, Google Meet or Webex from the reminder or the event itself.
 
 ![The work week: work and personal calendars together, with the morning stand-up and Thursday's launch review](screenshots/2-calendar.png)
+
+**New in 2.0.** A pass over the whole interface. Mail, Calendar and People
+are tabs at the top of the sidebar, and the reading pane gets the old icon
+column's width back. Settings > Appearance holds the theme, density,
+preview lines and folder list. Flagged and Snoozed sit in Favorites and
+reach across every folder and account. Join appears on a meeting ten
+minutes before it starts. Calendar search asks the server too, so an event
+next spring is found. Contact lists from Outlook work in To. Underneath,
+messages open with one call and the cache reads lists without wading
+through bodies.
 
 **An assistant that knows your mail.** Add your own Claude or Grok API key
 in Settings > Assistants and Mailroom gains two helpers:

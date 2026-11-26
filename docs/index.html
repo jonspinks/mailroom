@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Mailroom</title>
-<meta name="description" content="Mailroom is a Linux desktop client for Microsoft 365, Outlook.com and Gmail. Version 1.9.4. Build it, register a public Entra application, and sign in.">
+<meta name="description" content="Mailroom is a Linux desktop client for Microsoft 365, Outlook.com and Gmail. Version 2.0.0. Build it, register a public Entra application, and sign in.">
 <style>
   :root {
     color-scheme: dark;
@@ -163,26 +163,26 @@
   }
   .app {
     display: grid;
-    grid-template-columns: 44px 168px minmax(180px, 240px) minmax(0, 1fr);
+    grid-template-columns: 188px minmax(180px, 240px) minmax(0, 1fr);
     min-height: 292px;
     background: var(--bg);
   }
   .rail {
-    background: #000;
     display: flex;
-    flex-direction: column;
     align-items: center;
-    gap: 8px;
-    padding-top: 12px;
-    border-right: 1px solid #141312;
+    gap: 4px;
+    margin: 0 0 10px;
   }
   .rail span {
-    width: 28px;
-    height: 28px;
+    height: 26px;
+    padding: 0 6px;
     border-radius: 6px;
     color: var(--muted);
-    display: grid;
-    place-items: center;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 12px;
+    font-weight: 600;
   }
   .rail span svg { width: 18px; height: 18px; }
   .rail span.on { background: #3b3a39; color: var(--ink); }
@@ -194,9 +194,9 @@
   .list { border-right: 1px solid #141312; }
   .row {
     display: grid;
-    grid-template-columns: 28px minmax(0, 1fr);
+    grid-template-columns: minmax(0, 1fr);
     gap: 8px;
-    padding: 10px 12px;
+    padding: 10px 12px 10px 16px;
     border-bottom: 1px solid var(--line);
     background: var(--panel);
   }
@@ -304,7 +304,7 @@
     h1 { font-size: 32px; line-height: 38px; }
     .split { grid-template-columns: 1fr; }
     .app { grid-template-columns: 148px minmax(0, 1fr); }
-    .rail, .read { display: none; }
+    .read { display: none; }
   }
 </style>
 </head>
@@ -319,7 +319,7 @@
       <a href="#install">Install</a>
       <a href="#sign-in">Sign in</a>
     </nav>
-    <p class="ver">Version 1.9.4</p>
+    <p class="ver">Version 2.0.0</p>
   </aside>
   <main id="top">
     <div class="wrap">
@@ -329,12 +329,12 @@
       <div class="stage" aria-hidden="true">
         <div class="chrome"><span class="dots"><i></i><i></i><i></i></span> Mailroom</div>
         <div class="app">
-          <div class="rail">
-            <span class="on" title="Mail"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3.5 5.5h13v9h-13z" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M4 6.2L10 11l6-4.8" fill="none" stroke="currentColor" stroke-width="1.4"/></svg></span>
-            <span title="Calendar"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4.5 5.5h11v10h-11z" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M4.5 8.5h11M7 4v3M13 4v3" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg></span>
-            <span title="People"><svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="7.2" r="2.2" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M5.2 15.2c.6-2.4 2.4-3.6 4.8-3.6s4.2 1.2 4.8 3.6" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg></span>
-          </div>
           <div class="folders">
+            <div class="rail">
+              <span class="on" title="Mail"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3.5 5.5h13v9h-13z" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M4 6.2L10 11l6-4.8" fill="none" stroke="currentColor" stroke-width="1.4"/></svg>Mail</span>
+              <span title="Calendar"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4.5 5.5h11v10h-11z" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M4.5 8.5h11M7 4v3M13 4v3" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg></span>
+              <span title="People"><svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="7.2" r="2.2" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M5.2 15.2c.6-2.4 2.4-3.6 4.8-3.6s4.2 1.2 4.8 3.6" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg></span>
+            </div>
             <b>Timberworks</b>
             <div class="on">Inbox</div>
             <div>Drafts</div>
@@ -343,15 +343,12 @@
           </div>
           <div class="list">
             <div class="row on">
-              <div class="avatar">MC</div>
               <div><strong>Maya Chen <span class="when">08:14</span></strong><em>Pipeline review moved to 10:00</em><small>Thursday, 10:00–11:00</small></div>
             </div>
             <div class="row">
-              <div class="avatar">LO</div>
               <div><strong>Leah Okonkwo <span class="when">07:41</span></strong><em>Notes from design review</em><small>The deck is attached</small></div>
             </div>
             <div class="row">
-              <div class="avatar" style="background:#0e7c66">OP</div>
               <div><strong>Owen Price <span class="when draft">Draft</span></strong><em>Cone 6 for the first batch</em><small>To: Owen Price</small></div>
             </div>
           </div>
@@ -367,24 +364,24 @@
       <div class="split">
         <section>
           <h3>Mail</h3>
-          <p>Inbox, drafts, sent items, archive, and trash come from the server, including folders you added there. A reply fills the message view. Search looks through the words of mail already on this computer, bodies included, and lists whole conversations; Search deeper asks the server.</p>
+          <p>Every account's mail in one list when you choose All, each row marked with its account's colour. Drafts, Flagged and Snoozed lead your favourites while they hold something. Search looks through the words of mail already on this computer, bodies included; Search deeper asks the server.</p>
         </section>
         <section>
           <h3>Calendar</h3>
-          <p>Work week, week, and month share one grid. Accept, decline, or mark a meeting tentative. Notes stay with the event.</p>
+          <p>Work week, week, and month share one grid. An online meeting shows Join from ten minutes before it starts. Search finds events a year back and two ahead, not only the weeks on screen.</p>
         </section>
         <section>
           <h3>People</h3>
-          <p>Each mailbox brings its contacts. A contact you add in Mailroom is created on that account.</p>
+          <p>Each mailbox brings its contacts and, on Microsoft accounts, its contact lists. Type a list's name in To and everyone on it is added.</p>
         </section>
       </div>
 
       <h2>What this version is</h2>
-      <p>Version 1.9.4 runs on Linux. There is no installer package yet, so you build it from source. It is not Microsoft Outlook. Microsoft mail, calendar, and contacts go through Microsoft Graph, and Google accounts through the Gmail and Google Calendar APIs, each with an application you register yourself.</p>
-      <p class="quiet">A reply shows the full email address next to the friendly name. The word Draft is red. Settings shows the version along the bottom. Recurring-meeting editing, and creating or renaming folders, are not in this build.</p>
+      <p>Version 2.0.0 runs on Linux. There is no installer package yet, so you build it from source. It is not Microsoft Outlook. Microsoft mail, calendar, and contacts go through Microsoft Graph, and Google accounts through the Gmail and Google Calendar APIs, each with an application you register yourself.</p>
+      <p class="quiet">2.0 follows a review of the whole interface: Mail, Calendar and People as tabs at the top of the sidebar, one Settings page for how it looks, a calmer type scale, and the rest of the review's points.</p>
 
       <h2 id="install">Install</h2>
-      <p>You need a Linux desktop, Rust, and WebKitGTK 4.1. Clone <a href="https://github.com/jonspinks/mailroom">github.com/jonspinks/mailroom</a>. You need access to that repository.</p>
+      <p>You need a Linux desktop, Rust, and WebKitGTK 4.1. Clone <a href="https://github.com/jonspinks/mailroom">github.com/jonspinks/mailroom</a>.</p>
 
       <ol class="steps">
         <li>
@@ -453,7 +450,7 @@ cargo build --release --manifest-path src-tauri/Cargo.toml
       </ol>
 
       <footer>
-        <p>Mailroom 1.9.4. Linux only. Not affiliated with Microsoft or Google.</p>
+        <p>Mailroom 2.0.0. Linux only. Not affiliated with Microsoft or Google.</p>
       </footer>
     </div>
   </main>
