@@ -13,7 +13,7 @@ compares them with this list, and opens an issue for anything new.
 | Outlook | Mailroom |
 |---|---|
 | Several accounts in one window | ✅ Microsoft 365, Outlook.com and Gmail together, each in its own colour |
-| Switch between groups of accounts | ✅ Work, Personal, and Both (calendar) |
+| Switch between groups of accounts | ✅ All, Work and Personal in Mail and People; Work, Personal and Both in Calendar. With All, each row carries its account's colour |
 | Send as an alias | **M** aliases read from the server |
 | Sign in with the provider's own page | ✅ OAuth with PKCE; tokens in the system keyring |
 
@@ -26,9 +26,10 @@ compares them with this list, and opens an issue for anything new.
 | Filters: unread, flagged, mentions… | ✅ Unread, Read, Flagged, Events |
 | Choose when mail is marked as read | ✅ when opened, after 5 seconds, when you move on, or never (Settings > Mail) |
 | Group by date | ✅ Today, Yesterday, weekdays, Last week… |
-| Message preview lines | ✅ none, 1 line or 2 lines (Settings > Mail) |
-| Density | ✅ Compact, Comfortable or Roomy (Settings > Mail) |
-| Toolbar | ✅ Reply, Forward, Archive, Delete and Snooze by name; the rest under More; Archive, Flag, Pin and Delete on a row as you point at it |
+| Message preview lines | ✅ none, 1 line or 2 lines (Settings > Appearance) |
+| Density | ✅ Compact, Comfortable or Roomy (Settings > Appearance) |
+| Theme | ✅ System, Light, Dark, or the Omarchy theme (Settings > Appearance, or Ctrl+K) |
+| Toolbar | ✅ Reply, Forward, Archive, Delete and Snooze by name; Reply all leads when there is someone else to answer; the rest under More; Archive, Flag, Pin and Delete on a row as you point at it; earlier messages in a thread keep their own reply arrows |
 | Sort by | ✅ Date, From, Subject, Size, Importance, Flag due date, Attachments, either way round, kept per folder; size and due date show on the row; sorts the mail on this computer |
 | Dark mode for designed mail | ✅ recoloured colour by colour, sun button for the original |
 | Quoted text folded | ✅ Outlook, Gmail and Apple replies; legal footers too |
@@ -80,9 +81,12 @@ compares them with this list, and opens an issue for anything new.
 | Rules | **M** create from a message, turn off, delete |
 | Forwarding warning | **M** a banner while a rule that is on forwards mail elsewhere; Review rule or Dismiss |
 | Automatic replies | **M** |
-| Favourites | ✅ any folder, category or search folder |
-| Search | ✅ mail, people and calendar in one box; dates in plain words; top results first; in Calendar the box lists matching events and Enter opens the nearest |
-| Folder list | ✅ Short (the Inbox, the folder you are in, anything unread, Drafts and Outbox while something waits) or Full, as in Outlook (Settings > Mail) |
+| Favourites | ✅ Flagged (across every folder and account in view) and Snoozed (with when each comes back) lead while they hold mail; then any folder, category or search folder you pin |
+| Drag a message onto a category | **M** onto a category in Favorites |
+| Suggested folders in Move to | ✅ a "Suggested" group of the folders you move to most |
+| Search | ✅ mail, people and calendar in one box; dates in plain words; top results first; in Calendar the box lists matching events, then more from the server (a year back, two ahead), arrow keys move through them, and the last line searches mail |
+| Folder list | ✅ Short (the Inbox, the folder you are in, anything unread, Drafts and Outbox while something waits) or Full, as in Outlook (Settings > Appearance); hidden or shown per view, and folded by itself in a narrow window |
+| Mail, Calendar and People | ✅ tabs at the top of the folder pane; a slim column when it is hidden |
 | Search folders | **M** |
 | Create, rename, delete folders | ✅ from the folder right-click menu, subfolders too; Outlook's own folders stay put (Gmail: labels) |
 | Sort subfolders A to Z | ✅ from a parent folder's right-click menu, with Undo |
@@ -103,7 +107,7 @@ compares them with this list, and opens an issue for anything new.
 | Recurring events and exceptions | ✅ this event, this and following, or all |
 | Drag to move | ✅ timed events to another time or day; all-day chips to another day; any event in Month; an event over several days moves as a whole; a repeating one asks this event or the series |
 | Answer invites | ✅ Accept, Tentative, Decline, in the message or from its right-click menu in the list |
-| Join online meetings | ✅ Teams, Zoom, Google Meet and Webex |
+| Join online meetings | ✅ Teams, Zoom, Google Meet and Webex; Join on the event from ten minutes before, and beside the next meeting in the empty reading pane |
 | New Teams meeting | **M** |
 | Scheduling assistant | **M** each person's day and times that suit everyone |
 | Reminders | ✅ desktop notifications |
@@ -115,6 +119,7 @@ compares them with this list, and opens an issue for anything new.
 | Outlook | Mailroom |
 |---|---|
 | Contacts: add, edit, delete | **M** |
+| Contact lists | **M** make, rename and delete them, add and remove people; type a list's name in To to add everyone |
 | Contact card | ✅ |
 | Directory lookup | **M** |
 
@@ -129,7 +134,7 @@ compares them with this list, and opens an issue for anything new.
 | Search or run a command (Ctrl+K) | ✅ commands with their shortcuts, folders, events, people, or a search of your mail, from one box |
 | Default mail app | ✅ mailto: links (Omarchy) |
 | Links to a message | ✅ mailroom://message/… opens one message, even after it was moved; it only opens, and marks nothing read (Omarchy) |
-| Follows the desktop theme | ✅ Omarchy colours, font and corners, live |
+| Follows the desktop theme | ✅ Omarchy colours, font and corners, live; optionally a proportional font in the message list |
 | Unread count in the bar | ✅ Omarchy bar widget |
 | Global shortcut | ✅ Super+Shift+E (Omarchy) |
 | Tray icon | ✅ |

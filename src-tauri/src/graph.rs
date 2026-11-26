@@ -2535,6 +2535,157 @@ pub fn delete_contact(email: &str, contact_id: &str) -> Result<(), String> {
     }
 }
 
+// ---- Contact lists (2.0, #17) ----------------------------------------------
+// Outlook's personal distribution lists, through Graph's distributionList
+// (generally available November 2026; Contacts.ReadWrite, already granted).
+// Members come only with $expand=members on one list, so each list is read
+// on its own. A member is a contact, a mailbox or a one-off address; its
+// `id` is the key it was added with (the address, for the ones Mailroom adds).
+
+const LIST_MAX: usize = 50;
+
+#[derive(Clone, Debug, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ListMember {
+    /// The key it was added with: an address, or a routing key.
+    pub key: String,
+    pub name: String,
+    /// contact, oneOff, mailbox or privateDL.
+    pub kind: String,
+    /// The contact's id when kind is contact (the page finds its address).
+    pub member_id: String,
+}
+
+#[derive(Clone, Debug, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ContactList {
+    pub id: String,
+    pub name: String,
+    pub members: Vec<ListMember>,
+}
+
+fn list_url(id: &str) -> String {
+    format!("https://graph.microsoft.com/v1.0/me/distributionLists/{}", path_segment(id.trim()))
+}
+
+pub fn contact_list_from(value: &serde_json::Value) -> Option<ContactList> {
+    let id = value["id"].as_str()?.trim();
+    if id.is_empty() {
+        return None;
+    }
+    let members = value["members"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|m| {
+            let key = m["id"].as_str().unwrap_or("").trim().to_string();
+            let member_id = m["memberId"].as_str().unwrap_or("").trim().to_string();
+            (!key.is_empty() || !member_id.is_empty()).then(|| ListMember {
+                key,
+                name: m["displayName"].as_str().unwrap_or("").trim().chars().take(200).collect(),
+                kind: m["type"].as_str().unwrap_or("oneOff").to_string(),
+                member_id,
+            })
+        })
+        .collect();
+    Some(ContactList { id: id.to_string(), name: value["displayName"].as_str().unwrap_or("").trim().chars().take(200).collect(), members })
+}
+
+fn list_refusal(status: u16, reason: &str) -> String {
+    match status {
+        401 | 403 => "Sign in again to change contact lists.".into(),
+        404 => "That contact list is no longer there.".into(),
+        _ if !reason.is_empty() => format!("Microsoft did not save the contact list: {reason}"),
+        _ => "Microsoft did not save the contact list.".into(),
+    }
+}
+
+pub fn fetch_contact_lists(email: &str) -> Result<Vec<ContactList>, String> {
+    let token = auth::access_token_for(email)?;
+    let client = http_client()?;
+    let listed = graph_pages(&client, &token, "https://graph.microsoft.com/v1.0/me/distributionLists?$top=100&$select=id,displayName", 2)?;
+    let mut out = Vec::new();
+    for item in listed.iter().take(LIST_MAX) {
+        let Some(id) = item["id"].as_str() else { continue };
+        let url = format!("{}?$select=id,displayName&$expand=members", list_url(id));
+        match graph_get(&client, &token, &url) {
+            Ok(value) => out.extend(contact_list_from(&value)),
+            // A list whose members can't be read still shows, empty.
+            Err(_) => out.extend(contact_list_from(item)),
+        }
+    }
+    out.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    Ok(out)
+}
+
+fn list_name(name: &str) -> Result<String, String> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err("Name the contact list.".into());
+    }
+    Ok(name.chars().take(200).collect())
+}
+
+pub fn create_contact_list(email: &str, name: &str) -> Result<ContactList, String> {
+    let body = serde_json::json!({ "displayName": list_name(name)? });
+    let token = auth::access_token_for(email)?;
+    let client = http_client()?;
+    let saved = crate::calendar::call(&client, &token, "POST", "https://graph.microsoft.com/v1.0/me/distributionLists", Some(&body))
+        .map_err(|(status, reason)| list_refusal(status, &reason))?;
+    contact_list_from(&saved).ok_or_else(|| "Microsoft did not return the contact list.".into())
+}
+
+pub fn rename_contact_list(email: &str, list_id: &str, name: &str) -> Result<(), String> {
+    let body = serde_json::json!({ "displayName": list_name(name)? });
+    let token = auth::access_token_for(email)?;
+    let client = http_client()?;
+    crate::calendar::call(&client, &token, "PATCH", &list_url(list_id), Some(&body)).map_err(|(status, reason)| list_refusal(status, &reason))?;
+    Ok(())
+}
+
+pub fn delete_contact_list(email: &str, list_id: &str) -> Result<(), String> {
+    let token = auth::access_token_for(email)?;
+    let client = http_client()?;
+    match crate::calendar::call(&client, &token, "DELETE", &list_url(list_id), None) {
+        Ok(_) | Err((404, _)) => Ok(()),
+        Err((status, reason)) => Err(list_refusal(status, &reason)),
+    }
+}
+
+/// The addMembers body: each person as a one-off address with their name.
+pub fn add_members_body(people: &[(String, String)]) -> Result<serde_json::Value, String> {
+    let members: Vec<serde_json::Value> = people
+        .iter()
+        .filter(|(_, address)| address.contains('@') && !address.contains(char::is_whitespace))
+        .take(500)
+        .map(|(name, address)| serde_json::json!({ "displayName": name.trim(), "key": address.trim(), "type": "oneOff" }))
+        .collect();
+    if members.is_empty() {
+        return Err("Choose someone with an email address.".into());
+    }
+    Ok(serde_json::json!({ "members": members }))
+}
+
+pub fn add_list_members(email: &str, list_id: &str, people: &[(String, String)]) -> Result<(), String> {
+    let body = add_members_body(people)?;
+    let token = auth::access_token_for(email)?;
+    let client = http_client()?;
+    crate::calendar::call(&client, &token, "POST", &format!("{}/addMembers", list_url(list_id)), Some(&body)).map_err(|(status, reason)| list_refusal(status, &reason))?;
+    Ok(())
+}
+
+/// deleteMembers names each one by its key and type.
+pub fn remove_list_members(email: &str, list_id: &str, members: &[(String, String)]) -> Result<(), String> {
+    let list: Vec<serde_json::Value> = members.iter().take(500).map(|(key, kind)| serde_json::json!({ "key": key, "type": if kind.is_empty() { "oneOff" } else { kind.as_str() } })).collect();
+    if list.is_empty() {
+        return Ok(());
+    }
+    let token = auth::access_token_for(email)?;
+    let client = http_client()?;
+    crate::calendar::call(&client, &token, "POST", &format!("{}/deleteMembers", list_url(list_id)), Some(&serde_json::json!({ "members": list }))).map_err(|(status, reason)| list_refusal(status, &reason))?;
+    Ok(())
+}
+
 fn contact_refusal(status: u16, reason: &str) -> String {
     match status {
         401 | 403 => "Sign in again to change contacts.".into(),
@@ -4197,6 +4348,23 @@ mod tests {
         assert!(search_events_url("", "review").is_err());
         assert_eq!(odata_text("a\u{0}b'c"), "ab''c");
         assert_eq!(odata_text(&"x".repeat(200)).len(), 80);
+    }
+
+    #[test]
+    fn contact_lists_read_their_members_and_add_people_as_one_off_addresses() {
+        let list = contact_list_from(&serde_json::json!({ "id": "DL1", "displayName": "Kiln crew", "members": [
+            { "id": "ana@example.org", "displayName": "Ana", "type": "oneOff", "memberId": "" },
+            { "id": "k2", "displayName": "Bo", "type": "contact", "memberId": "AAMkContact" },
+            { "id": "", "memberId": "" }
+        ] })).unwrap();
+        assert_eq!(list.name, "Kiln crew");
+        assert_eq!(list.members.len(), 2);
+        assert_eq!((list.members[1].kind.as_str(), list.members[1].member_id.as_str()), ("contact", "AAMkContact"));
+        let body = add_members_body(&[("Ana".into(), "ana@example.org".into()), ("No one".into(), "not an address".into())]).unwrap();
+        assert_eq!(body, serde_json::json!({ "members": [{ "displayName": "Ana", "key": "ana@example.org", "type": "oneOff" }] }));
+        assert!(add_members_body(&[]).is_err());
+        assert!(list_name("  ").is_err());
+        assert_eq!(list_url("a/b="), "https://graph.microsoft.com/v1.0/me/distributionLists/a%2Fb%3D");
     }
 
     #[test]

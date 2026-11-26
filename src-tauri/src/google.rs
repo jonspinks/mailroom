@@ -481,10 +481,14 @@ pub fn folders_from(labels: &Value, counts: &HashMap<String, (i64, i64)>) -> Vec
 /// The labels alone, for the ten-minute re-listing (2.0, #81), as
 /// Microsoft accounts have it: a label made, renamed or removed elsewhere
 /// shows up without signing in again.
-pub fn fetch_folders(email: &str) -> Result<Vec<LiveFolder>, String> {
+/// One labels.list call: no per-label count requests, which at startup
+/// pushed Gmail over its per-minute quota. Counts come from `known` (the
+/// cached folders), and the cache's own recount keeps them true.
+pub fn fetch_folders(email: &str, known: &HashMap<String, (i64, i64)>) -> Result<Vec<LiveFolder>, String> {
     let token = auth::access_token_for(email)?;
     let client = graph::http_client()?;
-    list_folders(&client, &token)
+    let labels = get(&client, &token, &format!("{GMAIL}/labels"))?;
+    Ok(folders_from(&labels, known))
 }
 
 fn list_folders(client: &reqwest::blocking::Client, token: &str) -> Result<Vec<LiveFolder>, String> {

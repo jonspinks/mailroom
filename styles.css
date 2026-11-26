@@ -4197,3 +4197,12 @@ html body[data-read="window"] .close-message { display: inline-grid; }
 
 /* A change made offline, waiting for the server (#67). */
 .pending-mark { display: inline-flex; align-items: center; color: var(--muted); margin-right: 4px; }
+
+/* Contact lists (2.0, #17). */
+.contact-list-form .clist-members { display: flex; flex-direction: column; gap: 2px; max-height: 240px; overflow: auto; margin: 4px 0 12px; }
+.contact-list-form .clist-member { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 4px 8px; border-radius: min(4px, var(--r-max)); }
+.contact-list-form .clist-member:hover { background: var(--hover); }
+.contact-list-form .clist-member small { color: var(--muted); }
+.contact-list-form .suggest-wrap { position: relative; display: block; }
+.contact-list-form .suggest-wrap .suggest { position: absolute; left: 0; right: 0; top: calc(100% + 4px); z-index: 5; }
+.danger { color: var(--red-ink, #a51d2d); }
