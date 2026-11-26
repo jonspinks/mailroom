@@ -13,6 +13,7 @@ mod launch;
 mod linkmenu;
 mod mailbox;
 mod migrate;
+mod msgheaders;
 mod notify;
 mod omarchy;
 mod pdftext;
@@ -200,15 +201,23 @@ fn cache_keys(graph_email: &str, requested: &str) -> Vec<String> {
 
 fn anchor_folder(email: &str, folder_id: &str, since: &str) {
     if auth::is_google(email) {
-        if let Ok(link) = google::anchor(email, folder_id) {
-            let _ = store::save_delta_link(email, folder_id, &link);
-        }
+        anchor_gmail(email, folder_id);
         return;
     }
     let Ok(token) = auth::access_token_for(email) else {
         return;
     };
     anchor_graph(email, folder_id, since, &token);
+}
+
+/// Gmail's anchor is found on its own thread too (2.0, #81), so the first
+/// open of a folder returns after its first fill, as Microsoft's does. The
+/// same one-walk-per-folder claim and six-hour back-off apply.
+fn anchor_gmail(email: &str, folder_id: &str) {
+    anchor_in_background(email, folder_id, {
+        let (email, folder_id) = (email.to_string(), folder_id.to_string());
+        move || google::anchor(&email, &folder_id)
+    });
 }
 
 /// When a folder's anchor last failed. Walking a folder for a delta link is
@@ -244,6 +253,18 @@ impl Drop for AnchorClaim {
 /// for it. Until the link is saved a poll finds none and merges the last day
 /// again, as it always did; it does not start a second walk.
 fn anchor_graph(email: &str, folder_id: &str, since: &str, token: &str) {
+    anchor_in_background(email, folder_id, {
+        let (folder_id, since, token) = (folder_id.to_string(), since.to_string(), token.to_string());
+        move || graph::anchor_mail_delta(&token, &folder_id, &since)
+    });
+}
+
+/// Find a folder's sync point on its own thread, once per folder at a time,
+/// and save it; a failure waits ANCHOR_RETRY before the next try.
+fn anchor_in_background<F>(email: &str, folder_id: &str, find: F)
+where
+    F: FnOnce() -> Result<String, String> + Send + 'static,
+{
     let key = format!("{email}\n{folder_id}");
     if let Ok(failed) = ANCHOR_FAILED.lock() {
         if failed.as_ref().and_then(|map| map.get(&key)).is_some_and(|at| at.elapsed() < ANCHOR_RETRY) {
@@ -253,10 +274,10 @@ fn anchor_graph(email: &str, folder_id: &str, since: &str, token: &str) {
     let Some(claim) = AnchorClaim::take(&key) else {
         return;
     };
-    let (email, folder_id, since, token) = (email.to_string(), folder_id.to_string(), since.to_string(), token.to_string());
+    let (email, folder_id) = (email.to_string(), folder_id.to_string());
     std::thread::spawn(move || {
         let claim = claim;
-        match graph::anchor_mail_delta(&token, &folder_id, &since) {
+        match find() {
             Ok(link) => {
                 let _ = store::save_delta_link(&email, &folder_id, &link);
                 if let Ok(mut failed) = ANCHOR_FAILED.lock() {
@@ -306,11 +327,10 @@ fn usable_listing(folders: &[LiveFolder]) -> bool {
     folders.iter().any(|folder| folder.key == "inbox")
 }
 
-/// List a Microsoft account's folders again when that is due. Cached messages
-/// of folders that are still there are not touched. Gmail's labels are not
-/// re-listed yet: google.rs lists them only together with the first Inbox.
+/// List an account's folders (Gmail: labels) again when that is due. Cached
+/// messages of folders that are still there are not touched.
 fn refresh_folders_if_due(email: &str) {
-    if email.is_empty() || auth::is_google(email) {
+    if email.is_empty() {
         return;
     }
     let now = std::time::Instant::now();
@@ -324,7 +344,8 @@ fn refresh_folders_if_due(email: &str) {
     if let Ok(mut clock) = FOLDERS_AT.lock() {
         clock.get_or_insert_with(Default::default).insert(email.to_string(), now);
     }
-    let folders = match graph::fetch_folders(email) {
+    let listed = if auth::is_google(email) { google::fetch_folders(email) } else { graph::fetch_folders(email) };
+    let folders = match listed {
         Ok(folders) if usable_listing(&folders) => folders,
         Ok(_) => return,
         Err(err) => {
@@ -704,42 +725,41 @@ async fn cached_folder(
 
 #[tauri::command]
 async fn cached_body(email: Option<String>, message_id: Option<String>) -> Result<String, String> {
-    in_background(move || {
-        let email = email.unwrap_or_default();
-        let message_id = message_id.unwrap_or_default();
-        let cached = store::load_message_body(&email, &message_id)?;
-        if !cached.trim().is_empty() {
-            return Ok(cached);
+    in_background(move || body_for(&email.unwrap_or_default(), &message_id.unwrap_or_default())).await
+}
+
+fn body_for(email: &str, message_id: &str) -> Result<String, String> {
+    let cached = store::load_message_body(&email, &message_id)?;
+    if !cached.trim().is_empty() {
+        return Ok(cached);
+    }
+    // A folder fill and a header-only delta store mail without a body.
+    // Fill it when the letter opens. An empty body is saved so the next
+    // open does not ask again. A network failure leaves the row empty so
+    // the page retries.
+    if email.trim().is_empty() || message_id.trim().is_empty() {
+        return Ok(cached);
+    }
+    let fetched = if auth::is_google(email.trim()) {
+        google::message_html(email.trim(), message_id.trim())
+    } else {
+        let token = auth::access_token_for(email.trim())?;
+        graph::fetch_message_body(&token, message_id.trim())
+    };
+    match fetched {
+        Ok(html) => {
+            let stored = if html.trim().is_empty() { "<p></p>".to_string() } else { html };
+            let _ = store::save_message_body(email.trim(), message_id.trim(), &stored);
+            Ok(stored)
         }
-        // A folder fill and a header-only delta store mail without a body.
-        // Fill it when the letter opens. An empty body is saved so the next
-        // open does not ask again. A network failure leaves the row empty so
-        // the page retries.
-        if email.trim().is_empty() || message_id.trim().is_empty() {
-            return Ok(cached);
-        }
-        let fetched = if auth::is_google(email.trim()) {
-            google::message_html(email.trim(), message_id.trim())
-        } else {
-            let token = auth::access_token_for(email.trim())?;
-            graph::fetch_message_body(&token, message_id.trim())
-        };
-        match fetched {
-            Ok(html) => {
-                let stored = if html.trim().is_empty() { "<p></p>".to_string() } else { html };
-                let _ = store::save_message_body(email.trim(), message_id.trim(), &stored);
-                Ok(stored)
+        Err(err) => {
+            if !cached.is_empty() {
+                Ok(cached)
+            } else {
+                Err(err)
             }
-            Err(err) => {
-                if !cached.is_empty() {
-                    Ok(cached)
-                } else {
-                    Err(err)
-                }
-            }
         }
-    })
-    .await
+    }
 }
 
 fn omit_message_bodies(messages: &mut [LiveMessage]) {
@@ -970,30 +990,65 @@ async fn search_cached(
 
 #[tauri::command]
 async fn message_files(message_id: Option<String>, email: Option<String>) -> Result<Vec<LiveFile>, String> {
+    in_background(move || files_for(&email.unwrap_or_default(), &message_id.unwrap_or_default())).await
+}
+
+fn files_for(email: &str, message_id: &str) -> Result<Vec<LiveFile>, String> {
+    let status = auth::account_status();
+    if !status.signed_in {
+        return Err("Accounts are not signed in.".into());
+    }
+    if message_id.is_empty() {
+        return Err("Choose a message.".into());
+    }
+    let mailbox = if email.trim().is_empty() {
+        status.email.trim().to_string()
+    } else {
+        email.trim().to_string()
+    };
+    let files = if auth::is_google(mailbox.trim()) {
+        google::list_attachments(mailbox.trim(), &message_id)?
+    } else {
+        graph::list_attachments(mailbox.trim(), &message_id)?
+    };
+    if !mailbox.trim().is_empty() {
+        let _ = store::save_message_files(&mailbox.trim().to_lowercase(), message_id, &files);
+    }
+    Ok(files)
+}
+
+/// What the reading pane asks for when a message opens, in one call (2.0,
+/// #104): any of "body", "files", "verified" and "unsubscribe", worked out
+/// side by side. The sender check and the unsubscribe offer share one fetch
+/// of the headers (msgheaders.rs). Each part answers on its own: a value,
+/// or {"error": "..."} when that part failed. Pictures (bytes, only when the
+/// body has some) and the invite (only on an invite) keep their own calls.
+#[tauri::command]
+async fn open_message(email: String, message_id: String, from: Option<String>, want: Vec<String>) -> Result<serde_json::Value, String> {
     in_background(move || {
-        let status = auth::account_status();
-        if !status.signed_in {
-            return Err("Accounts are not signed in.".into());
-        }
-        let message_id = message_id.unwrap_or_default();
-        let email = email.unwrap_or_default();
-        if message_id.is_empty() {
+        let (email, id, from) = (email.trim().to_string(), message_id.trim().to_string(), from.unwrap_or_default());
+        if id.is_empty() {
             return Err("Choose a message.".into());
         }
-        let mailbox = if email.trim().is_empty() {
-            status.email.trim().to_string()
-        } else {
-            email.trim().to_string()
+        let wants = |part: &str| want.iter().any(|w| w == part);
+        let part = |result: Result<serde_json::Value, String>| match result {
+            Ok(value) => value,
+            Err(err) => serde_json::json!({ "error": err }),
         };
-        let files = if auth::is_google(mailbox.trim()) {
-            google::list_attachments(mailbox.trim(), &message_id)?
-        } else {
-            graph::list_attachments(mailbox.trim(), &message_id)?
-        };
-        if !mailbox.trim().is_empty() {
-            let _ = store::save_message_files(&mailbox.trim().to_lowercase(), &message_id, &files);
-        }
-        Ok(files)
+        let mut out = serde_json::Map::new();
+        std::thread::scope(|scope| {
+            let body = wants("body").then(|| scope.spawn(|| body_for(&email, &id).map(serde_json::Value::from)));
+            let files = wants("files").then(|| scope.spawn(|| files_for(&email, &id).and_then(|f| serde_json::to_value(f).map_err(|e| e.to_string()))));
+            let verified = wants("verified").then(|| scope.spawn(|| senderauth::verified(&email, &id, &from).map(serde_json::Value::from)));
+            let unsub = wants("unsubscribe").then(|| scope.spawn(|| unsubscribe::options(&email, &id).and_then(|o| serde_json::to_value(o).map_err(|e| e.to_string()))));
+            for (name, handle) in [("body", body), ("files", files), ("verified", verified), ("unsubscribe", unsub)] {
+                if let Some(handle) = handle {
+                    let value = handle.join().unwrap_or_else(|_| Err("That part could not be read.".into()));
+                    out.insert(name.to_string(), part(value));
+                }
+            }
+        });
+        Ok(serde_json::Value::Object(out))
     })
     .await
 }
@@ -2267,14 +2322,15 @@ async fn ask_mail(provider: String, question: String, messages: Vec<ai::MailNote
 
 // A message's inline images, as data URLs by content id (inline.rs).
 #[tauri::command]
-async fn inline_images(email: String, message_id: String) -> Result<Vec<inline::InlineImage>, String> {
-    in_background(move || {
+async fn inline_images(email: String, message_id: String) -> Result<tauri::ipc::Response, String> {
+    let list = in_background(move || {
         if auth::is_google(email.trim()) {
             return google::inline_images(email.trim(), &message_id);
         }
         inline::inline_images(email.trim(), &message_id)
     })
-    .await
+    .await?;
+    Ok(tauri::ipc::Response::new(inline::pack_images(&list)))
 }
 
 // A mail picture the webview refused, fetched by the app (remoteimg.rs).
@@ -2321,14 +2377,15 @@ async fn forget_mail(email: String, message_ids: Vec<String>) -> Result<(), Stri
 
 // An attachment for the in-app viewer: a PDF or a picture (inline.rs).
 #[tauri::command]
-async fn attachment_preview(email: String, message_id: String, file_id: String, name: Option<String>, content_type: Option<String>) -> Result<inline::Preview, String> {
-    in_background(move || {
+async fn attachment_preview(email: String, message_id: String, file_id: String, name: Option<String>, content_type: Option<String>) -> Result<tauri::ipc::Response, String> {
+    let preview = in_background(move || {
         if auth::is_google(email.trim()) {
             return google::preview(email.trim(), &message_id, &file_id, &name.unwrap_or_default(), &content_type.unwrap_or_default());
         }
         inline::preview(email.trim(), &message_id, &file_id, &name.unwrap_or_default(), &content_type.unwrap_or_default())
     })
-    .await
+    .await?;
+    Ok(tauri::ipc::Response::new(preview.pack()))
 }
 
 // The text of the PDFs on these messages, for Ask (pdftext.rs).
@@ -2524,6 +2581,7 @@ pub fn run() {
             backfill_mail,
             cached_folder,
             cached_body,
+            open_message,
             sync_folder,
             conversation_mail,
             spelling,

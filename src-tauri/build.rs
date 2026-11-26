@@ -45,6 +45,7 @@ fn main() {
             "backfill_mail",
             "cached_folder",
             "cached_body",
+            "open_message",
             "sync_folder",
             "search_mail",
             "search_cached",

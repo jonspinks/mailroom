@@ -297,7 +297,7 @@ test("adding a sender's domain to Safe senders shows its pictures", { fake: true
   expect(await p.evaluate(() => !!document.querySelector("#reading [data-trust-sender]")), "the bar offers to trust the domain");
   await p.click("#reading [data-trust-sender]"); await wait(900);
   same(await p.evaluate(() => safeSenders.includes("@vendor.example")), true, "the domain is on the list");
-  same((await calls("sender_verified")).map(a => a.messageId), ["vendor"], "the sender is checked");
+  same((await calls("open_message")).filter(a => a.want.includes("verified")).map(a => a.messageId), ["vendor"], "the sender is checked");
   same(await p.evaluate(() => !!document.querySelector("#reading .remote-bar")), false, "the bar goes away");
   same(await p.evaluate(() => [...document.querySelectorAll("#reading img")].some(i => /pics\.example/.test(i.getAttribute("src") || ""))), true, "the picture is in the letter");
 });
@@ -317,9 +317,10 @@ test("a forged safe sender or own address does not load pictures", { fake: true,
   same(await p.evaluate(() => !!document.querySelector("#reading [data-trust-sender]")), false, "no offer to trust a sender already trusted");
   expect(/didn't pass its sender checks/.test(await open("me")), "mail forged as from you: blocked");
   same(asked, ["real.png"], "only the verified message's picture was fetched");
-  same((await calls("sender_verified")).map(a => a.messageId).sort(), ["forged", "me", "real"], "each message checked once");
+  const checked = async () => (await calls("open_message")).filter(a => a.want.includes("verified")).map(a => a.messageId);
+  same((await checked()).sort(), ["forged", "me", "real"], "each message checked once");
   await open("real"); await open("forged");
-  same((await calls("sender_verified")).length, 3, "answers are remembered");
+  same((await checked()).length, 3, "answers are remembered");
 });
 
 test("audit: safe senders never widen to a public suffix", { fake: true }, async ({ p }) => {
@@ -1946,7 +1947,7 @@ test("Send later on Gmail: Mailroom holds it in Outbox until the time (#69)", { 
 
 test("opening a message repaints once for its answers, not once per answer (#74)", { fake: true, setup: () => {
   // As live: each answer lands a little after the last.
-  window.__delays = { cached_body: 5, message_files: 15, inline_images: 25, sender_verified: 35, unsubscribe_options: 45 };
+  window.__delays = { open_message: 30, inline_images: 25 };
   window.__unsub = { m3: { oneClick: "https://list.example/u", web: "", mailto: "", mailtoSubject: "" } };
 } }, async ({ p }) => {
   await wait(500);
@@ -1956,6 +1957,10 @@ test("opening a message repaints once for its answers, not once per answer (#74)
   expect(paints <= 2, "the open and one gathered paint (it was 4)", paints);
   const shown = await p.evaluate(() => ({ body: document.querySelector("#reading").textContent.includes("Site plans body"), unsub: !!document.querySelector("#reading [data-unsub], #reading .unsubscribe-bar, #reading .unsub-bar"), files: document.querySelector("#reading").textContent.includes("plan.pdf") }));
   same(shown, { body: true, unsub: true, files: true }, "and every answer is on screen");
+  const opens = (await p.evaluate(() => window.__calls.filter(c => c[0] === "open_message" && c[1].messageId === "m3").map(c => c[1].want.slice().sort())));
+  same(opens.length, 1, "one open_message for what it needs (#104)");
+  expect(opens[0].includes("body") && opens[0].includes("unsubscribe"), "the body and the unsubscribe offer in the same call", opens);
+  same(await p.evaluate(() => window.__calls.filter(c => ["cached_body", "message_files", "sender_verified", "unsubscribe_options"].includes(c[0])).length), 0, "none of the four separate calls");
 });
 
 test("sanitised mail is reused, and settings read on paint stay current (#77)", { fake: true }, async ({ p }) => {
@@ -2981,7 +2986,7 @@ test("the message window shows just that message, polls nothing, and answers in 
   });
   await p.goto(p.url().split(/[?#]/)[0] + "?" + query, { waitUntil: "load" }); await wait(1600);
   expect(await p.$eval("#reading", e => e.textContent.includes("Site plans body")), "the message body shows");
-  same((await calls("cached_body")).map(a => a.messageId), ["m3"], "loaded from the cache");
+  same((await calls("open_message")).filter(a => a.want.includes("body")).map(a => a.messageId), ["m3"], "loaded from the cache");
   const shown = await p.evaluate(() => ({
     list: !!document.querySelector(".list") && getComputedStyle(document.querySelector(".list")).display,
     folders: getComputedStyle(document.querySelector("#folders")).display,

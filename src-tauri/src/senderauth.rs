@@ -12,7 +12,7 @@
 //! Asked only for a message that would otherwise show remote content: one
 //! small request, for the headers alone.
 
-use crate::{auth, google, graph};
+use crate::auth;
 
 /// One `method=result` part of an Authentication-Results header, with its
 /// `ptype.property=value` pairs (`header.from`, `header.d`, ...).
@@ -140,19 +140,6 @@ fn gmail_verdict(headers: &[(String, String)], from_email: &str) -> bool {
     server == "mx.google.com" && passes(&methods, &from, false)
 }
 
-fn pairs(list: &serde_json::Value) -> Vec<(String, String)> {
-    list.as_array()
-        .map(|items| {
-            items
-                .iter()
-                .map(|h| {
-                    (h["name"].as_str().unwrap_or("").to_string(), h["value"].as_str().unwrap_or("").to_string())
-                })
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
 /// Whether `message_id` in `account`'s mailbox, said to be from `from_email`,
 /// passed its provider's sender checks.
 pub fn verified(account: &str, message_id: &str, from_email: &str) -> Result<bool, String> {
@@ -160,19 +147,13 @@ pub fn verified(account: &str, message_id: &str, from_email: &str) -> Result<boo
     if id.is_empty() || id.len() > 512 {
         return Err("Choose a message.".into());
     }
+    // One fetch of the headers, shared with the unsubscribe offer (#104).
+    // Gmail lists a message's headers top first; `first` keeps the first.
+    let headers = crate::msgheaders::of(account, id)?;
     if auth::is_google(account) {
-        // Gmail lists a message's headers top first; this keeps the first.
-        let headers = google::headers(account, id, &["Authentication-Results"])?;
         return Ok(gmail_verdict(&headers, from_email));
     }
-    let token = auth::access_token_for(account)?;
-    let client = graph::http_client()?;
-    let url = format!(
-        "https://graph.microsoft.com/v1.0/me/messages/{}?$select=internetMessageHeaders",
-        graph::path_segment(id)
-    );
-    let value = graph::graph_get_pub(&client, &token, &url)?;
-    Ok(microsoft_verdict(&pairs(&value["internetMessageHeaders"]), from_email))
+    Ok(microsoft_verdict(&headers, from_email))
 }
 
 #[cfg(test)]

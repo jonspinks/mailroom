@@ -101,8 +101,27 @@
       if (e === "ada@example.org") busy(40, 44);
       return e.endsWith("@other.example") ? { email: e, view: "", error: "Not shared" } : { email: e, view: day.join(""), error: "" };
     }),
-    attachment_preview: () => window.__preview || { contentType: "image/png", data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==" },
-    inline_images: (a) => (window.__images || {})[a.messageId] || [],
+    // Both answer in bytes, as the app does since 2.0 (#75): the fixtures
+    // keep base64 and data URLs, and are packed here the way lib.rs packs.
+    attachment_preview: () => {
+      const got = window.__preview || { contentType: "image/png", data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==" };
+      const head = new TextEncoder().encode(got.contentType + "\n");
+      const body = Uint8Array.from(atob(got.data), c => c.charCodeAt(0));
+      const out = new Uint8Array(head.length + body.length); out.set(head); out.set(body, head.length);
+      return out.buffer;
+    },
+    inline_images: (a) => {
+      const list = (window.__images || {})[a.messageId] || [];
+      const parts = list.map(img => { const m = /^data:([^;]+);base64,(.*)$/.exec(img.dataUrl || ""); return { img, type: m ? m[1] : "", bytes: m ? Uint8Array.from(atob(m[2]), c => c.charCodeAt(0)) : new Uint8Array(0) }; });
+      const meta = new TextEncoder().encode(JSON.stringify(parts.map(x => ({ id: x.img.id, name: x.img.name, contentId: x.img.contentId || "", inline: !!x.img.inline, contentType: x.type, length: x.bytes.length }))));
+      const total = 4 + meta.length + parts.reduce((n, x) => n + x.bytes.length, 0);
+      const out = new Uint8Array(total);
+      new DataView(out.buffer).setUint32(0, meta.length);
+      out.set(meta, 4);
+      let at = 4 + meta.length;
+      parts.forEach(x => { out.set(x.bytes, at); at += x.bytes.length; });
+      return out.buffer;
+    },
     pick_download_folder: () => window.__pickFolder === undefined ? "/home/jon/Downloads" : window.__pickFolder,
     save_picture: (a) => "/home/jon/Downloads/" + a.name.replace(/\.[^.]*$/, "") + ".png",
     copy_picture: () => null,
@@ -148,6 +167,16 @@
     run_update: () => !window.__updateDeclined, update_progress: () => window.__progress || { stage: "idle", detail: "", elapsed: 0, estimate: 0 }, update_log: () => window.__updateLog || "", restart_app: () => null,
     mail_rules: () => window.__rules || [], save_rule: (a) => Object.assign({ id: "r" + Math.random().toString(36).slice(2, 6), other: false }, a.rule), delete_rule: () => null,
     people: (a) => a.query ? (["wagstaffe", "wag", "wa"].some(q => a.query.toLowerCase().startsWith(q)) ? [{ name: "Wagstaffe, Jane", email: "jane.wagstaffe@timberworks.example" }] : []) : [{ name: "Priya Shah", email: "priya@timberworks.example" }],
+    // One call when a message opens (#104): each part from its own answer.
+    open_message: (a) => {
+      const parts = { body: ["cached_body", { email: a.email, messageId: a.messageId }], files: ["message_files", { email: a.email, messageId: a.messageId }], verified: ["sender_verified", { email: a.email, messageId: a.messageId, from: a.from }], unsubscribe: ["unsubscribe_options", { email: a.email, messageId: a.messageId }] };
+      const out = {};
+      return Promise.all((a.want || []).map(async part => {
+        const [cmd, args] = parts[part] || [];
+        if (!cmd) return;
+        try { out[part] = await answers[cmd](args); if (out[part] === undefined) out[part] = null; } catch (err) { out[part] = { error: String(err && err.message || err) }; }
+      })).then(() => out);
+    },
     // Calendar search on the server (#138): __serverHits are its matches;
     // __farEvent is one of them, which sync_calendar returns once the range
     // asked for reaches it.

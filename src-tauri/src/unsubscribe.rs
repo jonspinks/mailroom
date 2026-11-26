@@ -3,7 +3,6 @@
 //! when the sender supports it. The headers are read here from Microsoft,
 //! never taken from the page.
 
-use crate::graph::SendGraph;
 use crate::{auth, graph};
 use serde::Serialize;
 
@@ -141,44 +140,20 @@ pub fn parse(list: &str, post: &str) -> Options {
     options
 }
 
-fn header<'a>(headers: &'a serde_json::Value, name: &str) -> &'a str {
-    headers
-        .as_array()
-        .into_iter()
-        .flatten()
-        .find(|item| item["name"].as_str().is_some_and(|n| n.eq_ignore_ascii_case(name)))
-        .and_then(|item| item["value"].as_str())
-        .unwrap_or("")
-}
-
 pub fn options(email: &str, message_id: &str) -> Result<Options, String> {
     let id = message_id.trim();
     if id.is_empty() {
         return Err("Choose a message.".into());
     }
-    if auth::is_google(email) {
-        let found = crate::google::headers(email, id, &["List-Unsubscribe", "List-Unsubscribe-Post"])?;
-        return Ok(parse(&found[0].1, &found[1].1));
-    }
-    let token = auth::access_token_for(email)?;
-    let client = graph::http_client()?;
-    let url = format!(
-        "https://graph.microsoft.com/v1.0/me/messages/{}?$select=internetMessageHeaders",
-        graph::path_segment(id)
-    );
-    // Through the mailbox's request slots and Retry-After, like every Graph call.
-    let response = client
-        .get(&url)
-        .bearer_auth(&token)
-        .header("Accept", "application/json")
-        .send_graph(&token)
-        .map_err(|err| format!("Could not reach Microsoft Graph: {err}"))?;
-    if !response.status().is_success() {
-        return Ok(Options::default());
-    }
-    let value: serde_json::Value = response.json().map_err(|_| "Graph sent an unreadable response.".to_string())?;
-    let headers = &value["internetMessageHeaders"];
-    Ok(parse(header(headers, "List-Unsubscribe"), header(headers, "List-Unsubscribe-Post")))
+    // One fetch of the headers, shared with the sender check (#104). A
+    // Microsoft message whose headers can't be read offers nothing, as before.
+    let headers = match crate::msgheaders::of(email, id) {
+        Ok(headers) => headers,
+        Err(_) if !auth::is_google(email) => return Ok(Options::default()),
+        Err(err) => return Err(err),
+    };
+    let get = |name: &str| crate::msgheaders::first(&headers, name).unwrap_or("");
+    Ok(parse(get("List-Unsubscribe"), get("List-Unsubscribe-Post")))
 }
 
 /// What happened: "done" (one-click or mailed), or "open" with a page to show.

@@ -16,6 +16,7 @@
     "allow-backfill-mail",
     "allow-cached-folder",
     "allow-cached-body",
+    "allow-open-message",
     "allow-sync-folder",
     "allow-search-mail",
     "allow-search-cached",

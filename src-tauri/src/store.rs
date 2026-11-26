@@ -45,6 +45,12 @@ create table if not exists folder_messages (
     files text not null default '[]',
     primary key (email, id)
 );
+create table if not exists message_bodies (
+    email text not null,
+    id text not null,
+    body_html text not null,
+    primary key (email, id)
+);
 create table if not exists folder_delta (
     email text not null,
     folder_id text not null,
@@ -230,7 +236,72 @@ fn index_search_batch(conn: &mut Connection) -> Result<bool, String> {
 /// One step of the work that is kept off the launch path. True when there is more.
 fn catch_up(conn: &mut Connection) -> Result<bool, String> {
     conn.execute_batch(UNREAD_INDEX).map_err(|err| err.to_string())?;
-    index_search_batch(conn)
+    let searching = index_search_batch(conn)?;
+    let moving = move_bodies_batch(conn)?;
+    Ok(searching || moving)
+}
+
+// ---- Bodies out of the list table (2.0, #76) --------------------------------
+// In folder_messages the body sat before unread, flagged, files and the
+// columns added later, so every list page and count walked the body's
+// overflow pages to reach them. Bodies now live in message_bodies; the old
+// column stays (dropping it would rewrite the table and its row ids, which
+// the search index keys on) but is emptied as each body moves. The move runs
+// in small batches from catch_up and picks up where it stopped; until a row
+// has moved, reads fall back to the old column (BODY_OF). No VACUUM.
+
+const BODY_BATCH_ROWS: usize = 200;
+
+/// A row's body, wherever it is: the new table first, then the old column.
+const BODY_OF: &str = "coalesce((select mb.body_html from message_bodies mb where mb.email = fm.email and mb.id = fm.id), fm.body_html)";
+
+fn move_bodies_batch(conn: &mut Connection) -> Result<bool, String> {
+    let tx = conn.transaction().map_err(|err| err.to_string())?;
+    let rows = {
+        let mut stmt = tx
+            .prepare_cached("select rowid, email, id, body_html from folder_messages where body_html != '' limit ?1")
+            .map_err(|err| err.to_string())?;
+        let found = stmt
+            .query_map([BODY_BATCH_ROWS as i64 + 1], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, String>(3)?)))
+            .map_err(|err| err.to_string())?;
+        found.collect::<Result<Vec<_>, _>>().map_err(|err| err.to_string())?
+    };
+    let more = rows.len() > BODY_BATCH_ROWS;
+    {
+        // A body already in the new table is newer than the old column's.
+        let mut keep = tx
+            .prepare_cached("insert or ignore into message_bodies (email, id, body_html) values (?1, ?2, ?3)")
+            .map_err(|err| err.to_string())?;
+        let mut clear = tx.prepare_cached("update folder_messages set body_html = '' where rowid = ?1").map_err(|err| err.to_string())?;
+        for (rowid, email, id, body) in rows.iter().take(BODY_BATCH_ROWS) {
+            keep.execute(params![email, id, body]).map_err(|err| err.to_string())?;
+            clear.execute([rowid]).map_err(|err| err.to_string())?;
+        }
+    }
+    if !more {
+        // Bodies of messages no longer cached go too.
+        tx.execute(
+            "delete from message_bodies where not exists (select 1 from folder_messages fm where fm.email = message_bodies.email and fm.id = message_bodies.id)",
+            [],
+        )
+        .map_err(|err| err.to_string())?;
+    }
+    tx.commit().map_err(|err| err.to_string())?;
+    Ok(more)
+}
+
+/// Keep (or, with an empty body, forget) a message's body in message_bodies.
+fn put_body(tx: &Connection, email: &str, id: &str, html: &str) -> Result<(), String> {
+    if html.is_empty() {
+        tx.prepare_cached("delete from message_bodies where email = ?1 and id = ?2")
+            .and_then(|mut stmt| stmt.execute(params![email, id]))
+            .map_err(|err| err.to_string())?;
+    } else {
+        tx.prepare_cached("insert or replace into message_bodies (email, id, body_html) values (?1, ?2, ?3)")
+            .and_then(|mut stmt| stmt.execute(params![email, id, html]))
+            .map_err(|err| err.to_string())?;
+    }
+    Ok(())
 }
 
 /// Gmail mail cached before 1.3.21 was decoded as Latin-1 when its bytes were
@@ -1239,7 +1310,7 @@ fn replace_folder_messages_on(
                 item.from_email,
                 item.received,
                 item.preview,
-                item.body_html,
+                "",
                 item.unread as i64,
                 item.flagged as i64,
                 item.has_attachments as i64,
@@ -1252,6 +1323,7 @@ fn replace_folder_messages_on(
                 search_text(&item.body_html)
             ])
             .map_err(|err| err.to_string())?;
+        put_body(&tx, email, &item.id, &item.body_html)?;
     }
     drop(insert);
     tx.commit().map_err(|err| err.to_string())?;
@@ -1476,7 +1548,7 @@ fn upsert_message_tx(tx: &rusqlite::Transaction, email: &str, folder_id: &str, i
     let body = if item.body_html.is_empty() {
         ""
     } else {
-        "body_html = excluded.body_html,
+        "body_html = '',
            body_text = excluded.body_text,"
     };
     tx.prepare_cached(&format!(
@@ -1513,7 +1585,7 @@ fn upsert_message_tx(tx: &rusqlite::Transaction, email: &str, folder_id: &str, i
             item.from_email,
             item.received,
             item.preview,
-            item.body_html,
+            "",
             item.unread as i64,
             item.flagged as i64,
             item.has_attachments as i64,
@@ -1527,6 +1599,10 @@ fn upsert_message_tx(tx: &rusqlite::Transaction, email: &str, folder_id: &str, i
         ])
     })
     .map_err(|err| err.to_string())?;
+    // A change without a body keeps the cached one.
+    if !item.body_html.is_empty() {
+        put_body(tx, email, &item.id, &item.body_html)?;
+    }
     Ok(())
 }
 
@@ -1570,7 +1646,7 @@ fn load_message_body_on(conn: &Connection, email: &str, message_id: &str) -> Res
         return Ok(String::new());
     }
     let mut stmt = conn
-        .prepare_cached("select body_html from folder_messages where email = ?1 and id = ?2 limit 1")
+        .prepare_cached(&format!("select {BODY_OF} from folder_messages fm where fm.email = ?1 and fm.id = ?2 limit 1"))
         .map_err(|err| err.to_string())?;
     let mut rows = stmt.query(params![email, message_id]).map_err(|err| err.to_string())?;
     if let Some(row) = rows.next().map_err(|err| err.to_string())? {
@@ -1587,9 +1663,14 @@ pub fn save_message_body(email: &str, message_id: &str, html: &str) -> Result<()
     }
     let text = search_text(html);
     let conn = writing()?;
-    conn.prepare_cached("update folder_messages set body_html = ?3, body_text = ?4 where email = ?1 and id = ?2")
-        .and_then(|mut stmt| stmt.execute(params![email, message_id, html, text]))
+    let changed = conn
+        .prepare_cached("update folder_messages set body_html = '', body_text = ?3 where email = ?1 and id = ?2")
+        .and_then(|mut stmt| stmt.execute(params![email, message_id, text]))
         .map_err(|err| err.to_string())?;
+    // Only a message that is cached keeps a body, as before.
+    if changed > 0 {
+        put_body(&conn, &email, message_id, html)?;
+    }
     Ok(())
 }
 
@@ -1668,12 +1749,12 @@ fn load_folder_page_on(
             more: false,
         });
     }
-    let body = if include_body { "body_html" } else { "''" };
+    let body = if include_body { BODY_OF } else { "''" };
     let fetch = limit.saturating_add(1);
     let mut stmt = conn
         .prepare_cached(&format!(
             "select id, thread, subject, from_name, from_email, received, preview, {body}, unread, flagged, attached, files, to_json, cc_json, bcc_json, cats, extra
-             from folder_messages
+             from folder_messages fm
              where email = ?1 and folder_id = ?2
                and (?3 = '' or received < ?3 or (received = ?3 and id < ?4))
              order by received desc, id desc
@@ -1705,11 +1786,14 @@ fn load_box_messages_on(
     if email.is_empty() || box_key.is_empty() {
         return Ok(Vec::new());
     }
-    let sql = if include_body {
-        "select fm.id, fm.thread, fm.subject, fm.from_name, fm.from_email, fm.received, fm.preview, fm.body_html, fm.unread, fm.flagged, fm.attached, fm.files, fm.to_json, fm.cc_json, fm.bcc_json, fm.cats, fm.extra
+    let with_body = format!(
+        "select fm.id, fm.thread, fm.subject, fm.from_name, fm.from_email, fm.received, fm.preview, {BODY_OF}, fm.unread, fm.flagged, fm.attached, fm.files, fm.to_json, fm.cc_json, fm.bcc_json, fm.cats, fm.extra
          from folder_messages fm
          join folders f on f.email = fm.email and f.id = fm.folder_id
          where fm.email = ?1 and f.box_key = ?2"
+    );
+    let sql = if include_body {
+        with_body.as_str()
     } else {
         "select fm.id, fm.thread, fm.subject, fm.from_name, fm.from_email, fm.received, fm.preview, '', fm.unread, fm.flagged, fm.attached, fm.files, fm.to_json, fm.cc_json, fm.bcc_json, fm.cats, fm.extra
          from folder_messages fm
@@ -1733,11 +1817,11 @@ fn load_folder_messages(
     folder_id: &str,
     include_body: bool,
 ) -> Result<Vec<LiveMessage>, String> {
-    let body = if include_body { "body_html" } else { "''" };
+    let body = if include_body { BODY_OF } else { "''" };
     let mut stmt = conn
         .prepare(&format!(
             "select id, thread, subject, from_name, from_email, received, preview, {body}, unread, flagged, attached, files, to_json, cc_json, bcc_json, cats, extra
-             from folder_messages where email = ?1 and folder_id = ?2"
+             from folder_messages fm where email = ?1 and folder_id = ?2"
         ))
         .map_err(|err| err.to_string())?;
     let rows = stmt
@@ -2892,6 +2976,57 @@ mod tests {
         assert_eq!(search_ids(&conn, &["etransfer"]), vec!["bare"]);
     }
 
+    /// As a cache from before 2.0 holds them: bodies in folder_messages.
+    fn bodies_in_old_column(conn: &Connection) {
+        conn.execute_batch(
+            "update folder_messages set body_html = (select mb.body_html from message_bodies mb where mb.email = folder_messages.email and mb.id = folder_messages.id)
+               where exists (select 1 from message_bodies mb where mb.email = folder_messages.email and mb.id = folder_messages.id);
+             delete from message_bodies;",
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn bodies_move_out_of_the_list_table_in_batches_and_read_the_same_throughout() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        ensure_schema(&conn).unwrap();
+        replace_folders_on(&mut conn, "jon@example.com", &[folder("in", "root", "inbox")]).unwrap();
+        let items: Vec<LiveMessage> = (0..450)
+            .map(|i| {
+                let mut m = message(&format!("m{i:03}"));
+                m.body_html = format!("<p>body {i}</p>");
+                m
+            })
+            .collect();
+        replace_folder_messages_on(&mut conn, "jon@example.com", "in", &items).unwrap();
+        // New writes already go to message_bodies, with the old column empty.
+        let old: i64 = conn.query_row("select count(*) from folder_messages where body_html != ''", [], |r| r.get(0)).unwrap();
+        assert_eq!(old, 0);
+        assert_eq!(load_message_body_on(&conn, "jon@example.com", "m007").unwrap(), "<p>body 7</p>");
+        bodies_in_old_column(&conn);
+        // An orphan body, of a message no longer cached.
+        conn.execute("insert into message_bodies (email, id, body_html) values ('jon@example.com', 'gone', '<p>x</p>')", []).unwrap();
+        let read = |conn: &Connection| load_folder_messages(conn, "jon@example.com", "in", true).unwrap().into_iter().map(|m| (m.id, m.body_html)).collect::<std::collections::BTreeMap<_, _>>();
+        let before = read(&conn);
+        assert_eq!(before["m123"], "<p>body 123</p>");
+        // One batch: some moved, some not, every body still reads the same.
+        assert!(move_bodies_batch(&mut conn).unwrap());
+        assert_eq!(read(&conn), before);
+        while move_bodies_batch(&mut conn).unwrap() {}
+        assert_eq!(read(&conn), before);
+        let left: i64 = conn.query_row("select count(*) from folder_messages where body_html != ''", [], |r| r.get(0)).unwrap();
+        assert_eq!(left, 0);
+        let moved: i64 = conn.query_row("select count(*) from message_bodies", [], |r| r.get(0)).unwrap();
+        assert_eq!(moved, 450, "every body moved and the orphan is gone");
+        // A header-only sync keeps the body; a body save replaces it.
+        let mut header = items[5].clone();
+        header.body_html.clear();
+        let tx = conn.transaction().unwrap();
+        upsert_message_tx(&tx, "jon@example.com", "in", &header).unwrap();
+        tx.commit().unwrap();
+        assert_eq!(load_message_body_on(&conn, "jon@example.com", "m005").unwrap(), "<p>body 5</p>");
+    }
+
     #[test]
     fn mail_cached_before_body_search_is_filled_in_once() {
         let mut conn = Connection::open_in_memory().unwrap();
@@ -2900,6 +3035,7 @@ mod tests {
         let mut old = message("old");
         old.body_html = "<p>Interac details</p>".into();
         replace_folder_messages_on(&mut conn, "jon@example.com", "in", &[old]).unwrap();
+        bodies_in_old_column(&conn);
         // As a database from 1.3.1 had it: no body_text column.
         conn.execute_batch("alter table folder_messages drop column body_text").unwrap();
         ensure_schema(&conn).unwrap();
@@ -2918,6 +3054,7 @@ mod tests {
         let mut real = message("real");
         real.body_html = "<p>Café crème Â la carte</p>".into();
         replace_folder_messages_on(&mut conn, "jon@example.com", "in", &[bad, real]).unwrap();
+        bodies_in_old_column(&conn);
         conn.execute_batch("pragma user_version = 0").unwrap();
         ensure_schema(&conn).unwrap();
         let body = |id: &str| -> (String, String) {
