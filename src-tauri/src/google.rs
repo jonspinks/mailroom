@@ -478,6 +478,15 @@ pub fn folders_from(labels: &Value, counts: &HashMap<String, (i64, i64)>) -> Vec
     out
 }
 
+/// The labels alone, for the ten-minute re-listing (2.0, #81), as
+/// Microsoft accounts have it: a label made, renamed or removed elsewhere
+/// shows up without signing in again.
+pub fn fetch_folders(email: &str) -> Result<Vec<LiveFolder>, String> {
+    let token = auth::access_token_for(email)?;
+    let client = graph::http_client()?;
+    list_folders(&client, &token)
+}
+
 fn list_folders(client: &reqwest::blocking::Client, token: &str) -> Result<Vec<LiveFolder>, String> {
     let labels = get(client, token, &format!("{GMAIL}/labels"))?;
     let mut ids: Vec<String> = ["INBOX", "DRAFT", "SENT", "SPAM", "TRASH"].iter().map(|id| id.to_string()).collect();
