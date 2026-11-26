@@ -81,7 +81,7 @@ compares them with this list, and opens an issue for anything new.
 | Rules | **M** create from a message, turn off, delete |
 | Forwarding warning | **M** a banner while a rule that is on forwards mail elsewhere; Review rule or Dismiss |
 | Automatic replies | **M** |
-| Favourites | ✅ Drafts, Flagged (across every folder and account in view) and Snoozed (with when each comes back) lead while they hold mail; then any folder, category or search folder |
+| Favourites | ✅ Flagged (across every folder and account in view) and Snoozed (with when each comes back) lead while they hold mail; then any folder, category or search folder you pin |
 | Drag a message onto a category | **M** onto a category in Favorites |
 | Suggested folders in Move to | ✅ a "Suggested" group of the folders you move to most |
 | Search | ✅ mail, people and calendar in one box; dates in plain words; top results first; in Calendar the box lists matching events, then more from the server (a year back, two ahead), arrow keys move through them, and the last line searches mail |
