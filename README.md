@@ -170,7 +170,7 @@ Point the launcher entry at `~/.local/opt/mailroom/src-tauri/target/release/mail
 Mailroom notices when it runs on [Omarchy](https://omarchy.org) (it looks for `~/.local/state/omarchy/current/theme/colors.toml`). Nowhere else does any of this happen.
 
 - The chrome uses Omarchy's monospace font and Hyprland's window corners. Messages and compose keep a reading font.
-- The theme menu gains **Omarchy (theme name)**, chosen for you the first time. Mailroom takes the theme's colours from `omarchy-theme-color` and changes when you switch theme, font or corners.
+- Settings > Appearance gains the theme **Omarchy (theme name)**, chosen for you the first time. Mailroom takes the theme's colours from `omarchy-theme-color` and changes when you switch theme, font or corners.
 - There is no GTK titlebar, as Omarchy draws its own on floating workspaces. Pop-out windows are titled New message and Assistant, so a window rule can float them.
 - **Settings > Omarchy** can make Mailroom the mail app: it installs a desktop entry and icon, takes `mailto:` links, and adds a marked block to `~/.config/hypr/bindings.lua` so Super+Shift+E opens Mailroom and Super+Shift+Alt+E starts a new message. The same page undoes it.
 - It can also put an envelope with your unread count in Omarchy's bar (the shell plugin in `omarchy/plugin`). Click to open Mailroom, right-click to check for mail.

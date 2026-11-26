@@ -2187,7 +2187,6 @@ function setAllAccountSections(open) {
 }
 
 function showSectionMenu(x, y, key) {
-  hideThemeMenu();
   const keys = accountSectionKeys();
   const menu = document.getElementById("row-menu");
   const anyOpen = keys.some(item => sectionOpen(item));
@@ -2670,6 +2669,7 @@ function renderSettings() {
   if (settingsPage === "add-account") renderAddAccount(body);
   else if (settingsPage === "account") renderAccountSettings(body);
   else if (settingsPage === "mail") renderMailSettings(body);
+  else if (settingsPage === "appearance") renderAppearanceSettings(body);
   else if (settingsPage === "calendar") renderCalendarSettings(body);
   else if (settingsPage === "assistants") renderAssistants(body);
   else if (settingsPage === "templates") renderTemplates(body);
@@ -3581,6 +3581,7 @@ function renderFolders() {
     folders.innerHTML = `
       <h2 class="settings-nav-title">Settings</h2>
       <button class="nav-item" type="button" id="settings-accounts" aria-current="${settingsPage === "accounts" || settingsPage === "add-account" || settingsPage === "account"}">Accounts</button>
+      <button class="nav-item" type="button" id="settings-appearance" aria-current="${settingsPage === "appearance"}">Appearance</button>
       <button class="nav-item" type="button" id="settings-mail" aria-current="${settingsPage === "mail"}">Mail</button>
       <button class="nav-item" type="button" id="settings-calendar" aria-current="${settingsPage === "calendar"}">Calendar</button>
       <button class="nav-item" type="button" id="settings-assistants" aria-current="${settingsPage === "assistants"}">Assistants</button>
@@ -3599,6 +3600,7 @@ function renderFolders() {
     folders.querySelector("#settings-auto-reply").onclick = () => { settingsPage = "auto-reply"; render(); };
     folders.querySelector("#settings-accounts").onclick = () => { settingsPage = "accounts"; render(); };
     folders.querySelector("#settings-mail").onclick = () => { settingsPage = "mail"; render(); };
+    folders.querySelector("#settings-appearance").onclick = () => { settingsPage = "appearance"; render(); };
     folders.querySelector("#settings-calendar").onclick = () => { settingsPage = "calendar"; render(); };
     folders.querySelector("#settings-assistants").onclick = () => { settingsPage = "assistants"; render(); };
     folders.querySelector("#settings-templates").onclick = () => { settingsPage = "templates"; render(); };
@@ -4415,7 +4417,6 @@ function sortWhen(by, m, shown) {
 }
 
 function showSortMenu(x, y) {
-  hideThemeMenu();
   const sort = listSort();
   const menu = document.getElementById("row-menu");
   const keys = Object.entries(SORT_KEYS).map(([key, item]) =>
@@ -6810,7 +6811,6 @@ let categoryTargets = [];
 async function showFilesMenu(x, y, list) {
   const owners = (list || []).slice().reverse().filter(m => !m.draft && (messageFiles(m).length || m.hasAttachment));
   if (!owners.length) return;
-  hideThemeMenu();
   await new Promise(r => setTimeout(r, 0));
   const menu = document.getElementById("row-menu");
   const many = owners.length > 1;
@@ -6836,7 +6836,6 @@ async function showCategoryMenu(x, y, targets) {
   if (!accounts[accountId].categories) await loadCategories(accountId);
   const cats = accounts[accountId].categories || [];
   categoryTargets = list;
-  hideThemeMenu();
   // Wait for the click that opened this to finish, or its page handler
   // would close the menu again.
   await new Promise(r => setTimeout(r, 0));
@@ -7020,7 +7019,6 @@ document.addEventListener("contextmenu", (ev) => {
 });
 
 function showMediaMenu(x, y) {
-  hideThemeMenu();
   const menu = document.getElementById("row-menu");
   const t = mediaTarget || {};
   const items = [];
@@ -11173,33 +11171,8 @@ function themeChoice() {
 }
 
 function syncThemeControl() {
-  const theme = themeChoice();
-  const names = { system: "System", light: "Light", dark: "Dark", omarchy: "Omarchy" };
-  const btn = document.getElementById("theme-btn");
-  const label = "Theme: " + names[theme];
-  btn.title = label;
-  btn.setAttribute("aria-label", label);
-  document.querySelectorAll("#theme-menu [data-theme]").forEach((el) => {
-    el.setAttribute("aria-checked", el.dataset.theme === theme ? "true" : "false");
-  });
-}
-
-function hideThemeMenu() {
-  document.getElementById("theme-menu").hidden = true;
-  document.getElementById("theme-btn").setAttribute("aria-expanded", "false");
-}
-
-function showThemeMenu() {
-  hideRowMenu();
-  const menu = document.getElementById("theme-menu");
-  const btn = document.getElementById("theme-btn");
-  menu.hidden = false;
-  btn.setAttribute("aria-expanded", "true");
-  const rect = btn.getBoundingClientRect();
-  menu.style.top = (rect.bottom + 6) + "px";
-  menu.style.left = "0px";
-  const box = menu.getBoundingClientRect();
-  menu.style.left = Math.max(8, Math.min(rect.right - box.width, innerWidth - box.width - 8)) + "px";
+  const select = document.getElementById("theme-choice");
+  if (select && select.value !== themeChoice()) select.value = themeChoice();
 }
 
 function setTheme(theme) {
@@ -11361,11 +11334,6 @@ function applyOmarchyLook(look) {
   omarchyLook = look;
   const root = document.documentElement;
   root.dataset.omarchy = "1";
-  const item = document.getElementById("theme-omarchy");
-  if (item) {
-    item.hidden = false;
-    item.textContent = "Omarchy (" + String(look.theme || "theme").slice(0, 40) + ")";
-  }
   // The first time Mailroom meets Omarchy, it follows the theme; after that
   // the theme menu decides.
   let adopted = true;
@@ -11374,7 +11342,7 @@ function applyOmarchyLook(look) {
     try { localStorage.setItem("mailroom-omarchy-adopted", "1"); } catch (e) {}
     if (savedTheme() !== "omarchy") {
       try { localStorage.setItem("mailroom-theme", "omarchy"); } catch (e) {}
-      toast("Following your Omarchy theme · change it from the theme menu");
+      toast("Following your Omarchy theme · change it in Settings > Appearance");
     }
   }
   if (savedTheme() === "omarchy") paintOmarchyColours();
@@ -11382,7 +11350,7 @@ function applyOmarchyLook(look) {
   syncThemeControl();
   if (!first) refreshSignatures();
   if (view === "settings") renderFolders();
-  if (view === "settings" && settingsPage === "omarchy") renderSettings();
+  if (view === "settings" && (settingsPage === "omarchy" || settingsPage === "appearance")) renderSettings();
   reportUnread(true);
 }
 
@@ -11907,7 +11875,6 @@ async function deleteFolder(acct, key) {
 }
 
 function showFolderMenu(x, y, acct, folder) {
-  hideThemeMenu();
   const on = isFavorite(acct, folder);
   const menu = document.getElementById("row-menu");
   if (isCategoryBox(folder) || isSearchBox(folder)) {
@@ -11948,7 +11915,6 @@ function showFolderMenu(x, y, acct, folder) {
 }
 
 function showRowMenu(x, y, id, child) {
-  hideThemeMenu();
   const menu = document.getElementById("row-menu");
   const targets = rowTargets(id, child);
   const junked = targets.some(m => serverMessage(m) && inJunk(m));
@@ -11992,7 +11958,6 @@ function showRowMenu(x, y, id, child) {
 }
 
 function showEventMenu(x, y, id, kind) {
-  hideThemeMenu();
   const ev = findCalendarEvent(id, kind);
   if (!ev) return;
   // A live meeting shows the server's answer, which may be none yet.
@@ -12111,35 +12076,21 @@ document.getElementById("row-menu").onclick = (ev) => {
   else if (btn.dataset.act === "unread") markUnread(id);
   else markRead(id, !child);
 };
-document.getElementById("theme-btn").onclick = (ev) => {
-  ev.stopPropagation();
-  if (document.getElementById("theme-menu").hidden) showThemeMenu();
-  else hideThemeMenu();
-};
-document.getElementById("theme-menu").onclick = (ev) => {
-  ev.stopPropagation();
-  const choice = ev.target.closest("[data-theme]");
-  if (!choice) return;
-  setTheme(choice.dataset.theme);
-  hideThemeMenu();
-};
 syncThemeControl();
 document.addEventListener("click", (ev) => {
   if (!ev.target.closest("#row-menu")) hideRowMenu();
   if (!ev.target.closest("#party-card")) hidePartyCard();
-  if (!ev.target.closest("#theme-menu") && !ev.target.closest("#theme-btn")) hideThemeMenu();
 });
 document.addEventListener("keydown", (ev) => {
   if (ev.key === "Escape") {
     hideRowMenu();
     hidePartyCard();
-    hideThemeMenu();
     const found = document.getElementById("q-suggest");
     if (found) { found.hidden = true; found.innerHTML = ""; }
     if (document.body.dataset.assist === "open" && !document.getElementById("discard-confirm") && !document.querySelector(".dialog, .event-editor")) closeAssist();
   }
 });
-document.addEventListener("scroll", () => { hideRowMenu(); hidePartyCard(); hideThemeMenu(); }, true);
+document.addEventListener("scroll", () => { hideRowMenu(); hidePartyCard(); }, true);
 
 function label(key) {
   return { accepted: "Accept", tentative: "Tentative", declined: "Decline" }[key];
@@ -16049,6 +16000,98 @@ function renderTemplates(body) {
   });
 }
 
+// Settings > Appearance: the theme and every look-and-feel choice on one
+// page (1.9.1, #133). The theme used to be a button in the title bar; the
+// command bar (Ctrl+K, "Theme: …") still has it too.
+function themeNames() {
+  const names = { system: "System", light: "Light", dark: "Dark" };
+  if (omarchyLook) names.omarchy = "Omarchy (" + String(omarchyLook.theme || "theme").slice(0, 40) + ")";
+  return names;
+}
+
+function renderAppearanceSettings(body) {
+  const theme = themeChoice();
+  body.innerHTML = `
+    <section class="notify-setting">
+      <h2>Theme</h2>
+      <label class="field">Colours
+        <select id="theme-choice">
+          ${Object.entries(themeNames()).map(([value, name]) => `<option value="${value}"${value === theme ? " selected" : ""}>${esc(name)}</option>`).join("")}
+        </select>
+        <span class="field-hint">System follows your desktop's light or dark setting.${omarchyLook ? " Omarchy follows the Omarchy theme, its font and its corners, as the theme changes." : ""} Also in the command bar (Ctrl+K).</span>
+      </label>
+    </section>
+    <section class="notify-setting">
+      <h2>Folder list</h2>
+      <label class="field">Show
+        <select id="folder-list">
+          <option value="short"${folderList === "short" ? " selected" : ""}>Short: folders with something in them</option>
+          <option value="full"${folderList === "full" ? " selected" : ""}>Full: every folder, as in Outlook</option>
+        </select>
+        <span class="field-hint">Short keeps the Inbox, the folder you are in, folders with unread mail, and Drafts or Outbox while something waits there. The rest are one click away under More folders.</span>
+      </label>
+    </section>
+    <section class="notify-setting">
+      <h2>Message list</h2>
+      <label class="field">Density
+        <select id="list-density">
+          <option value="comfortable"${listDensity === "comfortable" ? " selected" : ""}>Comfortable</option>
+          <option value="compact"${listDensity === "compact" ? " selected" : ""}>Compact</option>
+          <option value="roomy"${listDensity === "roomy" ? " selected" : ""}>Roomy</option>
+        </select>
+        <span class="field-hint">Compact shows two lines a message and a paperclip for attachments, so about twice as many fit. Roomy gives each message more air, for a large or touch screen.</span>
+      </label>
+      <label class="field">Preview text
+        <select id="list-preview">
+          <option value="none"${listPreview === "none" ? " selected" : ""}>None</option>
+          <option value="1"${listPreview === "1" ? " selected" : ""}>1 line</option>
+          <option value="2"${listPreview === "2" ? " selected" : ""}>2 lines</option>
+        </select>
+        <span class="field-hint">The start of each message under its subject. Compact never shows it.</span>
+      </label>
+    </section>
+    <section class="notify-setting">
+      <h2>Reading text</h2>
+      <label class="field">Size
+        <select id="read-size">
+          <option value="comfortable"${readSize === "comfortable" ? " selected" : ""}>Comfortable</option>
+          <option value="compact"${readSize === "compact" ? " selected" : ""}>Compact</option>
+        </select>
+        <span class="field-hint">Compact shows mail text at 14 px, close to Outlook, so more fits on screen.</span>
+      </label>
+    </section>
+  `;
+  const themeSelect = body.querySelector("#theme-choice");
+  themeSelect.onchange = () => setTheme(themeSelect.value);
+  const folderListSelect = body.querySelector("#folder-list");
+  folderListSelect.onchange = () => {
+    folderList = folderListSelect.value === "full" ? "full" : "short";
+    try { localStorage.setItem("mailroom-folder-list", folderList); } catch (e) {}
+    toast(folderList === "full" ? "Full folder list" : "Short folder list");
+  };
+  const densitySelect = body.querySelector("#list-density");
+  densitySelect.onchange = () => {
+    listDensity = LIST_DENSITIES.includes(densitySelect.value) ? densitySelect.value : "comfortable";
+    document.body.dataset.listDensity = listDensity;
+    try { localStorage.setItem("mailroom-list-density", listDensity); } catch (e) {}
+    toast(listDensity === "compact" ? "Compact message list" : listDensity === "roomy" ? "Roomy message list" : "Comfortable message list");
+  };
+  const previewSelect = body.querySelector("#list-preview");
+  previewSelect.onchange = () => {
+    listPreview = previewSelect.value === "none" || previewSelect.value === "2" ? previewSelect.value : "1";
+    document.body.dataset.listPreview = listPreview;
+    try { localStorage.setItem("mailroom-list-preview", listPreview); } catch (e) {}
+    toast(listPreview === "none" ? "No preview text" : listPreview === "2" ? "Two lines of preview text" : "One line of preview text");
+  };
+  const readSelect = body.querySelector("#read-size");
+  readSelect.onchange = () => {
+    readSize = readSelect.value === "compact" ? "compact" : "comfortable";
+    document.body.dataset.readSize = readSize;
+    try { localStorage.setItem("mailroom-read-size", readSize); } catch (e) {}
+    toast(readSize === "compact" ? "Compact reading text" : "Comfortable reading text");
+  };
+}
+
 function renderMailSettings(body) {
   body.innerHTML = `
     <p class="field-hint">After Send, the message waits in Outbox. Undo brings it back as a draft. When the delay ends, it is sent and filed in Sent. Set this to 0 to send straight away. The delay stays on this computer.</p>
@@ -16092,45 +16135,6 @@ function renderMailSettings(body) {
         <select id="spell-lang" aria-label="Spelling language"><option>Loading…</option></select>
       </label>
       <p class="field-hint" id="spell-note">Right-click a word underlined in red to choose a correction.</p>
-    </section>
-    <section class="notify-setting">
-      <h2>Folder list</h2>
-      <label class="field">Show
-        <select id="folder-list">
-          <option value="short"${folderList === "short" ? " selected" : ""}>Short: folders with something in them</option>
-          <option value="full"${folderList === "full" ? " selected" : ""}>Full: every folder, as in Outlook</option>
-        </select>
-        <span class="field-hint">Short keeps the Inbox, the folder you are in, folders with unread mail, and Drafts or Outbox while something waits there. The rest are one click away under More folders.</span>
-      </label>
-    </section>
-    <section class="notify-setting">
-      <h2>Message list</h2>
-      <label class="field">Density
-        <select id="list-density">
-          <option value="comfortable"${listDensity === "comfortable" ? " selected" : ""}>Comfortable</option>
-          <option value="compact"${listDensity === "compact" ? " selected" : ""}>Compact</option>
-          <option value="roomy"${listDensity === "roomy" ? " selected" : ""}>Roomy</option>
-        </select>
-        <span class="field-hint">Compact shows two lines a message and a paperclip for attachments, so about twice as many fit. Roomy gives each message more air, for a large or touch screen.</span>
-      </label>
-      <label class="field">Preview text
-        <select id="list-preview">
-          <option value="none"${listPreview === "none" ? " selected" : ""}>None</option>
-          <option value="1"${listPreview === "1" ? " selected" : ""}>1 line</option>
-          <option value="2"${listPreview === "2" ? " selected" : ""}>2 lines</option>
-        </select>
-        <span class="field-hint">The start of each message under its subject. Compact never shows it.</span>
-      </label>
-    </section>
-    <section class="notify-setting">
-      <h2>Reading text</h2>
-      <label class="field">Size
-        <select id="read-size">
-          <option value="comfortable"${readSize === "comfortable" ? " selected" : ""}>Comfortable</option>
-          <option value="compact"${readSize === "compact" ? " selected" : ""}>Compact</option>
-        </select>
-        <span class="field-hint">Compact shows mail text at 14 px, close to Outlook, so more fits on screen.</span>
-      </label>
     </section>
     <section class="notify-setting">
       <h2>New mail</h2>
@@ -16181,33 +16185,6 @@ function renderMailSettings(body) {
   tidyBox.onchange = () => {
     tidyInvites = tidyBox.checked;
     try { localStorage.setItem("mailroom-tidy-invites", tidyInvites ? "on" : "off"); } catch (e) {}
-  };
-  const folderListSelect = body.querySelector("#folder-list");
-  folderListSelect.onchange = () => {
-    folderList = folderListSelect.value === "full" ? "full" : "short";
-    try { localStorage.setItem("mailroom-folder-list", folderList); } catch (e) {}
-    toast(folderList === "full" ? "Full folder list" : "Short folder list");
-  };
-  const densitySelect = body.querySelector("#list-density");
-  densitySelect.onchange = () => {
-    listDensity = LIST_DENSITIES.includes(densitySelect.value) ? densitySelect.value : "comfortable";
-    document.body.dataset.listDensity = listDensity;
-    try { localStorage.setItem("mailroom-list-density", listDensity); } catch (e) {}
-    toast(listDensity === "compact" ? "Compact message list" : listDensity === "roomy" ? "Roomy message list" : "Comfortable message list");
-  };
-  const previewSelect = body.querySelector("#list-preview");
-  previewSelect.onchange = () => {
-    listPreview = previewSelect.value === "none" || previewSelect.value === "2" ? previewSelect.value : "1";
-    document.body.dataset.listPreview = listPreview;
-    try { localStorage.setItem("mailroom-list-preview", listPreview); } catch (e) {}
-    toast(listPreview === "none" ? "No preview text" : listPreview === "2" ? "Two lines of preview text" : "One line of preview text");
-  };
-  const readSelect = body.querySelector("#read-size");
-  readSelect.onchange = () => {
-    readSize = readSelect.value === "compact" ? "compact" : "comfortable";
-    document.body.dataset.readSize = readSize;
-    try { localStorage.setItem("mailroom-read-size", readSize); } catch (e) {}
-    toast(readSize === "compact" ? "Compact reading text" : "Comfortable reading text");
   };
   const pollSelect = body.querySelector("#poll-minutes");
   pollSelect.onchange = () => {
@@ -20499,7 +20476,7 @@ function setFoldersOpen(open) {
 function foldersFit() {
   const set = parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--folders-width"));
   const folders = set > 0 ? set : FOLDERS_WIDTH.start;
-  return window.innerWidth >= 48 + folders + 8 + LIST_WIDTH_MIN + READING_COMFORT;
+  return window.innerWidth >= folders + 8 + LIST_WIDTH_MIN + READING_COMFORT;
 }
 function fitFolders() {
   const narrow = !foldersFit();
@@ -20535,7 +20512,7 @@ function maxListWidth() {
   const split = document.getElementById("pane-split");
   const folderWidth = folders ? folders.getBoundingClientRect().width : 220;
   const splitWidth = split && getComputedStyle(split).display !== "none" ? split.getBoundingClientRect().width : 8;
-  return Math.max(LIST_WIDTH_MIN, Math.floor(shell.clientWidth - 48 - folderWidth - splitWidth - READING_MIN));
+  return Math.max(LIST_WIDTH_MIN, Math.floor(shell.clientWidth - folderWidth - splitWidth - READING_MIN));
 }
 
 function applyListWidth(preferred, save) {
@@ -21158,7 +21135,7 @@ const folderBusy = new Set();
 let syncNote = "";
 const folderRun = new Map();
 const bodyLoads = new Set();
-const APP_VERSION = "1.9.0";
+const APP_VERSION = "1.9.1";
 let appVersion = APP_VERSION;
 
 prepareDesktopAccounts();
