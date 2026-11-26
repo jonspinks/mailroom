@@ -540,25 +540,20 @@
     line-height: 16px;
   }
   .profile-switch button[aria-pressed="true"] .profile-badge { background: var(--row-on); }
-  .theme-icon { display: none; }
-  html[data-theme="system"] .theme-system,
-  html[data-theme="light"] .theme-light,
-  html[data-theme="dark"] .theme-dark { display: block; }
-  #theme-menu button[aria-checked="true"] { font-weight: 650; color: var(--blue-ink); }
   .shell {
     display: grid;
-    grid-template-columns: 48px var(--folders-width, 220px) var(--list-width) 8px minmax(0, 1fr);
+    grid-template-columns: var(--folders-width, 220px) var(--list-width) 8px minmax(0, 1fr);
     width: 100%;
     max-width: 100%;
     min-width: 0;
     min-height: 0;
     overflow: hidden;
   }
-  body[data-view="calendar"] .shell { grid-template-columns: 48px max(240px, var(--folders-width, 220px)) minmax(0, 1fr); }
+  body[data-view="calendar"] .shell { grid-template-columns: max(240px, var(--folders-width, 220px)) minmax(0, 1fr); }
   body[data-view="calendar"] .list,
   body[data-view="calendar"] .reading,
   body[data-view="calendar"] .pane-split { display: none; }
-  body[data-view="settings"] .shell { grid-template-columns: 48px var(--folders-width, 220px) minmax(0, 1fr); }
+  body[data-view="settings"] .shell { grid-template-columns: var(--folders-width, 220px) minmax(0, 1fr); }
   body[data-view="settings"] .list,
   body[data-view="settings"] .reading,
   body[data-view="settings"] .pane-split { display: none; }
@@ -570,49 +565,65 @@
     line-height: 20px;
     color: var(--ink);
   }
-  body[data-folders="closed"] .shell { grid-template-columns: 48px 48px var(--list-width) 8px minmax(0, 1fr); }
+  body[data-folders="closed"] .shell { grid-template-columns: 48px var(--list-width) 8px minmax(0, 1fr); }
   body[data-folders="closed"][data-view="mail"] .shell,
   body[data-folders="closed"][data-view="people"] .shell { grid-template-columns: 48px var(--list-width) 8px minmax(0, 1fr); }
   body[data-folders="closed"][data-view="settings"] .shell { grid-template-columns: 48px minmax(0, 1fr); }
   body[data-folders="closed"][data-view="calendar"] .shell { grid-template-columns: 48px minmax(0, 1fr); }
-  body[data-folders="closed"][data-view="calendar"] .folders,
-  body[data-folders="closed"][data-view="settings"] .folders,
-  body[data-folders="closed"][data-view="mail"] .folders,
-  body[data-folders="closed"][data-view="people"] .folders { display: none; }
   body[data-folders="closed"] #folder-nav { display: none; }
-  body[data-folders="closed"] .folders { padding: 8px 4px; overflow: visible; }
-  body[data-folders="closed"] .folder-tools { margin: 0; justify-content: center; }
-  .rail, .folders, .list, .reading, .calendar, .settings {
+  /* Folder pane hidden: the pane shrinks to a slim column holding only the
+     view tabs, stacked, with Settings at the foot (1.9.1, #132). */
+  body[data-folders="closed"] .folders { padding: 8px 4px; overflow: visible; background: var(--rail); border-right: 1px solid var(--line); }
+  body[data-folders="closed"] .folder-tools { margin: 0; flex: 1 1 auto; flex-direction: column; align-items: center; background: transparent; }
+  body[data-folders="closed"] #hide-folders { display: none; }
+  .folders, .list, .reading, .calendar, .settings {
     min-width: 0;
     min-height: 0;
     background: var(--panel);
   }
   .pane-split { min-width: 0; }
+  /* Mail, Calendar and People as tabs at the top of the folder pane, with
+     Settings at the end of the row (1.9.1, #132). The labels show when the
+     pane is wide enough for all three. */
   .rail {
-    background: var(--rail);
-    /* A hairline between the apps and the folders, as Outlook draws it. */
-    border-right: 1px solid var(--line);
-    box-shadow: var(--seam-shade);
-    position: relative;
-    z-index: 3;
+    flex: 1 1 auto;
+    min-width: 0;
     display: flex;
-    flex-direction: column;
     align-items: center;
-    padding: 8px 0;
-    gap: 4px;
+    gap: 2px;
+    container-type: inline-size;
   }
-  #rail-settings { margin-top: auto; }
+  #rail-settings { margin-left: auto; }
   .rail button {
-    width: 40px;
-    height: 40px;
+    height: 28px;
+    min-width: 30px;
+    padding: 0 6px;
     border: 0;
     background: transparent;
     border-radius: min(4px, var(--r-max));
     color: var(--muted);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 5px;
+    font: inherit;
+    font-size: 13px;
+    font-weight: 600;
   }
+  .rail button svg { flex: none; width: 18px; height: 18px; }
+  .rail .tab-label { display: none; white-space: nowrap; }
+  /* The open view is named once the row has room; every tab is named in a
+     wide pane. */
+  @container (min-width: 168px) { .rail button[aria-pressed="true"] .tab-label { display: inline; } }
+  @container (min-width: 256px) { .rail .tab-label { display: inline; } }
   .rail button[aria-pressed="true"] { background: var(--row-on); color: var(--ink); box-shadow: var(--chip-shadow); }
   .rail button:hover { background: var(--hover); }
   .rail button[aria-pressed="true"]:hover { background: var(--row-on); }
+  body[data-folders="closed"] .rail { flex-direction: column; container-type: normal; gap: 4px; width: 100%; }
+  body[data-folders="closed"] .rail button { width: 40px; height: 40px; padding: 0; }
+  body[data-folders="closed"] .rail button svg { width: 20px; height: 20px; }
+  body[data-folders="closed"] .rail .tab-label { display: none; }
+  body[data-folders="closed"] #rail-settings { margin: auto 0 0; }
   .list { overflow: auto; }
   .folders {
     border-right: 0;
@@ -675,7 +686,7 @@
     margin: 0 0 8px;
     background: var(--side);
   }
-  .folder-tools button {
+  .folder-tools > button {
     width: 28px;
     height: 28px;
     border: 0;
@@ -685,7 +696,7 @@
     display: grid;
     place-items: center;
   }
-  .folder-tools button:hover { background: var(--hover); color: var(--ink); }
+  .folder-tools > button:hover { background: var(--hover); color: var(--ink); }
   .new-mail {
     width: 100%;
     display: flex;
@@ -3781,7 +3792,7 @@
   .sync-note {
     position: fixed;
     z-index: 3;
-    left: 48px;
+    left: 0;
     bottom: 0;
     width: var(--folders-width, 220px);
     box-sizing: border-box;
@@ -3828,13 +3839,13 @@
   }
   body[data-compose="pop"] .sync-note { display: none; }
   @media (max-width: 980px) {
-    .shell { grid-template-columns: 48px 200px minmax(0, 1fr); }
+    .shell { grid-template-columns: 200px minmax(0, 1fr); }
     .reading, .pane-split { display: none; }
     body[data-view="mail"][data-open="1"] .list { display: none; }
     body[data-view="mail"][data-open="1"] .reading { display: flex; }
     body[data-view="calendar"] .shell,
-    body[data-view="settings"] .shell { grid-template-columns: 48px 220px minmax(0, 1fr); }
-    body[data-folders="closed"] .shell { grid-template-columns: 48px 48px minmax(0, 1fr); }
+    body[data-view="settings"] .shell { grid-template-columns: 220px minmax(0, 1fr); }
+    body[data-folders="closed"] .shell { grid-template-columns: 48px minmax(0, 1fr); }
     body[data-folders="closed"][data-view="mail"] .shell,
     body[data-folders="closed"][data-view="people"] .shell { grid-template-columns: 48px minmax(0, 1fr); }
     body[data-folders="closed"][data-view="settings"] .shell { grid-template-columns: 48px minmax(0, 1fr); }
@@ -4050,8 +4061,6 @@
 html[data-omarchy] .letter,
 html[data-omarchy] .html-body,
 html[data-omarchy] .history-body { font-family: var(--read-font); }
-html[data-look="omarchy"] .theme-icon { display: none; }
-html[data-look="omarchy"] .theme-omarchy { display: block; }
 html[data-look="omarchy"] #app-mark stop { stop-color: var(--blue); }
 /* Avatars carry their account's colour inline; on the Omarchy theme they
    take the theme's version of it. */

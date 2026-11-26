@@ -2785,11 +2785,10 @@ test("the message window shows just that message, polls nothing, and answers in 
   const shown = await p.evaluate(() => ({
     list: !!document.querySelector(".list") && getComputedStyle(document.querySelector(".list")).display,
     folders: getComputedStyle(document.querySelector("#folders")).display,
-    rail: getComputedStyle(document.querySelector(".rail")).display,
     top: getComputedStyle(document.querySelector(".top")).display,
     reading: Math.round(document.querySelector("#reading").getBoundingClientRect().width) === innerWidth
   }));
-  same(shown, { list: "none", folders: "none", rail: "none", top: "none", reading: true }, "only the reading pane, the window's width");
+  same(shown, { list: "none", folders: "none", top: "none", reading: true }, "only the reading pane, the window's width");
   same(await p.$$eval("#reading .toolbar button", bs => bs.map(b => b.id)), ["reply", "reply-all", "forward", "thread-files", "print"], "only actions that leave the mailbox alone");
   same(await p.evaluate(() => localStorage.getItem("mailroom-read-pop")), null, "the hand-off is not left in storage");
   await wait(1500);
@@ -3153,7 +3152,50 @@ test("the folder pane resizes from its edge, and remembers", { fake: true }, asy
   same(await width(), 180, "never narrower than 180");
   await p.click("#folders-split", { count: 2 }); await wait(200);
   same(await width(), 220, "double-click resets");
-  expect(await p.$eval(".rail", e => getComputedStyle(e).borderRightWidth === "1px"), "a hairline by the apps");
+  expect(await p.$eval(".rail", e => !!e.closest("#folders")), "the view tabs sit in the folder pane");
+});
+
+test("Mail, Calendar and People are tabs at the top of the folder pane, with no rail column", { fake: true }, async ({ p }) => {
+  const layout = () => p.evaluate(() => {
+    const box = id => { const r = document.getElementById(id).getBoundingClientRect(); return r.width > 0 && r.height > 0 ? { x: Math.round(r.x), y: Math.round(r.y) } : null; };
+    return {
+      folders: Math.round(document.getElementById("folders").getBoundingClientRect().left),
+      tabs: ["rail-mail", "rail-cal", "rail-people", "rail-settings"].map(box),
+      labels: [...document.querySelectorAll(".rail .tab-label")].map(e => getComputedStyle(e).display !== "none")
+    };
+  });
+  let l = await layout();
+  same(l.folders, 0, "the folder pane starts at the window's left edge");
+  expect(l.tabs.every(Boolean), "all four buttons are shown with the pane open");
+  same(new Set(l.tabs.map(t => t.y)).size, 1, "in one row");
+  same(l.labels, [true, false, false], "the open view's tab is named at the default width");
+  same(await p.evaluate(() => { const b = document.getElementById("rail-mail"); const i = b.querySelector("svg").getBoundingClientRect(), t = b.querySelector(".tab-label").getBoundingClientRect(); return Math.abs((i.top + i.bottom) / 2 - (t.top + t.bottom) / 2) < 3 && t.left > i.left; }), true, "the label sits beside its icon, not under it");
+  same(await p.evaluate(() => { const n = document.querySelector(".rail"); return n.scrollWidth <= n.clientWidth; }), true, "the row fits without overflowing");
+  await p.evaluate(() => applyFoldersWidth(320, false)); await wait(200);
+  same((await layout()).labels, [true, true, true], "every tab is named in a wide pane");
+  same(await p.evaluate(() => { const n = document.querySelector(".rail"); return n.scrollWidth <= n.clientWidth; }), true, "and still fits");
+  const overflowAt = [];
+  for (let w = 180; w <= 420; w += 4) {
+    await p.evaluate(w => applyFoldersWidth(w, false), w); await wait(30);
+    if (await p.evaluate(() => { const n = document.querySelector(".rail"); return n.scrollWidth > n.clientWidth; })) overflowAt.push(w);
+  }
+  same(overflowAt, [], "the row fits at every pane width");
+  await p.evaluate(() => applyFoldersWidth(220, false)); await wait(200);
+  await p.click("#rail-cal"); await wait(300);
+  same(await p.evaluate(() => document.body.dataset.view), "calendar", "Calendar opens");
+  await p.click("#rail-mail"); await wait(300);
+  await p.click("#hide-folders"); await wait(300);
+  l = await layout();
+  expect(l.tabs.every(Boolean), "all four buttons are still reachable with the pane closed");
+  same(new Set(l.tabs.map(t => t.x)).size, 1, "stacked in a slim column");
+  same(await p.$eval("#folders", e => Math.round(e.getBoundingClientRect().width)), 48, "the slim column is 48px");
+  await p.click("#rail-people"); await wait(300);
+  same(await p.evaluate(() => document.body.dataset.view), "people", "People opens from the slim column");
+  await p.click("#rail-settings"); await wait(300);
+  same(await p.evaluate(() => document.body.dataset.view), "settings", "Settings opens from the slim column");
+  await p.setViewport({ width: 900, height: 800 }); await wait(400);
+  l = await layout();
+  expect(l.tabs.every(Boolean), "all four buttons are reachable in the one-pane layout");
 });
 
 test("viewer: a scanned PDF (CCITT fax images) is drawn, not left blank", { fake: true }, async ({ p }) => {
@@ -3695,17 +3737,17 @@ const TOKYO = { theme: "Tokyo Night", mode: "dark", font: "JetBrainsMono Nerd Fo
 test("off Omarchy, nothing Omarchy shows or changes", { fake: true }, async ({ p, calls }) => {
   const look = await p.evaluate(() => ({
     omarchy: document.documentElement.dataset.omarchy || "",
-    item: document.getElementById("theme-omarchy").hidden,
     rmax: getComputedStyle(document.documentElement).getPropertyValue("--r-max").trim(),
     font: getComputedStyle(document.body).fontFamily
   }));
   same(look.omarchy, "", "no Omarchy flag");
-  same(look.item, true, "no Omarchy theme choice");
   same(look.rmax, "999px", "corners unchanged");
   expect(look.font.includes("Segoe UI"), "own font", look.font);
   same((await calls("report_unread")).length, 0, "no bar count");
   await p.click("#rail-settings"); await wait(200);
   same(await p.$("#settings-omarchy"), null, "no Omarchy settings");
+  await p.click("#settings-appearance"); await wait(200);
+  same(await p.$$eval("#theme-choice option", o => o.map(x => x.value)), ["system", "light", "dark"], "no Omarchy theme choice");
 });
 
 test("on Omarchy: theme colours, font and corners follow, and change live", { fake: true, setup: `window.__omarchy = ${JSON.stringify(TOKYO)};` }, async ({ p, toast }) => {
@@ -3715,7 +3757,7 @@ test("on Omarchy: theme colours, font and corners follow, and change live", { fa
     const letter = document.createElement("div"); letter.className = "letter"; document.body.appendChild(letter);
     const out = { omarchy: root.dataset.omarchy || "", look: root.dataset.look || "", theme: root.dataset.theme, bg: css.getPropertyValue("--bg").trim(),
       rmax: css.getPropertyValue("--r-max").trim(), chrome: getComputedStyle(document.body).fontFamily, reading: getComputedStyle(letter).fontFamily,
-      item: document.getElementById("theme-omarchy").hidden ? "" : document.getElementById("theme-omarchy").textContent };
+      item: themeNames().omarchy || "" };
     letter.remove();
     return out;
   });
@@ -3723,24 +3765,25 @@ test("on Omarchy: theme colours, font and corners follow, and change live", { fa
   same([got.omarchy, got.look, got.theme, got.bg, got.rmax], ["1", "omarchy", "dark", "#1a1b26", "0px"], "follows Tokyo Night, sharp corners");
   expect(got.chrome.includes("JetBrainsMono Nerd Font"), "chrome in the Omarchy font", got.chrome);
   expect(got.reading.includes("Segoe UI"), "messages keep a reading font", got.reading);
-  same(got.item, "Omarchy (Tokyo Night)", "theme menu names the theme");
+  same(got.item, "Omarchy (Tokyo Night)", "the theme choice names the theme");
+  await p.evaluate(() => showSettings("appearance")); await wait(200);
+  same(await p.$eval('#theme-choice option[value="omarchy"]', o => o.textContent), "Omarchy (Tokyo Night)", "Settings > Appearance offers it");
   expect((await toast()).includes("Following your Omarchy theme"), "says it follows", await toast());
   await p.evaluate(() => applyOmarchyLook({ theme: "Catppuccin Latte", mode: "light", font: "CaskaydiaMono Nerd Font", rounding: 6,
     colors: { background: "#eff1f5", foreground: "#4c4f69", accent: "#1e66f5", red: "#d20f39", green: "#40a02b" } }));
   got = await read();
   same([got.theme, got.bg, got.rmax], ["light", "#eff1f5", "6px"], "a theme switch arrives live");
   expect(got.chrome.includes("CaskaydiaMono"), "font switch arrives live", got.chrome);
-  await p.click("#theme-btn"); await wait(100);
-  await p.click('#theme-menu [data-theme="dark"]'); await wait(100);
+  await p.evaluate(() => showSettings("appearance")); await wait(200);
+  await p.select("#theme-choice", "dark"); await wait(100);
   got = await read();
   same([got.look, got.theme, got.bg, got.rmax], ["", "dark", "#1b1a19", "999px"], "Dark is Mailroom's own dark again, with its own corners");
   expect(got.chrome.includes("Segoe UI") && !got.chrome.includes("CaskaydiaMono"), "and its own font, at once", got.chrome);
-  await p.click("#theme-btn"); await wait(100);
-  await p.click('#theme-menu [data-theme="omarchy"]'); await wait(100);
+  await p.select("#theme-choice", "omarchy"); await wait(100);
   got = await read();
   expect(got.chrome.includes("CaskaydiaMono") && got.rmax === "6px", "following again brings Omarchy's font and corners back", got);
-  await p.click("#theme-btn"); await wait(100);
-  await p.click('#theme-menu [data-theme="dark"]'); await wait(100);
+  await p.evaluate(() => showSettings("appearance")); await wait(200);
+  await p.select("#theme-choice", "dark"); await wait(100);
   const kept = await p.evaluate(look => { applyOmarchyLook(look); return [localStorage.getItem("mailroom-theme"), document.documentElement.dataset.look || ""]; }, TOKYO);
   same(kept, ["dark", ""], "the choice is kept; a theme change does not take it back");
 });
@@ -3860,15 +3903,33 @@ test("Settings > Mail: preview text none, 1 line or 2 lines, kept (#122)", { fak
   });
   await wait(300);
   same(await lines(), 1, "one line by default");
-  await p.evaluate(() => showSettings("mail")); await wait(300);
+  await p.evaluate(() => showSettings("appearance")); await wait(300);
   await p.select("#list-preview", "2"); await wait(100);
   same(await p.evaluate(() => [listPreview, localStorage.getItem("mailroom-list-preview"), document.body.dataset.listPreview]), ["2", "2", "2"], "picked and stored");
   await p.evaluate(() => setView("mail")); await wait(300);
   same(await lines(), 2, "two lines, cut off after the second");
-  await p.evaluate(() => showSettings("mail")); await wait(300);
+  await p.evaluate(() => showSettings("appearance")); await wait(300);
   await p.select("#list-preview", "none"); await wait(100);
   await p.evaluate(() => setView("mail")); await wait(300);
   same(await lines(), 0, "none hides it");
+});
+
+test("Settings > Appearance holds the theme, density, preview, folder list and reading size; the title bar keeps only the assistant", { fake: true }, async ({ p }) => {
+  same(await p.$("#theme-btn"), null, "no theme button in the title bar");
+  same(await p.$$eval(".top-actions > *", els => els.map(e => e.id)), ["assist-top"], "the title bar's right side holds only the assistant button");
+  await p.click("#rail-settings"); await wait(200);
+  await p.click("#settings-appearance"); await wait(200);
+  same(await p.$$eval("#settings select", els => els.map(e => e.id)), ["theme-choice", "folder-list", "list-density", "list-preview", "read-size"], "every appearance choice on one page");
+  await p.select("#theme-choice", "light"); await wait(100);
+  same(await p.evaluate(() => [document.documentElement.dataset.theme, localStorage.getItem("mailroom-theme")]), ["light", "light"], "the theme changes and is kept");
+  await p.select("#list-density", "compact"); await wait(100);
+  same(await p.evaluate(() => document.body.dataset.listDensity), "compact", "density applies");
+  await p.evaluate(() => showSettings("mail")); await wait(200);
+  same(await p.$("#list-density"), null, "density has left the Mail page");
+  await p.evaluate(() => setTheme("dark")); await wait(100);
+  await p.evaluate(() => showSettings("appearance")); await wait(200);
+  same(await p.$eval("#theme-choice", e => e.value), "dark", "a change from the command bar shows on the page");
+  expect(await p.evaluate(() => typeof commandChoices === "function"), "the command bar is there");
 });
 
 test("the Settings list has a heading that reads as a title, not a page", { fake: true }, async ({ p }) => {
@@ -4188,7 +4249,7 @@ test("the short folder list shows the Inbox and what has something in it; the re
   await p.click('[data-acct][data-box="sent"]'); await wait(400);
   await p.click("[data-more-folders]"); await wait(200);
   expect((await shown()).includes("sent"), "the folder you are in stays in view when the rest fold away");
-  await p.evaluate(() => showSettings("mail")); await wait(300);
+  await p.evaluate(() => showSettings("appearance")); await wait(300);
   await p.select("#folder-list", "full"); await wait(200);
   await p.evaluate(() => setView("mail")); await wait(300);
   expect((await shown()).includes("trash"), "Settings > Mail switches back to the full list");
