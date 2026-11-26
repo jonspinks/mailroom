@@ -92,9 +92,30 @@ fn log_failure(failure: &Failure) {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).mode(0o600).open(dir.join("mailroom.log")) {
-        let _ = writeln!(file, "{stamp} send failed at {}: status {} {}", failure.step, failure.status, failure.detail);
+    let line = format!("send failed at {}: status {} {}", failure.step, failure.status, failure.detail);
+    if !first_in_a_while(&line, std::time::Instant::now()) {
+        return;
     }
+    if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).mode(0o600).open(dir.join("mailroom.log")) {
+        let _ = writeln!(file, "{stamp} {line}");
+    }
+}
+
+/// A draft saved every few seconds hits the same failure each time (a
+/// forward whose original was moved: "original gone"), which filled the log
+/// with one line a minute. The same line is written once per ten minutes.
+const SAME_LINE_QUIET: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+static LAST_LINE: std::sync::Mutex<Option<(String, std::time::Instant)>> = std::sync::Mutex::new(None);
+
+fn first_in_a_while(line: &str, now: std::time::Instant) -> bool {
+    let Ok(mut last) = LAST_LINE.lock() else { return true };
+    if let Some((seen, at)) = last.as_ref() {
+        if seen == line && now.saturating_duration_since(*at) < SAME_LINE_QUIET {
+            return false;
+        }
+    }
+    *last = Some((line.to_string(), now));
+    true
 }
 
 fn call(
@@ -763,6 +784,17 @@ pub fn cancel_scheduled(email: &str, id: &str) -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn the_same_send_failure_is_logged_once_per_ten_minutes() {
+        let start = std::time::Instant::now();
+        assert!(first_in_a_while("test only: once per ten minutes A", start));
+        assert!(!first_in_a_while("test only: once per ten minutes A", start + std::time::Duration::from_secs(60)));
+        assert!(first_in_a_while("test only: once per ten minutes B", start + std::time::Duration::from_secs(61)));
+        assert!(first_in_a_while("test only: once per ten minutes A", start + std::time::Duration::from_secs(62)));
+        assert!(first_in_a_while("test only: once per ten minutes A", start + std::time::Duration::from_secs(62) + SAME_LINE_QUIET));
+    }
+
     use super::*;
 
     fn mail(to: &str) -> OutgoingMail {
