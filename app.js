@@ -11588,7 +11588,7 @@ function omarchyVars(look) {
   const sunk = pick("dark_background") || bg;
   const edge = pick("muted") || mix(fg, bg, 35);
   const vars = {
-    "--bg": bg, "--panel": bg, "--side": bg, "--rail": sunk, "--seam": sunk,
+    "--bg": bg, "--panel": bg, "--side": bg, "--seam": sunk,
     "--ink": fg, "--muted": mix(fg, bg, 82), "--faint": readableFaint(fg, bg, pick("selection")),
     // Plain mail text in dark mode, white in Mailroom's own dark.
     "--mail-ink": pick("bright_foreground", "light_foreground") || fg,
@@ -20950,9 +20950,6 @@ document.getElementById("rail-people").onclick = () => setView("people");
 document.getElementById("rail-settings").onclick = () => showSettings("accounts");
 document.getElementById("hide-folders").onclick = () => setFoldersOpen(document.body.dataset.folders === "closed");
 document.getElementById("check-mail").onclick = () => checkMailNow();
-document.getElementById("show-cal-folders").onclick = () => setFoldersOpen(true);
-document.getElementById("show-settings-folders").onclick = () => setFoldersOpen(true);
-document.getElementById("show-mail-folders").onclick = () => setFoldersOpen(true);
 // The burger sets what you want. A window too narrow for the folders, the
 // list and a readable message folds the folders away for as long as it stays
 // that narrow, and brings back your choice when it widens. A click while
@@ -21651,7 +21648,7 @@ const folderBusy = new Set();
 let syncNote = "";
 const folderRun = new Map();
 const bodyLoads = new Set();
-const APP_VERSION = "2.0.3";
+const APP_VERSION = "2.0.4";
 let appVersion = APP_VERSION;
 
 prepareDesktopAccounts();
