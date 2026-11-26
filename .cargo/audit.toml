@@ -1,0 +1,37 @@
+# cargo audit settings, read from the repository root (where security.yml
+# runs it). Each ignore below is a warning with no fix we can take today.
+# Review this list when tauri, ksni, tauri-plugin-single-instance or
+# pdf-extract has a new release, and drop any line that no longer applies.
+#
+# cargo audit reads all of Cargo.lock, and the lockfile lists every optional
+# dependency even when its feature is off. Some of the crates below are never
+# compiled into Mailroom. `cargo tree -i <crate> --target all` shows which.
+
+[advisories]
+ignore = [
+    # glib 0.18 unsound VariantStrIter, and proc-macro-error unmaintained
+    # (pulled in by glib-macros 0.18). tauri 2 is built on gtk-rs 0.18, and the
+    # fix is in glib 0.20. Mailroom never uses VariantStrIter. This clears when
+    # tauri moves to a newer gtk-rs.
+    "RUSTSEC-2024-0429",
+    "RUSTSEC-2024-0370",
+
+    # zbus_names, zvariant, zvariant_derive unmaintained (merged into zbus 6).
+    # - 5.x is compiled, through ksni 0.3 and tauri-plugin-single-instance 2,
+    #   whose newest stable releases still require zbus 5.
+    # - 3.x / 4.x (zbus 4) is not compiled. keyring 3's optional async backend
+    #   (secret-service 4) lists it, but Mailroom builds keyring with the
+    #   dbus-secret-service backend.
+    "RUSTSEC-2026-0370",
+    "RUSTSEC-2026-0371",
+    "RUSTSEC-2026-0372",
+
+    # ttf-parser unmaintained, through lopdf 0.42, which pdf-extract 0.12.1
+    # (the newest release) requires. Mailroom only uses it to read the text
+    # in PDF attachments.
+    "RUSTSEC-2026-0192",
+
+    # chrono unmaintained. Not compiled: serde_with (through tauri-utils) lists
+    # it as an optional dependency, and nothing turns that feature on.
+    "RUSTSEC-2026-0543",
+]
