@@ -20850,9 +20850,15 @@ document.getElementById("show-mail-folders").onclick = () => setFoldersOpen(true
 // narrow holds until the window next crosses that width.
 // Your choice is kept per view, so the folders can stay hidden in Calendar
 // and open in Mail, and it survives a restart (2.0, #140).
+// Only the four views are keys, read and written by name, so nothing from
+// storage or the page can reach another property.
+const FOLDER_VIEWS = ["mail", "calendar", "people", "settings"];
 var foldersWantedBy = (() => {
-  const want = { mail: true, calendar: true, people: true, settings: true };
-  try { Object.assign(want, JSON.parse(localStorage.getItem("mailroom-folders-open") || "{}")); } catch (e) {}
+  const want = new Map(FOLDER_VIEWS.map(v => [v, true]));
+  try {
+    const saved = JSON.parse(localStorage.getItem("mailroom-folders-open") || "{}");
+    FOLDER_VIEWS.forEach(v => { if (saved && saved[v] === false) want.set(v, false); });
+  } catch (e) {}
   return want;
 })();
 var foldersManual = null;
@@ -20862,13 +20868,13 @@ var foldersNarrow = null;
 const READING_COMFORT = 600;
 const CALENDAR_COMFORT = 640;
 function foldersWantedNow() {
-  return foldersWantedBy[view] !== false;
+  return foldersWantedBy.get(view) !== false;
 }
 function setFoldersOpen(open) {
   if (foldersNarrow) foldersManual = open;
   else {
-    foldersWantedBy[view] = !!open;
-    try { localStorage.setItem("mailroom-folders-open", JSON.stringify(foldersWantedBy)); } catch (e) {}
+    if (FOLDER_VIEWS.includes(view)) foldersWantedBy.set(view, !!open);
+    try { localStorage.setItem("mailroom-folders-open", JSON.stringify(Object.fromEntries(foldersWantedBy))); } catch (e) {}
   }
   if (foldersNarrow === null) showFolders(open);
   else fitFolders();
