@@ -3434,7 +3434,19 @@ pub fn list_search_folders(email: &str) -> Result<Vec<SearchFolder>, String> {
         "https://graph.microsoft.com/v1.0/me/mailFolders/searchfolders/childFolders?$top=50",
         4,
     )?;
-    Ok(listed.iter().filter_map(search_folder_from).collect())
+    Ok(listed.iter().filter(|item| !outlook_internal_search_folder(item)).filter_map(search_folder_from).collect())
+}
+
+/// Search folders Outlook keeps for itself, not ones a person made: anything
+/// marked hidden, and Outlook on the web's filtered views ("OwaFV15.1AllFocused…",
+/// "…AllOther…", "…UnreadFocused…"), which back its Focused, Other and Unread
+/// filters. Listed, they showed as folders with machine names; deleted, OWA's
+/// filters would break. So they are left alone and not shown.
+fn outlook_internal_search_folder(value: &serde_json::Value) -> bool {
+    if value.get("isHidden").and_then(|item| item.as_bool()).unwrap_or(false) {
+        return true;
+    }
+    value.get("displayName").and_then(|item| item.as_str()).is_some_and(|name| name.trim_start().starts_with("OwaFV"))
 }
 
 pub fn create_search_folder(email: &str, name: &str, query: &str, sources: &[String]) -> Result<SearchFolder, String> {
@@ -3841,6 +3853,16 @@ mod tests {
         });
         assert_eq!(smtp_aliases(&me), vec!["jon@timberworks.example".to_string(), "studio@timberworks.example".to_string()]);
         assert!(smtp_aliases(&serde_json::json!({})).is_empty());
+    }
+
+    #[test]
+    fn outlooks_own_search_folders_are_not_listed() {
+        use super::outlook_internal_search_folder as internal;
+        assert!(internal(&serde_json::json!({"id": "a", "displayName": "OwaFV15.1AllFocusedAQMkADAw"})));
+        assert!(internal(&serde_json::json!({"id": "b", "displayName": "OwaFV15.1UnreadFocusedAQMk"})));
+        assert!(internal(&serde_json::json!({"id": "c", "displayName": "Anything", "isHidden": true})));
+        assert!(!internal(&serde_json::json!({"id": "d", "displayName": "From the boss"})));
+        assert!(!internal(&serde_json::json!({"id": "e", "displayName": "Owing invoices", "isHidden": false})));
     }
 
     #[test]
