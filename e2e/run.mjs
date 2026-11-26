@@ -1361,6 +1361,7 @@ test("Flagged and Snoozed lead Favorites, span folders, and their row actions wo
   await p.evaluate(() => loadTaskBoxes()); await wait(400);
   let got = await tasks();
   expect(got.includes("Flagged 1") && got.includes("Snoozed 1"), "Flagged and Snoozed show with counts", got);
+  expect(!got.some(t => t.startsWith("Drafts")), "Drafts is not added for you", got);
   same(await p.evaluate(() => { const fav = document.querySelector("#folder-nav .task-fav"); const own = document.querySelector("#folder-nav .fav"); return !own || !!(fav.compareDocumentPosition(own) & Node.DOCUMENT_POSITION_FOLLOWING); }), true, "above your own favorites");
   await p.click('#folder-nav .task-fav[data-box="task:flagged"]'); await wait(400);
   same(await p.$eval(".list-head h1", h => h.textContent.trim()), "Flagged", "the list is Flagged");

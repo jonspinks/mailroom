@@ -3774,8 +3774,10 @@ function renderFolders() {
   const mailIds = profileEntries();
   const hasAccounts = mailIds.length > 0;
   const favs = favorites.filter(favoriteVisible);
-  // Drafts, Flagged and Snoozed lead Favorites while they hold something.
-  const tasks = hasAccounts ? ["drafts", "task:flagged", "task:snoozed"].map(taskFavoriteButton).join("") : "";
+  // Flagged and Snoozed lead Favorites while they hold something. Drafts
+  // is not one of them: it is already a folder, and it is the person's to
+  // pin (feedback on 2.0).
+  const tasks = hasAccounts ? ["task:flagged", "task:snoozed"].map(taskFavoriteButton).join("") : "";
   const folderScroll = folders.scrollTop;
   folders.innerHTML = `
     ${profileSwitchHtml()}
