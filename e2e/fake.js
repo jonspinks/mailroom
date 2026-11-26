@@ -148,7 +148,11 @@
     run_update: () => !window.__updateDeclined, update_progress: () => window.__progress || { stage: "idle", detail: "", elapsed: 0, estimate: 0 }, update_log: () => window.__updateLog || "", restart_app: () => null,
     mail_rules: () => window.__rules || [], save_rule: (a) => Object.assign({ id: "r" + Math.random().toString(36).slice(2, 6), other: false }, a.rule), delete_rule: () => null,
     people: (a) => a.query ? (["wagstaffe", "wag", "wa"].some(q => a.query.toLowerCase().startsWith(q)) ? [{ name: "Wagstaffe, Jane", email: "jane.wagstaffe@timberworks.example" }] : []) : [{ name: "Priya Shah", email: "priya@timberworks.example" }],
-    sync_calendar: () => {
+    // Calendar search on the server (#138): __serverHits are its matches;
+    // __farEvent is one of them, which sync_calendar returns once the range
+    // asked for reaches it.
+    search_events: (a) => (window.__serverHits || []).filter(e => e.title.toLowerCase().includes(String(a.text || "").toLowerCase())),
+    sync_calendar: (args) => {
       const d = new Date(); d.setDate(d.getDate() + 1);
       const day = d.toISOString().slice(0, 10);
       const at = (h, m) => { const x = new Date(d); x.setHours(h, m || 0, 0, 0); return x.toISOString().replace(/\.\d+Z$/, "Z"); };
@@ -164,7 +168,7 @@
         ev("Weekly sync", { id: "occ-1", start: at(11), end: at(11, 30), kind: "occurrence", seriesMasterId: "ser-1" }),
         ev("Their meeting", { id: "inv-1", start: at(14), end: at(15), isOrganizer: false, organizerName: "Maya", organizerEmail: "maya@example.org", attendees: [{ name: "Jon", email: "jon@example.com", status: "none" }] }),
         ev("My meeting", { id: "own-1", start: at(16), end: at(17), isOrganizer: true, organizerName: "Jon", organizerEmail: "jon@example.com", attendees: [{ name: "Eve", email: "eve@example.org", status: "accepted" }] })
-      ].concat(window.__span ? [ev("Night shift", { id: "span-1", start: at(22), end: (() => { const x = new Date(d); x.setDate(x.getDate() + 1); x.setHours(2, 0, 0, 0); return x.toISOString().replace(/\.\d+Z$/, "Z"); })() })] : []).concat(window.__allDay ? [ev("Halloween", { id: "hol-1", allDay: true, showAs: "free", start: day + "T00:00:00", end: new Date(d.getTime() + 86400000).toISOString().slice(0, 10) + "T00:00:00" })] : []).concat(window.__sharedCal ? [ev("Maya's 1:1s", { id: "shared-1", calendarId: "AAMkShared", start: at(9), end: at(9, 30), isOrganizer: false })] : []) };
+      ].concat(window.__farEvent && args && args.start <= window.__farEvent.start && window.__farEvent.start < args.end ? [Object.assign(ev(window.__farEvent.title), window.__farEvent)] : []).concat(window.__span ? [ev("Night shift", { id: "span-1", start: at(22), end: (() => { const x = new Date(d); x.setDate(x.getDate() + 1); x.setHours(2, 0, 0, 0); return x.toISOString().replace(/\.\d+Z$/, "Z"); })() })] : []).concat(window.__allDay ? [ev("Halloween", { id: "hol-1", allDay: true, showAs: "free", start: day + "T00:00:00", end: new Date(d.getTime() + 86400000).toISOString().slice(0, 10) + "T00:00:00" })] : []).concat(window.__sharedCal ? [ev("Maya's 1:1s", { id: "shared-1", calendarId: "AAMkShared", start: at(9), end: at(9, 30), isOrganizer: false })] : []) };
     },
     event_series: () => ({ id: "ser-1", start: "2026-10-01T15:00:00", end: "2026-10-01T15:30:00", allDay: false, recurrence: { pattern: { type: "weekly", interval: 1, daysOfWeek: ["thursday"] }, range: { type: "noEnd", startDate: "2026-10-01" } } }),
     save_event: (a) => a.eventId || "new-ev", remove_event: () => null, end_series_before: () => true,

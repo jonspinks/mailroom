@@ -6415,6 +6415,40 @@ function meetingLink(ev) {
   return null;
 }
 
+// Join from the calendar (1.9.2, #136): an online meeting offers Join from
+// ten minutes before it starts until it ends, on its block in the grid and
+// in the empty reading pane. The link opens through the same check as note
+// links, never as a raw href.
+const JOIN_EARLY_MS = 10 * 60000;
+function joinableNow(ev, now) {
+  if (!ev || ev.start == null || ev.end == null || ev.hidden || ev.response === "declined") return null;
+  const link = meetingLink(ev);
+  if (!link) return null;
+  const start = eventStart(ev);
+  const end = start + Math.max(0, ev.end - ev.start) * 60000;
+  const at = now == null ? Date.now() : now;
+  return at >= start - JOIN_EARLY_MS && at < end ? link : null;
+}
+function joinMeeting(ev) {
+  const link = joinableNow(ev) || meetingLink(ev);
+  if (link) openNoteLink(link.url);
+}
+function joinHtml(link) {
+  return `<span class="event-join" role="button" tabindex="0" data-join title="Join the ${esc(link.provider || "online")} meeting" aria-label="Join the ${esc(link.provider || "online")} meeting">Join</span>`;
+}
+// The meetings that can be joined right now, as a key: when it changes, the
+// grid and the empty reading pane are painted again.
+let joinableKey = "";
+function refreshJoinable() {
+  const now = Date.now();
+  const key = events.filter(ev => joinableNow(ev, now)).map(ev => ev.id).sort().join("|");
+  // Never repaint under a drag; the next tick catches up.
+  if (key === joinableKey || document.body.classList.contains("is-cal-drag")) return;
+  joinableKey = key;
+  if (view === "calendar" && calView !== "month") renderCalendar();
+  if (view === "mail" && document.querySelector("#reading .empty-reading")) renderReading();
+}
+
 // ---- Meeting reminders ----
 const REMINDER_CHOICES = [[-1, "None"], [0, "At the start"], [5, "5 minutes before"], [10, "10 minutes before"], [15, "15 minutes before"], [30, "30 minutes before"], [60, "1 hour before"], [1440, "1 day before"]];
 
@@ -6607,6 +6641,11 @@ document.addEventListener("click", (ev) => {
       contactAccount = ids.length > 1 ? "all" : (contact.account || ids[0] || "all");
       setView("people");
     } else applySearch(); // Not a contact: their mail.
+    return;
+  }
+  const joinBtn = ev.target.closest("[data-join-event]");
+  if (joinBtn) {
+    joinMeeting(events.find(e => e.id === joinBtn.dataset.joinEvent));
     return;
   }
   const item = ev.target.closest("[data-extra-event]");
@@ -9762,14 +9801,17 @@ function renderReading() {
   }
   const conv = conversationFor(selected);
   if (!conv) {
-    const key = "empty\n" + stampText(askAnswer) + "\n" + (syncNote || "");
+    // The empty pane's own lines (unread count, the next meeting and its
+    // Join) are part of the stamp, so a change to them repaints.
+    const emptyHtml = askAnswer || syncNote ? "" : emptyReadingHtml();
+    const key = "empty\n" + stampText(askAnswer) + "\n" + (syncNote || "") + "\n" + emptyHtml;
     if (reading.dataset.paint === key) {
       bindAskCard();
       return;
     }
     reading.innerHTML = askAnswer
       ? `<div class="read-body">${askCardHtml()}</div>`
-      : (syncNote ? `<div class="empty">${esc(syncNote)}</div>` : emptyReadingHtml());
+      : (syncNote ? `<div class="empty">${esc(syncNote)}</div>` : emptyHtml);
     bindAskCard();
     reading.dataset.paint = key;
     return;
@@ -12650,7 +12692,7 @@ function bindCalendarDrag(root) {
   // Drag an event to move it; drag its bottom edge to change its length.
   root.querySelectorAll('.event[data-event][data-kind="timed"]').forEach(btn => {
     btn.addEventListener("pointerdown", (down) => {
-      if (down.button !== 0 || down.target.closest("a")) return;
+      if (down.button !== 0 || down.target.closest("a, [data-join]")) return;
       const ev = findCalendarEvent(btn.dataset.event, "timed");
       if (!ev) return;
       // A read-only event can't move. Mark the drag, so the click that ends
@@ -12910,6 +12952,11 @@ function bindCalendarClicks(root) {
   root.querySelectorAll("[data-event]").forEach(btn => {
     btn.addEventListener("click", (ev) => {
       ev.stopPropagation();
+      if (ev.target.closest("[data-join]")) {
+        ev.preventDefault();
+        joinMeeting(findCalendarEvent(btn.dataset.event, btn.dataset.kind));
+        return;
+      }
       const link = ev.target.closest("a.note-link");
       if (link) {
         ev.preventDefault();
@@ -12920,6 +12967,12 @@ function bindCalendarClicks(root) {
       openEventEditor(btn.dataset.event, btn.dataset.kind);
     });
     btn.addEventListener("keydown", (ev) => {
+      if (ev.target.closest("[data-join]") && (ev.key === "Enter" || ev.key === " ")) {
+        ev.preventDefault();
+        ev.stopPropagation();
+        joinMeeting(findCalendarEvent(btn.dataset.event, btn.dataset.kind));
+        return;
+      }
       const link = ev.target.closest("a.note-link");
       if (!link || (ev.key !== "Enter" && ev.key !== " ")) return;
       ev.preventDefault();
@@ -13063,13 +13116,15 @@ function renderCalendar() {
       const guests = !short && attendeeSummary(e.attendees);
       const show = showAsOf(e);
       const mark = show === "busy" ? "" : `<span class="event-show">${show === "oof" ? "OOO" : "Free"}</span>`;
-      const when = short ? "" : `<span class="event-time">${esc(fmt(e.start) + "–" + fmt(e.end))}</span>`;
+      const join = joinableNow(e);
+      const time = `<span class="event-time">${esc(fmt(e.start) + "–" + fmt(e.end))}</span>`;
+      const when = short ? "" : join ? `<span class="event-time-row">${time}${joinHtml(join)}</span>` : time;
       const place = !short && e.where ? `<span class="event-where">${esc(e.where)}</span>` : "";
       const notes = short ? "" : meetingNotes(e.notes);
       const body = notes ? `<span class="event-body">${noteHtml(notes)}</span>` : "";
       return `<button class="event ${eventFace(e)}${short ? " compact" : ""}" type="button" data-event="${e.id}" data-kind="timed"
         style="top:${top}%;height:${height}%;left:calc(${left}% + 2px);width:calc(${width}% - 4px)">
-        <strong>${esc(e.title)}</strong>${when}${place}${body}${mark}${guests ? `<span class="event-people">${esc(guests)}</span>` : ""}<span class="event-resize" data-resize aria-hidden="true"></span>
+        <strong>${esc(e.title)}</strong>${when}${place}${body}${mark}${short && join ? joinHtml(join) : ""}${guests ? `<span class="event-people">${esc(guests)}</span>` : ""}<span class="event-resize" data-resize aria-hidden="true"></span>
       </button>`;
     }).join("");
     const lines = Array.from({ length: 24 }, (_, i) => `<div class="hour-line" style="top:${(i / 24) * 100}%"></div>`).join("");
@@ -13128,6 +13183,51 @@ function shownHour() {
   return scroll.scrollTop / hour;
 }
 
+// An event's notes end on a whole line (1.9.2, #139). The other lines of a
+// block show or hide by container height in CSS; the notes, which can hold
+// rules and any number of lines, are cut back here to the last line box
+// that fits, after every paint and whenever the hour height changes. All
+// reads come before all writes, so the grid is laid out twice, not once per
+// event.
+function clampEventNotes(root) {
+  const scope = root || document.getElementById("cal");
+  if (!scope) return;
+  const bodies = [...scope.querySelectorAll(".event .event-body")];
+  if (!bodies.length) return;
+  bodies.forEach(body => { body.style.maxHeight = ""; body.style.display = ""; });
+  const cuts = bodies.map(body => {
+    if (getComputedStyle(body).display === "none") return null;
+    const block = body.closest(".event");
+    const style = getComputedStyle(block);
+    const inner = block.clientHeight - (parseFloat(style.paddingTop) || 0) - (parseFloat(style.paddingBottom) || 0);
+    let before = 0, after = 0, past = false;
+    for (const el of block.children) {
+      if (el === body) { past = true; continue; }
+      if (el.matches("[data-resize]")) continue;
+      const cs = getComputedStyle(el);
+      if (cs.display === "none" || cs.position === "absolute") continue;
+      const h = el.getBoundingClientRect().height + (parseFloat(cs.marginTop) || 0) + (parseFloat(cs.marginBottom) || 0);
+      if (past) after += h; else before += h;
+    }
+    const room = inner - before - after - (parseFloat(getComputedStyle(body).marginTop) || 0);
+    const top = body.getBoundingClientRect().top;
+    const range = document.createRange();
+    range.selectNodeContents(body);
+    let fit = 0;
+    for (const r of range.getClientRects()) {
+      const bottom = r.bottom - top;
+      if (r.height > 0 && bottom <= room + 0.5 && bottom > fit) fit = bottom;
+    }
+    return fit >= 8 ? Math.round(fit) : 0;
+  });
+  bodies.forEach((body, i) => {
+    const cut = cuts[i];
+    if (cut === null) return;
+    if (cut === 0) body.style.display = "none";
+    else if (body.scrollHeight > cut + 0.5) body.style.maxHeight = cut + "px";
+  });
+}
+
 function applyHourScale() {
   if (view !== "calendar" || calView === "month") return;
   const scroll = document.getElementById("cal");
@@ -13152,6 +13252,7 @@ function applyHourScale() {
   } else if (spacer) spacer.remove();
   const maxTop = Math.max(0, scroll.scrollHeight - scroll.clientHeight);
   scroll.scrollTop = Math.min(calTopHour * hour, maxTop);
+  clampEventNotes(scroll);
 }
 
 // Side by side only where events overlap. Each run of events that overlap
@@ -16421,8 +16522,15 @@ function emptyReadingHtml() {
   if (view === "mail" && !searchActive()) {
     const unread = isCategoryBox(box) || isSearchBox(box) ? 0 : folderUnread(account, box);
     if (unread) notes += `<p class="empty-note">${unread === 1 ? "1 unread message" : unread + " unread messages"} in this folder</p>`;
-    const next = nextMeetingToday();
-    if (next) notes += `<button type="button" class="empty-next" data-extra-event="${esc(next.id)}">Next: ${esc(next.title || "(No title)")}, ${fmt(next.start)}</button>`;
+    const now = new Date(Date.now());
+    const minute = now.getHours() * 60 + now.getMinutes();
+    const live = events.filter(ev => ev.day === dayFromDate(now) && (!ev.account || accountInProfile(ev.account)) && joinableNow(ev, now.getTime())).sort((a, b) => a.start - b.start)[0];
+    const next = live || nextMeetingToday();
+    if (next) {
+      const label = `${live && live.start <= minute ? "Now" : "Next"}: ${esc(next.title || "(No title)")}, ${fmt(next.start)}`;
+      const join = live ? ` <button type="button" class="empty-join primary" data-join-event="${esc(next.id)}" aria-label="Join ${esc(next.title || "the meeting")}">Join</button>` : "";
+      notes += `<p class="empty-next-row"><button type="button" class="empty-next" data-extra-event="${esc(next.id)}">${label}</button>${join}</p>`;
+    }
   }
   return `<div class="empty empty-reading">${EMPTY_MARK}<p class="empty-title">Select a message to read</p>${notes}</div>`;
 }
@@ -20308,6 +20416,151 @@ function readSearchControls() {
   applySearch();
 }
 let searchPick = "";
+// ---- Calendar search on the server (2.0, #138) ----
+// The loaded range is searched as you type; after a pause each signed-in
+// account's server is asked too, over three years (a year back, two ahead),
+// and its matches are listed under the local ones. A new keystroke drops
+// answers to the old text.
+const SERVER_EVENT_WAIT = 350;
+let serverEventSearch = { q: "", token: 0, loading: false, items: [], timer: 0 };
+
+function serverEventRange() {
+  const now = Date.now();
+  return { start: new Date(now - 365 * 86400000).toISOString().replace(/\.\d+Z$/, "Z"), end: new Date(now + 730 * 86400000).toISOString().replace(/\.\d+Z$/, "Z") };
+}
+
+function serverEventFrom(accountId, item) {
+  if (!item || !item.id) return null;
+  return {
+    account: accountId,
+    eventId: String(item.id),
+    title: item.title || "(No title)",
+    where: item.location || "",
+    start: String(item.start || ""),
+    allDay: !!item.allDay,
+    repeats: item.kind === "occurrence" || item.kind === "seriesMaster" || !!item.seriesMasterId
+  };
+}
+
+function serverEventWhen(found) {
+  if (found.allDay) {
+    const day = dayFromIso(found.start.slice(0, 10));
+    return day == null ? "" : formatDayLong(day);
+  }
+  const at = new Date(found.start);
+  if (Number.isNaN(at.getTime())) return "";
+  return formatDayLong(dayFromDate(at)) + ", " + fmt(at.getHours() * 60 + at.getMinutes());
+}
+
+function queueServerEventSearch(q) {
+  const text = String(q || "").trim();
+  clearTimeout(serverEventSearch.timer);
+  const token = ++serverEventSearch.token;
+  if (text.length < 2 || !inDesktop()) {
+    serverEventSearch = Object.assign(serverEventSearch, { q: text, loading: false, items: [] });
+    return;
+  }
+  if (serverEventSearch.q === text && !serverEventSearch.loading) return;
+  serverEventSearch = Object.assign(serverEventSearch, { q: text, loading: true, items: [] });
+  serverEventSearch.timer = setTimeout(async () => {
+    const range = serverEventRange();
+    const ids = Object.keys(accounts).filter(id => accounts[id] && accounts[id].signedIn && calendarAccountVisible(id));
+    const found = [];
+    await Promise.all(ids.map(async id => {
+      try {
+        const items = await tauriInvoke("search_events", { email: accounts[id].email, text, start: range.start, end: range.end });
+        (items || []).forEach(item => { const hit = serverEventFrom(id, item); if (hit) found.push(hit); });
+      } catch (err) {}
+    }));
+    if (token !== serverEventSearch.token) return;
+    const at = (hit) => { const d = new Date(hit.allDay ? hit.start.slice(0, 10) + "T00:00:00" : hit.start).getTime(); return Number.isNaN(d) ? 0 : d; };
+    const soon = Date.now() - 86400000;
+    found.sort((a, b) => {
+      const ua = at(a) >= soon, ub = at(b) >= soon;
+      if (ua !== ub) return ua ? -1 : 1;
+      return ua ? at(a) - at(b) : at(b) - at(a);
+    });
+    serverEventSearch.loading = false;
+    serverEventSearch.items = found;
+    const box = document.getElementById("q-suggest");
+    const now = (document.getElementById("q").value || "").trim();
+    if (box && view === "calendar" && now === text) paintEventSuggest(box, now, true);
+  }, SERVER_EVENT_WAIT);
+}
+
+function paintEventSuggest(box, q, fromServer) {
+  const local = searchEvents(q, 8);
+  if (!fromServer) queueServerEventSearch(q);
+  const localIds = new Set(local.map(ev => String(ev.eventId || ev.id).split("@")[0]));
+  const seenSeries = new Set();
+  const server = serverEventSearch.q === q.trim() ? serverEventSearch.items.filter(hit => {
+    if (localIds.has(hit.eventId)) return false;
+    // A repeating event once, at its nearest date.
+    const key = hit.repeats ? hit.account + "|" + hit.title : hit.eventId;
+    if (seenSeries.has(key)) return false;
+    seenSeries.add(key);
+    return true;
+  }).slice(0, 8) : [];
+  const localHtml = local.map(ev => `<button type="button" data-suggest-event="${esc(ev.id)}"><span>${esc(ev.title || "(No title)")}</span><small>${esc(eventWhen(ev, ev.start == null ? "all" : "timed") + (ev.where ? " · " + ev.where : ""))}</small></button>`).join("");
+  const serverHtml = server.map((hit, i) => `<button type="button" data-suggest-server="${i}"><span>${esc(hit.title)}</span><small>${esc(serverEventWhen(hit) + (hit.repeats ? " · repeats" : "") + (hit.where ? " · " + hit.where : ""))}</small></button>`).join("");
+  const searching = serverEventSearch.loading && serverEventSearch.q === q.trim() && q.trim().length >= 2;
+  let html = localHtml;
+  if (serverHtml) html += `<p class="suggest-head">More on the server</p>` + serverHtml;
+  else if (searching) html += `<p class="suggest-none suggest-wait">Searching the server…</p>`;
+  else if (!localHtml && q.trim().length >= 2) html += `<p class="suggest-none">No events match.</p>`;
+  if (q.trim().length >= 2) html += `<button type="button" class="suggest-mail" data-suggest-mail>Search mail for “${esc(q.trim())}”</button>`;
+  box.innerHTML = html;
+  box.hidden = !html;
+  box.querySelectorAll("button").forEach(btn => btn.addEventListener("mousedown", (e) => e.preventDefault()));
+  const done = () => { box.hidden = true; document.getElementById("q").value = ""; queueServerEventSearch(""); };
+  box.querySelectorAll("[data-suggest-event]").forEach(btn => {
+    btn.onclick = () => { done(); openFoundEvent(btn.dataset.suggestEvent); };
+  });
+  box.querySelectorAll("[data-suggest-server]").forEach(btn => {
+    const hit = server[Number(btn.dataset.suggestServer)];
+    btn.onclick = () => { done(); openServerEvent(hit); };
+  });
+  const mail = box.querySelector("[data-suggest-mail]");
+  if (mail) mail.onclick = () => { const text = q.trim(); done(); searchMailFor(text); };
+}
+
+// A server match opens on its day: the calendar moves there, syncs that
+// range, and the event opens once it is loaded.
+async function openServerEvent(hit) {
+  if (!hit) return;
+  const loaded = () => events.concat(allday).find(e => e.account === hit.account && String(e.eventId || "") === hit.eventId);
+  if (accounts[hit.account] && !calendarAccountVisible(hit.account)) {
+    calendarBoth = false;
+    rememberCalendarBoth();
+    activeProfile = accountProfile(hit.account);
+    rememberActiveProfile();
+  }
+  const at = hit.allDay ? dateFromDay(dayFromIso(hit.start.slice(0, 10))) : new Date(hit.start);
+  if (Number.isNaN(at.getTime())) return;
+  calFocus = calView === "month" ? new Date(at.getFullYear(), at.getMonth(), 1) : at;
+  setView("calendar");
+  let ev = loaded();
+  for (let tries = 0; !ev && tries < 3; tries++) {
+    await syncCalendars(hit.account, true);
+    ev = loaded();
+  }
+  if (ev) openEventEditor(ev.id, ev.start == null ? "all" : "timed");
+  else toast("“" + hit.title + "” could not be opened.");
+}
+
+// Up and Down move through the suggestions; Enter takes the one chosen.
+function moveSuggest(step) {
+  const box = document.getElementById("q-suggest");
+  if (!box || box.hidden) return false;
+  const items = [...box.querySelectorAll("button")];
+  if (!items.length) return false;
+  const at = items.findIndex(b => b.classList.contains("active"));
+  const next = at < 0 ? (step > 0 ? 0 : items.length - 1) : (at + step + items.length) % items.length;
+  items.forEach((b, i) => { b.classList.toggle("active", i === next); b.setAttribute("aria-selected", i === next ? "true" : "false"); });
+  items[next].scrollIntoView({ block: "nearest" });
+  return true;
+}
+
 function paintSearchSuggest() {
   const box = document.getElementById("q-suggest");
   const q = (document.getElementById("q").value || "").trim();
@@ -20315,23 +20568,10 @@ function paintSearchSuggest() {
     if (box) { box.hidden = true; box.innerHTML = ""; }
     return;
   }
-  // In Calendar the box searches the calendar: matching events, soonest
-  // first, each opening on its day.
+  // In Calendar the box searches the calendar: the events on this computer
+  // at once, soonest first, then the server's matches under them (2.0, #138).
   if (view === "calendar") {
-    const found = searchEvents(q, 8);
-    box.hidden = false;
-    box.innerHTML = found.length
-      ? found.map(ev => `<button type="button" data-suggest-event="${esc(ev.id)}"><span>${esc(ev.title || "(No title)")}</span><small>${esc(eventWhen(ev, ev.start == null ? "all" : "timed") + (ev.where ? " · " + ev.where : ""))}</small></button>`).join("")
-      : (q.length < 2 ? "" : `<p class="suggest-none">No events match.</p>`);
-    if (!box.innerHTML) box.hidden = true;
-    box.querySelectorAll("[data-suggest-event]").forEach(btn => {
-      btn.addEventListener("mousedown", (e) => e.preventDefault());
-      btn.onclick = () => {
-        box.hidden = true;
-        document.getElementById("q").value = "";
-        openFoundEvent(btn.dataset.suggestEvent);
-      };
-    });
+    paintEventSuggest(box, q);
     return;
   }
   const hits = peopleMatches(q, 6);
@@ -20383,8 +20623,17 @@ document.getElementById("q").addEventListener("input", (e) => {
   paintSearchSuggest();
 });
 document.getElementById("q").addEventListener("keydown", (e) => {
+  if (view === "calendar" && (e.key === "ArrowDown" || e.key === "ArrowUp") && !e.isComposing) {
+    if (moveSuggest(e.key === "ArrowDown" ? 1 : -1)) e.preventDefault();
+    return;
+  }
   if (e.key !== "Enter" || e.isComposing) return;
   e.preventDefault();
+  const chosen = view === "calendar" && document.querySelector("#q-suggest:not([hidden]) button.active");
+  if (chosen) {
+    chosen.click();
+    return;
+  }
   if (view === "calendar") {
     // Enter opens the nearest match.
     const first = searchEvents(e.target.value, 1)[0];
@@ -21135,7 +21384,7 @@ const folderBusy = new Set();
 let syncNote = "";
 const folderRun = new Map();
 const bodyLoads = new Set();
-const APP_VERSION = "1.9.1";
+const APP_VERSION = "1.9.2";
 let appVersion = APP_VERSION;
 
 prepareDesktopAccounts();
@@ -22805,6 +23054,7 @@ function startMailPolling() {
   setInterval(checkSnoozes, 60 * 1000);
   checkSnoozes();
   setInterval(checkReminders, 30 * 1000);
+  setInterval(refreshJoinable, 30 * 1000);
   setTimeout(checkReminders, 5000);
   setInterval(checkFollowUps, 60 * 1000);
   setTimeout(checkFollowUps, 8000);

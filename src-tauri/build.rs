@@ -75,6 +75,7 @@ fn main() {
             "pop_compose",
             "saved_inbox",
             "sync_calendar",
+            "search_events",
             "sync_contacts",
             "create_contact",
             "ai_status",

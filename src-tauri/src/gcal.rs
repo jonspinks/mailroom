@@ -337,6 +337,40 @@ pub fn fetch_calendar(email: &str, start: &str, end: &str) -> Result<(Vec<LiveCa
     Ok((entries.into_iter().map(|(calendar, _)| calendar).collect(), events))
 }
 
+/// Search every calendar of a Google account for events whose text matches,
+/// between `start` and `end` (2.0, #138). Google's `q` searches the title,
+/// place, notes and guests; repeats come back as single occurrences.
+pub fn search_url(calendar_id: &str, text: &str, from: &str, to: &str) -> Result<String, String> {
+    let text: String = text.trim().chars().filter(|c| !c.is_control()).take(80).collect();
+    if text.chars().count() < 2 {
+        return Err("Type at least two letters.".into());
+    }
+    Ok(format!(
+        "{CAL}/calendars/{}/events?singleEvents=true&orderBy=startTime&maxResults={}&q={}&timeMin={}&timeMax={}",
+        seg(calendar_id.trim()),
+        graph::SEARCH_EVENTS_MAX,
+        seg(&text),
+        seg(from),
+        seg(to)
+    ))
+}
+
+pub fn search_events(email: &str, text: &str, start: &str, end: &str) -> Result<Vec<LiveEvent>, String> {
+    let (from, to) = (utc(start).ok_or("Choose a date.")?, utc(end).ok_or("Choose a date.")?);
+    let token = auth::access_token_for(email)?;
+    let client = graph::http_client()?;
+    let listed = pages(&client, &token, &format!("{CAL}/users/me/calendarList?maxResults=250"), "items", 4)?;
+    let mut events = Vec::new();
+    for value in listed.iter().take(24) {
+        let Some(calendar) = calendar_from(value) else { continue };
+        let url = search_url(&calendar.id, text, &from, &to)?;
+        let Ok(items) = pages(&client, &token, &url, "items", 1) else { continue };
+        events.extend(items.iter().filter_map(|item| event_from(item, &calendar.id, default_reminder(value))));
+    }
+    events.truncate(graph::SEARCH_EVENTS_MAX * 2);
+    Ok(events)
+}
+
 // ---- Repeats ---------------------------------------------------------------
 
 fn byday(name: &str) -> Option<&'static str> {
@@ -1532,6 +1566,14 @@ pub fn end_series_before(email: &str, master_id: &str, date: &str) -> Result<boo
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn search_url_bounds_and_encodes_the_text() {
+        let url = search_url("me@x.example", "launch & review", "2025-11-26T00:00:00Z", "2028-11-26T00:00:00Z").unwrap();
+        assert!(url.contains("/calendars/me%40x.example/events?singleEvents=true&orderBy=startTime&maxResults=25&q=launch%20%26%20review&timeMin=2025-11-26T00%3A00%3A00Z"));
+        assert!(search_url("c", " a ", "x", "y").is_err());
+    }
+
     use super::*;
 
     #[test]
