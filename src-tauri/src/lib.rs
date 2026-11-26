@@ -344,7 +344,12 @@ fn refresh_folders_if_due(email: &str) {
     if let Ok(mut clock) = FOLDERS_AT.lock() {
         clock.get_or_insert_with(Default::default).insert(email.to_string(), now);
     }
-    let listed = if auth::is_google(email) { google::fetch_folders(email) } else { graph::fetch_folders(email) };
+    let listed = if auth::is_google(email) {
+        let known = store::load_folders(email).unwrap_or_default().into_iter().map(|f| (f.id, (f.unread, f.total))).collect();
+        google::fetch_folders(email, &known)
+    } else {
+        graph::fetch_folders(email)
+    };
     let folders = match listed {
         Ok(folders) if usable_listing(&folders) => folders,
         Ok(_) => return,
