@@ -3718,8 +3718,22 @@ function renderFolders() {
           <span class="dot ${acct.cls}"></span>${esc(acct.name)} <span class="count">${count(id)}</span>
         </button>
       `).join("")}
+      ${listAccounts().length ? `<div class="acct-label">Contact lists</div>
+      ${listsInView().map(l => `<button class="nav-item clist-item" type="button" data-clist="${esc(l.account + "\n" + l.id)}" title="${esc(accounts[l.account].name)}">
+        ${esc(l.name)} <span class="count">${listAddresses(l).length}</span>
+      </button>`).join("")}
+      <button class="show-all" type="button" id="new-clist">New contact list</button>` : ""}
     `;
     folders.querySelector("#new-contact").onclick = () => openContactForm();
+    const newList = folders.querySelector("#new-clist");
+    if (newList) newList.onclick = () => openContactListForm();
+    folders.querySelectorAll("[data-clist]").forEach(btn => {
+      btn.onclick = () => {
+        const [acct, id] = btn.dataset.clist.split("\n");
+        const list = contactLists.find(l => l.account === acct && l.id === id);
+        if (list) openContactListForm(list);
+      };
+    });
     bindProfileSwitch(folders);
     folders.querySelectorAll("[data-people]").forEach(btn => {
       btn.onclick = () => {
@@ -7851,6 +7865,73 @@ async function searchDirectory(query) {
     } catch (e) {}
   }
   return found;
+}
+
+// Suggestions under a To, Cc or Bcc field (and the contact list dialog).
+function bindRecipientSuggest(input, box, assign) {
+  // Only the address after the last separator is being typed.
+  const split = () => {
+    const value = input.value;
+    const cut = Math.max(value.lastIndexOf(";"), value.lastIndexOf(","));
+    return { before: cut >= 0 ? value.slice(0, cut) : "", typing: value.slice(cut + 1).trim() };
+  };
+  const close = () => { box.hidden = true; box.innerHTML = ""; };
+  function choose(btn) {
+    const { before } = split();
+    const kept = recipientFieldValue(before);
+    input.value = (kept ? kept + "; " : "") + recipientFieldValue(btn.dataset.email) + "; ";
+    input.removeAttribute("aria-invalid");
+    assign(input.value);
+    close();
+    input.focus();
+  }
+  let searchTimer = 0;
+  function paint(fromSearch) {
+    const q = split().typing.toLowerCase();
+    if (!fromSearch && q.length >= 2) {
+      clearTimeout(searchTimer);
+      searchTimer = setTimeout(() => {
+        searchDirectory(q).then(found => { if (found && split().typing.toLowerCase() === q && document.activeElement === input) paint(true); });
+      }, 250);
+    }
+    const hits = q ? peopleMatches(q, 6).filter(person => person.email.toLowerCase() !== q) : [];
+    const lists = q ? listMatches(q, 3) : [];
+    if (!hits.length && !lists.length) return close();
+    box.hidden = false;
+    box.innerHTML = listSuggestHtml(lists) + personSuggestHtml(hits);
+    box.querySelectorAll("button").forEach((btn, i) => {
+      if (i === 0) btn.classList.add("on");
+      btn.addEventListener("mousedown", (e) => e.preventDefault());
+      btn.onclick = () => choose(btn);
+    });
+  }
+  input.addEventListener("input", () => {
+    input.removeAttribute("aria-invalid");
+    assign(input.value);
+    paint();
+  });
+  input.addEventListener("keydown", (e) => {
+    const open = !box.hidden && box.querySelector("button");
+    if (e.key === "Enter") {
+      // Enter picks a suggestion. It never sends the message.
+      e.preventDefault();
+      if (open) choose(box.querySelector("button.on") || box.querySelector("button"));
+      return;
+    }
+    if (!open) return;
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      const items = [...box.querySelectorAll("button")];
+      const at = Math.max(0, items.findIndex(b => b.classList.contains("on")));
+      const next = (at + (e.key === "ArrowDown" ? 1 : items.length - 1)) % items.length;
+      items.forEach((b, i) => b.classList.toggle("on", i === next));
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      e.stopPropagation();
+      close();
+    }
+  });
+  input.addEventListener("blur", () => setTimeout(close, 150));
 }
 
 function peopleMatches(query, limit) {
@@ -18991,70 +19072,6 @@ function bindCompose(root, ctx) {
   if (aliasEntry) aliasEntry.addEventListener("input", () => { if (ctx.draft) ctx.draft.from = chosenFrom(); });
   syncAliasEntry();
   paintComposeSignature(form);
-  function bindRecipientSuggest(input, box, assign) {
-    // Only the address after the last separator is being typed.
-    const split = () => {
-      const value = input.value;
-      const cut = Math.max(value.lastIndexOf(";"), value.lastIndexOf(","));
-      return { before: cut >= 0 ? value.slice(0, cut) : "", typing: value.slice(cut + 1).trim() };
-    };
-    const close = () => { box.hidden = true; box.innerHTML = ""; };
-    function choose(btn) {
-      const { before } = split();
-      const kept = recipientFieldValue(before);
-      input.value = (kept ? kept + "; " : "") + recipientFieldValue(btn.dataset.email) + "; ";
-      input.removeAttribute("aria-invalid");
-      assign(input.value);
-      close();
-      input.focus();
-    }
-    let searchTimer = 0;
-    function paint(fromSearch) {
-      const q = split().typing.toLowerCase();
-      if (!fromSearch && q.length >= 2) {
-        clearTimeout(searchTimer);
-        searchTimer = setTimeout(() => {
-          searchDirectory(q).then(found => { if (found && split().typing.toLowerCase() === q && document.activeElement === input) paint(true); });
-        }, 250);
-      }
-      const hits = q ? peopleMatches(q, 6).filter(person => person.email.toLowerCase() !== q) : [];
-      if (!hits.length) return close();
-      box.hidden = false;
-      box.innerHTML = personSuggestHtml(hits);
-      box.querySelectorAll("button").forEach((btn, i) => {
-        if (i === 0) btn.classList.add("on");
-        btn.addEventListener("mousedown", (e) => e.preventDefault());
-        btn.onclick = () => choose(btn);
-      });
-    }
-    input.addEventListener("input", () => {
-      input.removeAttribute("aria-invalid");
-      assign(input.value);
-      paint();
-    });
-    input.addEventListener("keydown", (e) => {
-      const open = !box.hidden && box.querySelector("button");
-      if (e.key === "Enter") {
-        // Enter picks a suggestion. It never sends the message.
-        e.preventDefault();
-        if (open) choose(box.querySelector("button.on") || box.querySelector("button"));
-        return;
-      }
-      if (!open) return;
-      if (e.key === "ArrowDown" || e.key === "ArrowUp") {
-        e.preventDefault();
-        const items = [...box.querySelectorAll("button")];
-        const at = Math.max(0, items.findIndex(b => b.classList.contains("on")));
-        const next = (at + (e.key === "ArrowDown" ? 1 : items.length - 1)) % items.length;
-        items.forEach((b, i) => b.classList.toggle("on", i === next));
-      } else if (e.key === "Escape") {
-        e.preventDefault();
-        e.stopPropagation();
-        close();
-      }
-    });
-    input.addEventListener("blur", () => setTimeout(close, 150));
-  }
   // Enter in any single-line field never sends. Only the Send button does.
   form.addEventListener("keydown", (e) => {
     if (e.key === "Enter" && e.target instanceof HTMLInputElement && e.target.type !== "submit" && e.target.type !== "button") e.preventDefault();
@@ -22859,6 +22876,116 @@ async function retryReach() {
   }
 }
 
+// ---- Contact lists (2.0, #17) ----
+// Outlook's personal contact lists on Microsoft accounts: shown in People,
+// edited in a dialog, and offered by name in To, Cc and Bcc, where choosing
+// one adds every member, as Outlook does when it expands a list.
+let contactLists = [];
+
+async function syncContactLists(accountId) {
+  const acct = accounts[accountId];
+  if (!acct || !acct.signedIn || isGoogleAccount(accountId)) return;
+  try {
+    const lists = await tauriInvoke("contact_lists", { email: acct.email });
+    contactLists = contactLists.filter(l => l.account !== accountId).concat((lists || []).filter(l => l && l.id).map(l => ({
+      account: accountId, id: String(l.id), name: String(l.name || "Contact list"),
+      members: (l.members || []).map(m => ({ key: String(m.key || ""), name: String(m.name || ""), kind: String(m.kind || "oneOff"), memberId: String(m.memberId || "") }))
+    })));
+  } catch (err) {}
+}
+
+function memberAddress(list, member) {
+  if (member.key.includes("@")) return member.key;
+  const found = member.memberId && contacts.find(c => c.account === list.account && c.id === member.memberId);
+  return found && found.email ? found.email : "";
+}
+
+function listAddresses(list) {
+  return [...new Set(list.members.map(m => memberAddress(list, m)).filter(Boolean))];
+}
+
+function listsInView() {
+  return contactLists.filter(l => accountInProfile(l.account));
+}
+
+function listMatches(query, limit) {
+  const needle = String(query || "").trim().toLowerCase();
+  if (needle.length < 2) return [];
+  return listsInView().filter(l => l.name.toLowerCase().includes(needle) && listAddresses(l).length).slice(0, limit || 3);
+}
+
+function listSuggestHtml(lists) {
+  return lists.map(l => `<button type="button" class="suggest-list" data-email="${esc(listAddresses(l).join("; "))}" data-name="${esc(l.name)}"><span>${esc(l.name)}</span><small>Contact list · ${listAddresses(l).length === 1 ? "1 person" : listAddresses(l).length + " people"}</small></button>`).join("");
+}
+
+function listAccounts() {
+  return profileAccountIds().filter(id => accounts[id] && accounts[id].signedIn && !isGoogleAccount(id));
+}
+
+function openContactListForm(list) {
+  const ids = listAccounts();
+  if (!list && !ids.length) return toast("Contact lists are for Microsoft accounts.");
+  const chosen = list ? list.account : (ids.includes(contactAccount) ? contactAccount : ids[0]);
+  const removed = new Set();
+  popRoot.innerHTML = `
+    <div class="backdrop" id="backdrop"></div>
+    <form class="dialog contact-list-form" id="contact-list-form" novalidate>
+      <h2>${list ? "Contact list" : "New contact list"}</h2>
+      <p class="form-error" id="clist-error" hidden></p>
+      <label class="field"${!list && ids.length > 1 ? "" : " hidden"}>Account
+        <select name="account">${ids.map(id => `<option value="${esc(id)}"${id === chosen ? " selected" : ""}>${esc(accounts[id].name)}</option>`).join("")}</select>
+      </label>
+      <label class="field">Name<input name="name" autocomplete="off" placeholder="Add a name" value="${esc(list ? list.name : "")}"></label>
+      <div class="clist-members" id="clist-members">${list && list.members.length ? list.members.map((m, i) => `<div class="clist-member" data-i="${i}"><span><b>${esc(m.name || memberAddress(list, m) || m.key)}</b> <small>${esc(memberAddress(list, m))}</small></span><button type="button" class="icon-btn" data-drop="${i}" title="Remove" aria-label="Remove ${esc(m.name || m.key)}">✕</button></div>`).join("") : `<p class="field-hint">No one yet.</p>`}</div>
+      <label class="field">Add people<span class="suggest-wrap"><input name="add" id="clist-add" autocomplete="off" placeholder="Name or email"><div class="suggest" id="clist-suggest" hidden></div></span></label>
+      <div class="dialog-actions">
+        ${list ? `<button class="ghost danger" type="button" id="clist-delete">Delete list</button>` : ""}
+        <button class="ghost" type="button" id="cancel">Cancel</button>
+        <button class="primary" type="submit">Save</button>
+      </div>
+    </form>`;
+  const form = popRoot.querySelector("#contact-list-form");
+  const close = () => { popRoot.innerHTML = ""; };
+  popRoot.querySelector("#backdrop").onclick = close;
+  form.querySelector("#cancel").onclick = close;
+  bindRecipientSuggest(form.querySelector("#clist-add"), form.querySelector("#clist-suggest"), () => {});
+  form.querySelectorAll("[data-drop]").forEach(btn => {
+    btn.onclick = () => {
+      const i = Number(btn.dataset.drop);
+      removed.add(i);
+      btn.closest(".clist-member").remove();
+    };
+  });
+  const fail = (text) => { const e = form.querySelector("#clist-error"); e.textContent = text; e.hidden = false; };
+  const del = form.querySelector("#clist-delete");
+  if (del) del.onclick = async () => {
+    if (del.dataset.sure !== "1") { del.dataset.sure = "1"; del.textContent = "Delete it: click again"; return; }
+    try {
+      await tauriInvoke("delete_contact_list", { email: accounts[list.account].email, listId: list.id, list_id: list.id });
+      contactLists = contactLists.filter(l => !(l.account === list.account && l.id === list.id));
+      close();
+      toast("Contact list deleted");
+      render();
+    } catch (err) { fail(String(err && err.message || err)); }
+  };
+  form.onsubmit = async (ev) => {
+    ev.preventDefault();
+    const acct = list ? list.account : form.elements.account.value;
+    const name = form.elements.name.value.trim();
+    if (!name) return fail("Name the contact list.");
+    const add = parseAddresses(form.elements.add.value).filter(a => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(a)).map(a => [String(recipientLabel(a) || a), a]);
+    const remove = list ? [...removed].map(i => list.members[i]).filter(Boolean).map(m => [m.key, m.kind]) : [];
+    try {
+      await tauriInvoke("save_contact_list", { email: accounts[acct].email, listId: list ? list.id : "", list_id: list ? list.id : "", name: !list || name !== list.name ? name : null, add, remove });
+      await syncContactLists(acct);
+      close();
+      toast(list ? "Contact list saved" : "Contact list made");
+      render();
+    } catch (err) { fail(String(err && err.message || err)); }
+  };
+  form.elements.name.focus();
+}
+
 async function syncContacts(accountId) {
   if (!inDesktop()) return;
   const ids = accountId ? [accountId] : Object.keys(accounts);
@@ -22869,6 +22996,7 @@ async function syncContacts(accountId) {
       const people = await tauriInvoke("sync_contacts", { email: acct.email });
       installLiveContacts(id, people || []);
       recordDirectory(id, "contacts", null);
+      await syncContactLists(id);
     } catch (err) {
       recordDirectory(id, "contacts", err);
     }

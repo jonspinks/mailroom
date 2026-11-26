@@ -273,6 +273,12 @@
           "markdownDescription": "Enables the client_id command without any pre-configured scope."
         },
         {
+          "description": "Enables the contact_lists command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-contact-lists",
+          "markdownDescription": "Enables the contact_lists command without any pre-configured scope."
+        },
+        {
           "description": "Enables the conversation_mail command without any pre-configured scope.",
           "type": "string",
           "const": "allow-conversation-mail",
@@ -301,6 +307,12 @@
           "type": "string",
           "const": "allow-delete-contact",
           "markdownDescription": "Enables the delete_contact command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the delete_contact_list command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-delete-contact-list",
+          "markdownDescription": "Enables the delete_contact_list command without any pre-configured scope."
         },
         {
           "description": "Enables the delete_folder command without any pre-configured scope.",
@@ -595,6 +607,12 @@
           "type": "string",
           "const": "allow-save-client-id",
           "markdownDescription": "Enables the save_client_id command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the save_contact_list command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-save-contact-list",
+          "markdownDescription": "Enables the save_contact_list command without any pre-configured scope."
         },
         {
           "description": "Enables the save_draft command without any pre-configured scope.",
@@ -897,6 +915,12 @@
           "markdownDescription": "Denies the client_id command without any pre-configured scope."
         },
         {
+          "description": "Denies the contact_lists command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-contact-lists",
+          "markdownDescription": "Denies the contact_lists command without any pre-configured scope."
+        },
+        {
           "description": "Denies the conversation_mail command without any pre-configured scope.",
           "type": "string",
           "const": "deny-conversation-mail",
@@ -925,6 +949,12 @@
           "type": "string",
           "const": "deny-delete-contact",
           "markdownDescription": "Denies the delete_contact command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the delete_contact_list command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-delete-contact-list",
+          "markdownDescription": "Denies the delete_contact_list command without any pre-configured scope."
         },
         {
           "description": "Denies the delete_folder command without any pre-configured scope.",
@@ -1219,6 +1249,12 @@
           "type": "string",
           "const": "deny-save-client-id",
           "markdownDescription": "Denies the save_client_id command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the save_contact_list command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-save-contact-list",
+          "markdownDescription": "Denies the save_contact_list command without any pre-configured scope."
         },
         {
           "description": "Denies the save_draft command without any pre-configured scope.",

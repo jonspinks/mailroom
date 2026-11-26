@@ -2262,6 +2262,47 @@ async fn search_events(email: String, text: String, start: String, end: String) 
     .await
 }
 
+// Contact lists (2.0, #17): Microsoft accounts only, like contacts.
+#[tauri::command]
+async fn contact_lists(email: String) -> Result<Vec<graph::ContactList>, String> {
+    in_background(move || if auth::is_google(email.trim()) { Ok(Vec::new()) } else { graph::fetch_contact_lists(email.trim()) }).await
+}
+
+#[tauri::command]
+async fn save_contact_list(
+    email: String,
+    list_id: Option<String>,
+    name: Option<String>,
+    add: Option<Vec<(String, String)>>,
+    remove: Option<Vec<(String, String)>>,
+) -> Result<String, String> {
+    in_background(move || {
+        let email = email.trim();
+        if auth::is_google(email) {
+            return Err("Contact lists are for Microsoft accounts.".into());
+        }
+        let mut id = list_id.unwrap_or_default().trim().to_string();
+        if id.is_empty() {
+            id = graph::create_contact_list(email, name.as_deref().unwrap_or(""))?.id;
+        } else if let Some(name) = name.as_deref() {
+            graph::rename_contact_list(email, &id, name)?;
+        }
+        if let Some(remove) = remove.filter(|r| !r.is_empty()) {
+            graph::remove_list_members(email, &id, &remove)?;
+        }
+        if let Some(add) = add.filter(|a| !a.is_empty()) {
+            graph::add_list_members(email, &id, &add)?;
+        }
+        Ok(id)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn delete_contact_list(email: String, list_id: String) -> Result<(), String> {
+    in_background(move || graph::delete_contact_list(email.trim(), &list_id)).await
+}
+
 #[tauri::command]
 async fn sync_contacts(email: Option<String>) -> Result<Vec<LiveContact>, String> {
     in_background(move || {
@@ -2616,6 +2657,9 @@ pub fn run() {
             sync_calendar,
             search_events,
             sync_contacts,
+            contact_lists,
+            save_contact_list,
+            delete_contact_list,
             create_contact,
             ai_status,
             save_ai_key,

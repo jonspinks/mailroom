@@ -1420,6 +1420,37 @@ test("a short event shows its start time beside the title (#140)", { fake: true,
   same(got, ["Zoom call", "12:00"], "title, then its start");
 });
 
+test("contact lists: shown in People, edited in a dialog, and offered in To where they add everyone (#17)", { fake: true, setup: () => {
+  window.__lists = { "jon@example.com": [{ id: "DL1", name: "Kiln crew", members: [
+    { key: "ana@example.org", name: "Ana Ruiz", kind: "oneOff", memberId: "" },
+    { key: "bo@example.org", name: "Bo Chen", kind: "oneOff", memberId: "" }
+  ] }] };
+} }, async ({ p, calls, clear }) => {
+  const email = await p.evaluate(() => accounts[Object.keys(accounts).find(k => accounts[k].signedIn && !isGoogleAccount(k))].email);
+  if (email !== "jon@example.com") await p.evaluate((e) => { window.__lists[e] = window.__lists["jon@example.com"]; }, email);
+  await p.evaluate(() => syncContacts()); await wait(400);
+  await p.click("#rail-people"); await wait(300);
+  same(await p.$$eval("#folders .clist-item", bs => bs.map(b => b.textContent.replace(/\s+/g, " ").trim())), ["Kiln crew 2"], "the list, with its count");
+  await p.click("#folders .clist-item"); await wait(200);
+  same(await p.$$eval("#contact-list-form .clist-member b", b => b.map(x => x.textContent)), ["Ana Ruiz", "Bo Chen"], "its members");
+  await p.click('#contact-list-form [data-drop="1"]'); await wait(100);
+  await p.type("#clist-add", "cy@example.org"); 
+  await p.$eval("#contact-list-form input[name=name]", i => { i.value = "Kiln team"; });
+  await clear();
+  await p.click("#contact-list-form button[type=submit]"); await wait(400);
+  const saved = (await calls("save_contact_list"))[0];
+  same([saved.listId, saved.name, saved.remove, saved.add.map(a => a[1])], ["DL1", "Kiln team", [["bo@example.org", "oneOff"]], ["cy@example.org"]], "renamed, one removed and one added in one save");
+  // In To, the list's name adds every member.
+  await p.evaluate(() => setView("mail")); await wait(200);
+  await p.evaluate(() => openCompose()); await wait(500);
+  await p.type("#compose-to", "kiln"); await wait(300);
+  const offer = await p.$eval("#to-suggest .suggest-list", b => b.textContent.replace(/\s+/g, " ").trim()).catch(() => "");
+  expect(offer.startsWith("Kiln crew") && offer.includes("2 people"), "offered by name", offer);
+  await p.click("#to-suggest .suggest-list"); await wait(200);
+  const to = await p.$eval("#compose-to", i => i.value);
+  expect(to.includes("ana@example.org") && to.includes("bo@example.org"), "every member is added", to);
+});
+
 test("Work and Personal keep their mail apart", { fake: false }, async ({ p }) => {
   const names = () => p.$$eval("#folder-nav .acct-label.section", bs => bs.map(b => b.textContent.replace(/\s+/g, " ").trim()));
   const subjects = () => p.evaluate(() => [...document.querySelectorAll("#rows .subject")].map(s => s.textContent));
