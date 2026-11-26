@@ -10813,12 +10813,39 @@ reading.addEventListener("error", (ev) => {
   });
 }, true);
 
+// What a message needs when it opens (body, files, the sender check, the
+// unsubscribe offer) is asked for in one open_message call (2.0, #104):
+// each loader names its part, and the parts named while one paint runs go
+// together. Each loader keeps its own conditions and caches.
+const openBatches = new Map();
+function openPart(m, part) {
+  const acct = accounts[m.account];
+  const email = String((acct && acct.email) || "");
+  const key = m.account + "\n" + m.id;
+  let batch = openBatches.get(key);
+  if (!batch) {
+    batch = { want: new Set() };
+    batch.answer = Promise.resolve().then(() => {
+      openBatches.delete(key);
+      return tauriInvoke("open_message", { email, messageId: m.id, message_id: m.id, from: m.email || "", want: [...batch.want] });
+    });
+    openBatches.set(key, batch);
+  }
+  batch.want.add(part);
+  return batch.answer.then(got => {
+    const value = got && Object.prototype.hasOwnProperty.call(got, part) ? got[part] : undefined;
+    if (value === undefined) throw new Error("No answer.");
+    if (value && typeof value === "object" && !Array.isArray(value) && typeof value.error === "string") throw new Error(value.error);
+    return value;
+  });
+}
+
 function ensureMessageFiles(m) {
   if (!serverMessage(m) || !m.hasAttachment) return;
   if (messageFiles(m).length || filesLoaded.has(m.id) || filesLoading.has(m.id)) return;
   filesLoading.add(m.id);
   const email = String((accounts[m.account] && accounts[m.account].email) || "");
-  const pending = tauriInvoke("message_files", { email, messageId: m.id, message_id: m.id });
+  const pending = email ? openPart(m, "files") : null;
   if (!pending || !pending.then) {
     filesLoading.delete(m.id);
     filesLoaded.add(m.id);
@@ -10910,7 +10937,7 @@ async function ensureUnsubscribe(m) {
   unsubscribeFor.set(m.id, null);
   const acct = accounts[m.account];
   try {
-    const found = await tauriInvoke("unsubscribe_options", { email: acct.email, messageId: m.id });
+    const found = await openPart(m, "unsubscribe");
     if (found && (found.oneClick || found.web || found.mailto)) {
       unsubscribeFor.set(m.id, found);
       paintReadingSoon();
@@ -14879,7 +14906,7 @@ function checkSender(message) {
   if (!acct || !acct.email || !message.email) return;
   senderChecks.add(message.id);
   const id = message.id;
-  Promise.resolve(tauriInvoke("sender_verified", { email: acct.email, messageId: id, message_id: id, from: message.email }))
+  openPart(message, "verified")
     .then(ok => {
       senderVerified.delete(id);
       senderVerified.set(id, ok === true);
@@ -21939,7 +21966,7 @@ async function ensureMessageBody(message) {
   bodyLoads.add(id);
   let html = "";
   try {
-    html = await tauriInvoke("cached_body", { email, messageId: id });
+    html = await openPart(message, "body");
   } catch (err) {
     bodyLoads.delete(id);
     return;

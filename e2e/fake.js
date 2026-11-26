@@ -167,6 +167,16 @@
     run_update: () => !window.__updateDeclined, update_progress: () => window.__progress || { stage: "idle", detail: "", elapsed: 0, estimate: 0 }, update_log: () => window.__updateLog || "", restart_app: () => null,
     mail_rules: () => window.__rules || [], save_rule: (a) => Object.assign({ id: "r" + Math.random().toString(36).slice(2, 6), other: false }, a.rule), delete_rule: () => null,
     people: (a) => a.query ? (["wagstaffe", "wag", "wa"].some(q => a.query.toLowerCase().startsWith(q)) ? [{ name: "Wagstaffe, Jane", email: "jane.wagstaffe@timberworks.example" }] : []) : [{ name: "Priya Shah", email: "priya@timberworks.example" }],
+    // One call when a message opens (#104): each part from its own answer.
+    open_message: (a) => {
+      const parts = { body: ["cached_body", { email: a.email, messageId: a.messageId }], files: ["message_files", { email: a.email, messageId: a.messageId }], verified: ["sender_verified", { email: a.email, messageId: a.messageId, from: a.from }], unsubscribe: ["unsubscribe_options", { email: a.email, messageId: a.messageId }] };
+      const out = {};
+      return Promise.all((a.want || []).map(async part => {
+        const [cmd, args] = parts[part] || [];
+        if (!cmd) return;
+        try { out[part] = await answers[cmd](args); if (out[part] === undefined) out[part] = null; } catch (err) { out[part] = { error: String(err && err.message || err) }; }
+      })).then(() => out);
+    },
     // Calendar search on the server (#138): __serverHits are its matches;
     // __farEvent is one of them, which sync_calendar returns once the range
     // asked for reaches it.

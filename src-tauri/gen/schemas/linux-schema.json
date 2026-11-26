@@ -483,6 +483,12 @@
           "markdownDescription": "Enables the open_link command without any pre-configured scope."
         },
         {
+          "description": "Enables the open_message command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-open-message",
+          "markdownDescription": "Enables the open_message command without any pre-configured scope."
+        },
+        {
           "description": "Enables the pdf_texts command without any pre-configured scope.",
           "type": "string",
           "const": "allow-pdf-texts",
@@ -1099,6 +1105,12 @@
           "type": "string",
           "const": "deny-open-link",
           "markdownDescription": "Denies the open_link command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the open_message command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-open-message",
+          "markdownDescription": "Denies the open_message command without any pre-configured scope."
         },
         {
           "description": "Denies the pdf_texts command without any pre-configured scope.",
