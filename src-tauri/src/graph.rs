@@ -1747,7 +1747,19 @@ pub(crate) fn text_to_html(text: &str) -> String {
     format!("<p>{}</p>", escaped.replace('\n', "<br>"))
 }
 
+/// A refusal's body, short enough for a message. Graph's JSON error keeps
+/// its code and message (re-written compactly), where cutting the raw text
+/// at 280 characters broke the JSON and lost the code the log needs.
 fn clip(text: &str) -> String {
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(text) {
+        let error = &value["error"];
+        if error.is_object() {
+            let field = |name: &str, max: usize| error[name].as_str().unwrap_or("").chars().take(max).collect::<String>();
+            let inner = &error["innerError"];
+            let request = inner["request-id"].as_str().or_else(|| inner["client-request-id"].as_str()).unwrap_or("");
+            return serde_json::json!({ "error": { "code": field("code", 80), "message": field("message", 200), "innerError": { "request-id": request.chars().take(64).collect::<String>() } } }).to_string();
+        }
+    }
     text.replace(['\n', '\r'], " ").chars().take(280).collect()
 }
 
@@ -3415,7 +3427,11 @@ pub fn list_search_folders(email: &str) -> Result<Vec<SearchFolder>, String> {
     let listed = graph_pages(
         &client,
         &token,
-        "https://graph.microsoft.com/v1.0/me/mailFolders/searchfolders/childFolders?$top=50&$select=id,displayName,filterQuery",
+        // No $select: childFolders is typed as mailFolder, which has no
+        // filterQuery, so naming it was a 400 on every start, once per
+        // Microsoft account (logged since 1.3.8). Unselected, each comes back
+        // as a mailSearchFolder with its filterQuery.
+        "https://graph.microsoft.com/v1.0/me/mailFolders/searchfolders/childFolders?$top=50",
         4,
     )?;
     Ok(listed.iter().filter_map(search_folder_from).collect())
@@ -4365,6 +4381,17 @@ mod tests {
         assert!(add_members_body(&[]).is_err());
         assert!(list_name("  ").is_err());
         assert_eq!(list_url("a/b="), "https://graph.microsoft.com/v1.0/me/distributionLists/a%2Fb%3D");
+    }
+
+    #[test]
+    fn a_long_graph_error_keeps_its_code_when_clipped() {
+        let long = format!(r#"{{"error":{{"code":"RequestBroker--ParseUri","message":"Could not find a property named 'filterQuery' on type 'microsoft.graph.mailFolder'. {}","innerError":{{"date":"2026-11-26T12:00:00","request-id":"abc-123","client-request-id":"abc-123"}}}}}}"#, "x".repeat(400));
+        let clipped = clip(&long);
+        let value: serde_json::Value = serde_json::from_str(&clipped).unwrap();
+        assert_eq!(value["error"]["code"], "RequestBroker--ParseUri");
+        assert_eq!(value["error"]["innerError"]["request-id"], "abc-123");
+        assert!(clipped.len() < 400);
+        assert_eq!(clip("plain\ntext"), "plain text");
     }
 
     #[test]
