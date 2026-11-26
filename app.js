@@ -1371,7 +1371,7 @@ function installAccount(record) {
 let activeProfile = (() => {
   try {
     const saved = localStorage.getItem("mailroom-profile");
-    if (saved === "personal" || saved === "work") return saved;
+    if (saved === "personal" || saved === "work" || saved === "all") return saved;
   } catch (e) {}
   return "work";
 })();
@@ -1398,24 +1398,32 @@ function openFolder(acct, folder, folderId, pick) {
   folded.clear();
   const picked = messages.find(m => m.id === selected);
   if (picked && picked.draft) focusReply = true;
-  const categoryView = isCategoryBox(box);
+  const categoryView = (isCategoryBox(box) || isTaskBox(box));
   if (!categoryView) {
     if (account === "all") profileAccountIds().forEach(id => rememberFolderBusy(id, box));
     else rememberFolderBusy(account, box);
   }
   render();
+  if (isTaskBox(box)) { loadTaskBoxes(); return; }
   if (categoryView) return;
   if (account === "all") ensureUnifiedFolder(box);
   else ensureFolderMessages(account, box, folderId || "");
 }
 
+// The profile is a filter on every account in view: "work", "personal", or
+// "all" for every account at once (2.0, #134). Calendar keeps its own Both.
 function accountInProfile(id, profile) {
-  return !!accounts[id] && accountProfile(id) === (profile || activeProfile);
+  const want = profile || activeProfile;
+  return !!accounts[id] && (want === "all" || accountProfile(id) === want);
+}
+// Both profiles have accounts, so All means something.
+function profilesMixed() {
+  return Object.keys(accounts).some(id => accountProfile(id) === "work") && Object.keys(accounts).some(id => accountProfile(id) === "personal");
 }
 
 function profileAccountIds(profile) {
   const want = profile || activeProfile;
-  return Object.keys(accounts).filter(id => accountProfile(id) === want);
+  return Object.keys(accounts).filter(id => want === "all" || accountProfile(id) === want);
 }
 
 function profileEntries(profile) {
@@ -1436,7 +1444,7 @@ function rememberCalendarBoth() {
 }
 
 function calendarProfilesBoth() {
-  return calendarBoth && profileAccountIds("work").length > 0 && profileAccountIds("personal").length > 0;
+  return (calendarBoth || activeProfile === "all") && profileAccountIds("work").length > 0 && profileAccountIds("personal").length > 0;
 }
 
 function calendarAccountVisible(id) {
@@ -1461,7 +1469,7 @@ function calendarRows() {
 }
 
 function profileLabel(profile) {
-  return profile === "personal" ? "Personal" : "Work";
+  return profile === "personal" ? "Personal" : profile === "all" ? "All" : "Work";
 }
 
 function profileUnread(profile) {
@@ -1480,14 +1488,17 @@ function messageInAccountView(acct, messageAccount) {
 
 function profileSwitchHtml() {
   const showBoth = view === "calendar" && profileAccountIds("work").length > 0 && profileAccountIds("personal").length > 0;
+  const showAll = view !== "calendar" && profilesMixed();
   const button = (profile) => {
-    const on = activeProfile === profile && !(showBoth && calendarBoth);
-    const n = on || view === "calendar" ? 0 : profileUnread(profile);
+    const on = activeProfile === profile && !(showBoth && (calendarBoth || activeProfile === "all"));
+    // All's count would only repeat the other two.
+    const n = on || view === "calendar" || profile === "all" ? 0 : profileUnread(profile);
     const badge = n ? `<span class="profile-badge">${n > 99 ? "99+" : n}</span>` : "";
     return `<button type="button" data-set-profile="${profile}" aria-pressed="${on}">${profileLabel(profile)}${badge}</button>`;
   };
-  const both = showBoth ? `<button type="button" data-set-calendar="both" aria-pressed="${calendarBoth}">Both</button>` : "";
-  return `<div class="seg profile-switch" role="group" aria-label="${showBoth ? "Calendars" : "Profile"}">${button("work")}${button("personal")}${both}</div>`;
+  const both = showBoth ? `<button type="button" data-set-calendar="both" aria-pressed="${calendarBoth || activeProfile === "all"}">Both</button>` : "";
+  const all = showAll ? button("all") : "";
+  return `<div class="seg profile-switch${showAll ? " three" : ""}" role="group" aria-label="${showBoth ? "Calendars" : "Profile"}">${all}${button("work")}${button("personal")}${both}</div>`;
 }
 
 function bindProfileSwitch(root) {
@@ -1558,7 +1569,7 @@ function settleProfileSelection() {
 }
 
 function setActiveProfile(next) {
-  if ((next !== "work" && next !== "personal") || next === activeProfile) return;
+  if ((next !== "work" && next !== "personal" && next !== "all") || next === activeProfile) return;
   capturePaneCompose();
   activeProfile = next;
   rememberActiveProfile();
@@ -1761,6 +1772,86 @@ function categoryNameOf(folder) {
   return String(folder || "").slice(4);
 }
 
+// Flagged and Snoozed are tasks, not places (2.0, #135): lists that span
+// every account in view, shown at the top of Favorites while they hold mail.
+const TASK_BOX_NAMES = { "task:flagged": "Flagged", "task:snoozed": "Snoozed" };
+function isTaskBox(folder) {
+  return Object.prototype.hasOwnProperty.call(TASK_BOX_NAMES, String(folder || ""));
+}
+
+// The account's Snoozed folder, made by snoozeMessages with ensure_folder.
+function snoozedFolderKey(accountId) {
+  const live = (accounts[accountId] && accounts[accountId].liveFolders) || [];
+  const found = live.find(f => String(f.name || "").trim().toLowerCase() === "snoozed" && !f.parentId);
+  return found ? found.key : "";
+}
+
+function inTaskBox(m, folder) {
+  const where = messageBox(m);
+  if (folder === "task:flagged") return !!m.flagged && !m.draft && where !== "trash" && where !== "drafts" && where !== "outbox" && folderKind(where, m.account) !== "junk";
+  if (folder === "task:snoozed") { const key = snoozedFolderKey(m.account); return !!key && where === key; }
+  return false;
+}
+
+function taskBoxCount(folder) {
+  const seen = new Set();
+  messages.forEach(m => { if (accountInProfile(m.account) && inTaskBox(m, folder)) seen.add(m.account + "\n" + m.thread); });
+  return seen.size;
+}
+
+// When a snoozed message comes back, from the saved list.
+function snoozeWake(m) {
+  const acct = accounts[m.account];
+  const item = loadSnoozes().find(s => (s.account === m.account || (acct && s.email === acct.email)) && (s.ids || []).includes(m.id));
+  return item ? new Date(item.until) : null;
+}
+
+// Flagged mail in folders that are not open is read from the cache, and
+// each account's Snoozed folder is loaded, so the lists and their counts
+// are whole.
+let taskBoxesLoading = null;
+async function loadTaskBoxes() {
+  if (!inDesktop() || sideWindow) return;
+  if (taskBoxesLoading) return taskBoxesLoading;
+  taskBoxesLoading = (async () => {
+    const ids = profileAccountIds().filter(id => accounts[id] && accounts[id].signedIn && accounts[id].email);
+    await Promise.all(ids.map(async id => {
+      const acct = accounts[id];
+      try {
+        const page = await tauriInvoke("search_cached", { email: acct.email, boxKey: "", box_key: "", words: [], phrases: [], accountName: acct.name || "", account_name: acct.name || "", fromDay: "", from_day: "", toDay: "", to_day: "", zoneOffset: 0, zone_offset: 0, files: "", unreadOnly: false, unread_only: false, readOnly: false, read_only: false, flaggedOnly: true, flagged_only: true, inviteOnly: false, invite_only: false, limit: 200, before: "", beforeId: "", before_id: "" });
+        const list = (page && page.messages) || [];
+        const boxes = (page && page.boxes) || [];
+        list.forEach((item, i) => {
+          if (!item || !item.id || messages.some(m => m.account === id && m.id === item.id)) return;
+          const message = liveMessage(id, item, boxes[i] || "inbox");
+          message.taskCached = true;
+          messages.push(message);
+        });
+      } catch (err) {}
+      const snoozed = snoozedFolderKey(id);
+      if (snoozed) {
+        try { await ensureFolderMessages(id, snoozed); } catch (err) {}
+      }
+    }));
+  })();
+  try { await taskBoxesLoading; } finally { taskBoxesLoading = null; }
+  // The folder pane and, when a task list is open, the list; the reading
+  // pane is left alone, so a reply being typed is not touched.
+  renderFolders();
+  if (view === "mail" && isTaskBox(box)) renderList();
+}
+
+function taskFavoriteButton(folder) {
+  const count = folder === "drafts" ? folderBadge("all", "drafts") : taskBoxCount(folder);
+  if (!count) return "";
+  const current = account === "all" && box === folder && folderPick === "task";
+  const label = folder === "drafts" ? "Drafts" : TASK_BOX_NAMES[folder];
+  const icon = folder === "drafts" ? folderIcon("drafts") : `<span class="folder-ico">${folderIconSvg(folder === "task:flagged" ? "flag" : "snooze")}</span>`;
+  return `<button class="nav-item task-fav" type="button" data-acct="all" data-box="${esc(folder)}" data-task="1" aria-current="${current}">
+    ${icon}<span class="folder-name">${esc(label)}</span><span class="count">${count}</span>
+  </button>`;
+}
+
 function isSearchBox(folder) {
   return String(folder || "").startsWith("search:");
 }
@@ -1780,6 +1871,7 @@ function knownFolder(acct, folder) {
 
 function boxLabel(folder, acct) {
   if (isCategoryBox(folder)) return categoryNameOf(folder);
+  if (isTaskBox(folder)) return TASK_BOX_NAMES[folder];
   if (acct && acct !== "all") {
     const search = searchFolderOf(acct, folder);
     if (search && search.name) return search.name;
@@ -1821,6 +1913,7 @@ function setFolderCountMode(acct, folder, mode) {
 }
 
 function folderBadge(acct, folder) {
+  if (isTaskBox(folder)) return taskBoxCount(folder);
   if (isCategoryBox(folder)) {
     const name = categoryNameOf(folder);
     const unread = folderCountMode(acct, folder) === "unread";
@@ -2347,7 +2440,9 @@ function folderIconSvg(kind) {
     junk: `<circle ${pen} cx="8" cy="8" r="5.2"/><path ${pen} d="M4.4 11.6 11.6 4.4"/>`,
     chat: `<path ${pen} d="M2.6 3.2h7.4c.4 0 .8.3.8.8v3.8c0 .4-.4.8-.8.8H6.4L4 11.2V8.6h-.6c-.4 0-.8-.4-.8-.8V4c0-.5.4-.8.8-.8z"/>`,
     rss: `<circle cx="4.1" cy="11.6" r="1.15" fill="currentColor"/><path ${pen} d="M3.2 7.2a5.2 5.2 0 0 1 5.2 5.2M3.2 4.2a8.2 8.2 0 0 1 8.2 8.2"/>`,
-    folder: `<path ${pen} d="M2.2 4.4c0-.5.4-.8.9-.8h3l1.2 1.3h5.6c.5 0 .9.3.9.8v6.2c0 .5-.4.9-.9.9H3.1c-.5 0-.9-.4-.9-.9V4.4z"/>`
+    folder: `<path ${pen} d="M2.2 4.4c0-.5.4-.8.9-.8h3l1.2 1.3h5.6c.5 0 .9.3.9.8v6.2c0 .5-.4.9-.9.9H3.1c-.5 0-.9-.4-.9-.9V4.4z"/>`,
+    flag: `<path ${pen} d="M4 14V2.4M4 2.8h8l-2 3 2 3H4"/>`,
+    snooze: `<circle ${pen} cx="8" cy="8.6" r="5"/><path ${pen} d="M6.4 6.8h3.2L6.4 10.4h3.2M3.2 2.6 1.9 3.9M12.8 2.6l1.3 1.3"/>`
   };
   return `<svg class="folder-glyph" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">${paths[kind] || paths.folder}</svg>`;
 }
@@ -2357,7 +2452,7 @@ function folderIcon(folder, acct) {
 }
 
 function folderButton(acct, folder) {
-  const current = folderPick !== "fav" && account === acct && box === folder;
+  const current = folderPick !== "fav" && folderPick !== "task" && account === acct && box === folder;
   const count = folderBadge(acct, folder);
   const label = acct === "all" && folder === "inbox" ? "All inboxes" : boxLabel(folder, acct);
   const live = acct !== "all" && accounts[acct] && (accounts[acct].liveFolders || []).find(item => item.key === folder);
@@ -3679,14 +3774,16 @@ function renderFolders() {
   const mailIds = profileEntries();
   const hasAccounts = mailIds.length > 0;
   const favs = favorites.filter(favoriteVisible);
+  // Drafts, Flagged and Snoozed lead Favorites while they hold something.
+  const tasks = hasAccounts ? ["drafts", "task:flagged", "task:snoozed"].map(taskFavoriteButton).join("") : "";
   const folderScroll = folders.scrollTop;
   folders.innerHTML = `
     ${profileSwitchHtml()}
     ${hasAccounts ? `<button class="new-mail" type="button" id="compose">New mail</button>` : ""}
-    ${hasAccounts && favs.length ? `${sectionHead("fav", "Favorites", "Favorites")}${sectionOpen("fav") ? favs.map(item => favoriteButton(item.account, item.box)).join("") : ""}` : ""}
+    ${hasAccounts && (favs.length || tasks) ? `${sectionHead("fav", "Favorites", "Favorites")}${sectionOpen("fav") ? tasks + favs.map(item => favoriteButton(item.account, item.box)).join("") : ""}` : ""}
     ${mailIds.length > 1 ? `${sectionHead("all", "All accounts", "All accounts")}${sectionOpen("all") ? allAccountsFoldersHtml(mailBoxes) : ""}` : ""}
     ${mailIds.map(([id, acct]) => `
-      ${sectionHead(id, esc(acct.name), acct.name)}
+      ${sectionHead(id, `${mailIds.length > 1 ? `<span class="acct-mark ${esc(acct.cls || "work")}" aria-hidden="true"></span>` : ""}${esc(acct.name)}`, acct.name)}
       ${sectionOpen(id) ? accountFoldersHtml(id) + categoryFoldersHtml(id) + searchFoldersHtml(id) : ""}
     `).join("")}
   `;
@@ -3737,7 +3834,7 @@ function renderFolders() {
         suppressFolderClick = false;
         return;
       }
-      openFolder(btn.dataset.acct, btn.dataset.box, btn.dataset.folderId || "", btn.classList.contains("fav") ? "fav" : "folder");
+      openFolder(btn.dataset.acct, btn.dataset.box, btn.dataset.folderId || "", btn.dataset.task ? "task" : btn.classList.contains("fav") ? "fav" : "folder");
     };
   });
   folders.querySelectorAll(".folder-row, .fav").forEach(el => {
@@ -4046,7 +4143,7 @@ function inSearchScope(m) {
   const acct = searchAccount || account;
   const range = currentSearchParts();
   if (!accountInProfile(m.account)) return false;
-  if (searchScope !== "all" && messageBox(m) !== box) return false;
+  if (searchScope !== "all" && messageBox(m) !== box && !(isTaskBox(box) && !searchActive() && inTaskBox(m, box))) return false;
   if (acct !== "all" && m.account !== acct) return false;
   if (range.from && m.date < range.from) return false;
   if (range.to && m.date > range.to) return false;
@@ -4145,7 +4242,8 @@ function filtered() {
       if (m.searchOnly) return true;
       return searchResultIds.has(searchHitKey(m.account, m.id));
     }
-    return inLoadedWindow(m);
+    // Flagged and Snoozed span every folder and date (#135).
+    return (isTaskBox(box) && !searchActive()) || inLoadedWindow(m);
   });
   const threadHasFile = new Map();
   scoped.forEach(m => {
@@ -4314,7 +4412,7 @@ function sortLabel(sort) {
 // Sizes are not part of the sync; sorting by size asks for them once per
 // folder and session, and the list redraws as they come.
 function askSizes() {
-  if (!inDesktop() || listSort().by !== "size" || searchActive() || isCategoryBox(box) || isSearchBox(box)) return;
+  if (!inDesktop() || listSort().by !== "size" || searchActive() || (isCategoryBox(box) || isTaskBox(box)) || isSearchBox(box)) return;
   const ids = account === "all" ? profileAccountIds() : [account];
   ids.forEach(async id => {
     const acct = accounts[id];
@@ -4556,9 +4654,12 @@ function conversations() {
     if (!threads.has(m.thread)) return;
     if (m.live && shadowed.has(m.id)) return;
     if (!accountInProfile(m.account)) return;
-    if (!active && !inLoadedWindow(m)) return;
+    if (!active && !isTaskBox(box) && !inLoadedWindow(m)) return;
     if (!active) {
-      if (isCategoryBox(box)) {
+      if (isTaskBox(box)) {
+        if (account !== "all" && m.account !== account) return;
+        if (!inTaskBox(m, box)) return;
+      } else if (isCategoryBox(box)) {
         if (account !== "all" && m.account !== account) return;
         if (!(m.categories || []).includes(categoryNameOf(box))) return;
         if (messageBox(m) === "drafts" || messageBox(m) === "outbox") return;
@@ -5246,6 +5347,7 @@ async function searchDeeper() {
 
 function listHeading() {
   if (searchActive()) return "Search results";
+  if (isTaskBox(box)) return TASK_BOX_NAMES[box];
   const acct = accounts[account];
   if (isCategoryBox(box)) {
     const name = categoryNameOf(box);
@@ -5427,7 +5529,8 @@ function paintList() {
   const acctDot = (m) => mixedAccounts && accounts[m.account] ? `<span class="acct-dot ${esc(accounts[m.account].cls || "work")}" title="${esc(accounts[m.account].name)}"></span>` : "";
   const rowHtml = (m, opts) => {
     const who = (m.draft || m.pendingSend) ? "To: " + (m.toName || m.to || "someone") : m.from;
-    const when = m.draft && !m.pendingSend ? "Draft" : ((sort.by === "size" || sort.by === "due") && sortWhen(sort.by, m, opts.shownAll)) || m.time;
+    const wake = box === "task:snoozed" ? snoozeWake(m) : null;
+    const when = m.draft && !m.pendingSend ? "Draft" : wake ? "Back " + wake.toLocaleString(undefined, { weekday: "short", hour: "2-digit", minute: "2-digit" }) : ((sort.by === "size" || sort.by === "due") && sortWhen(sort.by, m, opts.shownAll)) || m.time;
     const folderPill = searchScope === "all" ? `<span class="pill">${esc(boxLabel(messageBox(m), m.account))}</span>` : "";
     const count = opts.count > 1 ? `<span class="thread-n">${opts.count}</span>` : "";
     const flag = opts.flagged ? flagSvg : "";
@@ -5441,8 +5544,9 @@ function paintList() {
     const pinLabel = pinned ? "Unpin" : "Pin";
     const where = messageBox(m);
     const canArchive = !opts.child && where !== "archive" && where !== "trash" && where !== "drafts" && where !== "outbox" && !m.pendingSend;
+    const unsnooze = box === "task:snoozed" && !opts.child ? `<button type="button" class="row-act" data-row-unsnooze="${esc(m.id)}" title="Bring back now" aria-label="Bring back now"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.3 6.6 4.4 3.3h7.2l2.1 3.3v5.6c0 .5-.4.9-.9.9H3.2c-.5 0-.9-.4-.9-.9V6.6z M8 5.2v4.6M6.1 7.7 8 9.8l1.9-2.1" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg></button>` : "";
     const actions = `<span class="row-actions">
-      ${canArchive ? `<button type="button" class="row-act" data-row-archive="${esc(m.id)}" title="Archive" aria-label="Archive">${rowArchiveIcon}</button>` : ""}
+      ${unsnooze}${canArchive ? `<button type="button" class="row-act" data-row-archive="${esc(m.id)}" title="Archive" aria-label="Archive">${rowArchiveIcon}</button>` : ""}
       <button type="button" class="row-act" data-row-flag="${esc(m.id)}" aria-pressed="${m.flagged ? "true" : "false"}" title="${esc(flagLabel)}" aria-label="${esc(flagLabel)}">${rowFlagIcon}</button>
       <button type="button" class="row-act pin" data-row-pin="${esc(opts.thread)}" aria-pressed="${pinned ? "true" : "false"}" title="${esc(pinLabel)}" aria-label="${esc(pinLabel)}">${rowPinIcon}</button>
       <button type="button" class="row-act" data-row-delete="${esc(m.id)}" data-row-only="${opts.child ? "1" : ""}" title="Delete" aria-label="Delete">${rowTrashIcon}</button>
@@ -5643,6 +5747,18 @@ function bindListPart(part) {
       ev.stopPropagation();
       ev.preventDefault();
       togglePin(btn.dataset.rowPin);
+    };
+  });
+  all("[data-row-unsnooze]").forEach(btn => {
+    btn.onclick = (ev) => {
+      ev.stopPropagation();
+      ev.preventDefault();
+      const conv = conversationFor(btn.dataset.rowUnsnooze);
+      if (!conv) return;
+      const ids = new Set(conv.messages.map(m => m.id));
+      saveSnoozes(loadSnoozes().map(item => Object.assign({}, item, { ids: (item.ids || []).filter(id => !ids.has(id)) })).filter(item => item.ids.length));
+      moveConversation(conv, "inbox");
+      toastMove("Back in the Inbox");
     };
   });
   all("[data-row-archive]").forEach(btn => {
@@ -7304,7 +7420,7 @@ function dropFolder(el) {
   const acct = el.dataset.acct;
   const key = el.dataset.box;
   if (acct !== "all" && acct !== msg.account) return "";
-  if (isCategoryBox(key) || isSearchBox(key)) return "";
+  if ((isCategoryBox(key) || isTaskBox(key)) || isSearchBox(key)) return "";
   if (!knownFolder(msg.account, key) || key === "drafts" || key === "outbox" || key === messageBox(msg)) return "";
   return key;
 }
@@ -7494,7 +7610,7 @@ function externalPill(m) {
   return senderExternal(m) ? `<span class="pill external">External</span>` : "";
 }
 
-function messageBlock(m, open, many) {
+function messageBlock(m, open, many, isLatest) {
   const chevron = `<svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path d="M4.2 2.2L8 6 4.2 9.8" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
   const stamp = messageStamp(m);
   const whenClass = stamp === "Draft" ? "when draft-when" : "when";
@@ -7537,7 +7653,7 @@ function messageBlock(m, open, many) {
       <div class="thread-side">
         <span class="${whenClass}" title="${esc(messageStampFull(m))}">${esc(stamp)}</span>
         <button class="icon-btn light-toggle" type="button" data-light-view="${esc(m.id)}" aria-pressed="${lightView.has(m.id)}" title="${lightView.has(m.id) ? "Show in dark mode" : "Show with a light background"}" aria-label="${lightView.has(m.id) ? "Show in dark mode" : "Show with a light background"}"><svg width="18" height="18" viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="3.2" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M10 2.6v2M10 15.4v2M2.6 10h2M15.4 10h2M4.8 4.8l1.4 1.4M13.8 13.8l1.4 1.4M15.2 4.8l-1.4 1.4M6.2 13.8l-1.4 1.4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button>
-        <div class="thread-actions"${many ? "" : " hidden"}>
+        <div class="thread-actions"${many && !isLatest ? "" : " hidden"}>
           <button class="icon-btn" type="button" data-reply="${m.id}" title="Reply" aria-label="Reply">${replyIcon}</button>
           <button class="icon-btn" type="button" data-reply-all="${m.id}" title="Reply all" aria-label="Reply all">${replyAllIcon}</button>
           <button class="icon-btn" type="button" data-forward="${m.id}" title="Forward" aria-label="Forward">${forwardIcon}</button>
@@ -7999,12 +8115,13 @@ function audience(msg) {
   const to = addressList(msg.to).map(recipientLabel);
   const cc = addressList(msg.cc).map(recipientLabel);
   const bcc = addressList(msg.bcc).map(recipientLabel);
-  const parts = [];
-  if (fromSelf) parts.push("To: " + (to.join(", ") || "someone"));
-  else parts.push("To: " + ["me", ...to].join(", "));
-  if (cc.length) parts.push("Cc: " + cc.join(", "));
-  if (fromSelf && bcc.length) parts.push("Bcc: " + bcc.join(", "));
-  return parts.join("; ");
+  // One line, as people say it: "to you, Tom Becker and Ines Moreau".
+  // Click it for the addresses (2.0, #140).
+  const names = fromSelf ? to.concat(cc, bcc) : ["you"].concat(to, cc);
+  const list = [...new Set(names.filter(Boolean))];
+  if (!list.length) return "to someone";
+  const shown = list.length > 4 ? list.slice(0, 3).concat([(list.length - 3) + " others"]) : list;
+  return "to " + (shown.length === 1 ? shown[0] : shown.slice(0, -1).join(", ") + " and " + shown[shown.length - 1]);
 }
 
 // Parsed in an inert document: an <img> made in the live one starts loading
@@ -9252,7 +9369,7 @@ function moveRecent() {
 }
 
 function noteMove(accountId, key) {
-  if (!accountId || !key || isCategoryBox(key) || isSearchBox(key)) return;
+  if (!accountId || !key || (isCategoryBox(key) || isTaskBox(key)) || isSearchBox(key)) return;
   const all = moveRecent();
   const acct = all[accountId] && typeof all[accountId] === "object" ? all[accountId] : {};
   const now = Date.now();
@@ -9869,7 +9986,9 @@ function renderReading() {
     if (showDraftCard && threadDraft && m.id === threadDraft.id) {
       return `<div class="thread-draft" data-draft="${esc(m.id)}"><div class="thread-draft-label">Draft</div>${composer}</div>`;
     }
-    return messageBlock(m, openMessage(m), many);
+    // The toolbar answers the newest message; only earlier ones carry their
+    // own reply arrows (2.0, #140), shown when the pointer is over them.
+    return messageBlock(m, openMessage(m), many, !!conv.latest && m.id === conv.latest.id);
   }).join("");
   const icon = (id, label, path) => `<button class="icon-btn" type="button" id="${id}" title="${label}" aria-label="${label}">${path}</button>`;
   const readIcon = `<svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true"><path d="M2.8 8.2L10 13l7.2-4.8" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><path d="M3.2 7.6V15h13.6V7.6L10 3.2 3.2 7.6z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg>`;
@@ -11242,6 +11361,16 @@ window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () 
 // Mailroom the mail app and put the unread count in the bar.
 
 let omarchyLook = null;
+
+// On Omarchy the message list can take the reading font instead of the
+// monospace chrome (2.0, #137). Off by default, so the look stays.
+let listFont = (() => { try { return localStorage.getItem("mailroom-list-font") === "read" ? "read" : "chrome"; } catch (e) { return "chrome"; } })();
+document.documentElement.dataset.listFont = listFont;
+function setListFont(value) {
+  listFont = value === "read" ? "read" : "chrome";
+  document.documentElement.dataset.listFont = listFont;
+  try { localStorage.setItem("mailroom-list-font", listFont); } catch (e) {}
+}
 const OMARCHY_HEX = /^#[0-9a-f]{6}$/;
 
 // Mailroom's colour tokens from an Omarchy palette. Every value is one of
@@ -11706,6 +11835,11 @@ function renderOmarchySettings(body) {
         </div>
       </div>
       <div class="omarchy-card">
+        <h3>Message list</h3>
+        <label class="check-row"><input type="checkbox" id="omarchy-list-font"${listFont === "read" ? " checked" : ""}> Proportional font in the message list</label>
+        <p class="field-hint">Senders, subjects and previews in the reading font, so each line shows more words. The rest of Mailroom keeps Omarchy's monospace font.</p>
+      </div>
+      <div class="omarchy-card">
         <h3>Mail app</h3>
         <div class="omarchy-state" id="omarchy-mail-state">Checking…</div>
         <p class="field-hint"><kbd>Super</kbd> <kbd>Shift</kbd> <kbd>E</kbd> opens Mailroom and <kbd>Super</kbd> <kbd>Shift</kbd> <kbd>Alt</kbd> <kbd>E</kbd> starts a new message, in place of HEY. Email links open a new message here. The keys are two lines Mailroom adds to ~/.config/hypr/bindings.lua.</p>
@@ -11725,6 +11859,8 @@ function renderOmarchySettings(body) {
       </div>
     </section>`;
   body.querySelector("#omarchy-theme-follow").onclick = () => { setTheme("omarchy"); renderSettings(); };
+  const listFontBox = body.querySelector("#omarchy-list-font");
+  listFontBox.onchange = () => setListFont(listFontBox.checked ? "read" : "chrome");
   body.querySelector("#omarchy-theme-own").onclick = () => { setTheme("dark"); renderSettings(); };
   const paint = (status) => {
     if (!document.body.contains(body.querySelector("#omarchy-mail-state"))) return;
@@ -11825,7 +11961,7 @@ function liveFolderOf(acct, key) {
 }
 
 function ownFolder(acct, key) {
-  if (!accounts[acct] || isCategoryBox(key) || isSearchBox(key) || boxNames[key]) return false;
+  if (!accounts[acct] || (isCategoryBox(key) || isTaskBox(key)) || isSearchBox(key) || boxNames[key]) return false;
   if (!liveFolderOf(acct, key) || folderKind(key, acct) !== "folder") return false;
   return isGoogleAccount(acct) ? String(key).startsWith("Label_") : true;
 }
@@ -13124,7 +13260,7 @@ function renderCalendar() {
       const body = notes ? `<span class="event-body">${noteHtml(notes)}</span>` : "";
       return `<button class="event ${eventFace(e)}${short ? " compact" : ""}" type="button" data-event="${e.id}" data-kind="timed"
         style="top:${top}%;height:${height}%;left:calc(${left}% + 2px);width:calc(${width}% - 4px)">
-        <strong>${esc(e.title)}</strong>${when}${place}${body}${mark}${short && join ? joinHtml(join) : ""}${guests ? `<span class="event-people">${esc(guests)}</span>` : ""}<span class="event-resize" data-resize aria-hidden="true"></span>
+        <strong>${esc(e.title)}</strong>${short ? `<span class="event-start">${esc(fmt(e.start))}</span>` : ""}${when}${place}${body}${mark}${short && join ? joinHtml(join) : ""}${guests ? `<span class="event-people">${esc(guests)}</span>` : ""}<span class="event-resize" data-resize aria-hidden="true"></span>
       </button>`;
     }).join("");
     const lines = Array.from({ length: 24 }, (_, i) => `<div class="hour-line" style="top:${(i / 24) * 100}%"></div>`).join("");
@@ -16520,7 +16656,7 @@ const EMPTY_MARK = `<svg class="empty-mark" aria-hidden="true" viewBox="0 0 64 6
 function emptyReadingHtml() {
   let notes = "";
   if (view === "mail" && !searchActive()) {
-    const unread = isCategoryBox(box) || isSearchBox(box) ? 0 : folderUnread(account, box);
+    const unread = (isCategoryBox(box) || isTaskBox(box)) || isSearchBox(box) ? 0 : folderUnread(account, box);
     if (unread) notes += `<p class="empty-note">${unread === 1 ? "1 unread message" : unread + " unread messages"} in this folder</p>`;
     const now = new Date(Date.now());
     const minute = now.getHours() * 60 + now.getMinutes();
@@ -20712,25 +20848,41 @@ document.getElementById("show-mail-folders").onclick = () => setFoldersOpen(true
 // list and a readable message folds the folders away for as long as it stays
 // that narrow, and brings back your choice when it widens. A click while
 // narrow holds until the window next crosses that width.
-var foldersWanted = true;
+// Your choice is kept per view, so the folders can stay hidden in Calendar
+// and open in Mail, and it survives a restart (2.0, #140).
+var foldersWantedBy = (() => {
+  const want = { mail: true, calendar: true, people: true, settings: true };
+  try { Object.assign(want, JSON.parse(localStorage.getItem("mailroom-folders-open") || "{}")); } catch (e) {}
+  return want;
+})();
 var foldersManual = null;
 var foldersNarrow = null;
-const READING_COMFORT = 480;
+// Under about 1100px (at the default pane width) Mail folds the folders
+// away, so the reading pane keeps a usable line, as the 1.8 review asked.
+const READING_COMFORT = 600;
+const CALENDAR_COMFORT = 640;
+function foldersWantedNow() {
+  return foldersWantedBy[view] !== false;
+}
 function setFoldersOpen(open) {
   if (foldersNarrow) foldersManual = open;
-  else foldersWanted = open;
+  else {
+    foldersWantedBy[view] = !!open;
+    try { localStorage.setItem("mailroom-folders-open", JSON.stringify(foldersWantedBy)); } catch (e) {}
+  }
   if (foldersNarrow === null) showFolders(open);
   else fitFolders();
 }
 function foldersFit() {
   const set = parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--folders-width"));
   const folders = set > 0 ? set : FOLDERS_WIDTH.start;
+  if (view === "calendar" || view === "settings") return window.innerWidth >= folders + CALENDAR_COMFORT;
   return window.innerWidth >= folders + 8 + LIST_WIDTH_MIN + READING_COMFORT;
 }
 function fitFolders() {
   const narrow = !foldersFit();
   if (narrow !== foldersNarrow) { foldersNarrow = narrow; foldersManual = null; }
-  const open = foldersManual !== null ? foldersManual : (narrow ? false : foldersWanted);
+  const open = foldersManual !== null ? foldersManual : (narrow ? false : foldersWantedNow());
   const changed = (document.body.dataset.folders === "open") !== open;
   showFolders(open);
   if (changed) applyListWidth(preferredListWidth, false);
@@ -21384,7 +21536,7 @@ const folderBusy = new Set();
 let syncNote = "";
 const folderRun = new Map();
 const bodyLoads = new Set();
-const APP_VERSION = "1.9.2";
+const APP_VERSION = "1.9.3";
 let appVersion = APP_VERSION;
 
 prepareDesktopAccounts();
@@ -21973,7 +22125,7 @@ const FOLDER_REFRESH_GAP = 20 * 1000;
 async function refreshLoadedFolder(accountId, key) {
   const mark = folderMark(accountId, key);
   const acct = accounts[accountId];
-  if (key === "inbox" || isSearchBox(key) || isCategoryBox(key)) return;
+  if (key === "inbox" || isSearchBox(key) || (isCategoryBox(key) || isTaskBox(key))) return;
   if (!loadedLiveFolders.has(mark) || folderRefreshing.has(mark)) return;
   if (!acct || !acct.signedIn || !inDesktop() || accountNeedsSignIn(accountId)) return;
   const last = folderRefreshAt.get(mark) || 0;
@@ -22003,7 +22155,7 @@ async function refreshLoadedFolder(accountId, key) {
 }
 
 function refreshOpenFolder() {
-  if (view !== "mail" || box === "inbox" || isSearchBox(box) || isCategoryBox(box)) return;
+  if (view !== "mail" || box === "inbox" || isSearchBox(box) || (isCategoryBox(box) || isTaskBox(box))) return;
   const ids = account === "all" ? profileAccountIds() : [account];
   ids.forEach(id => { if (accounts[id]) refreshLoadedFolder(id, box); });
 }
@@ -23026,6 +23178,7 @@ async function pollMail() {
   }
   // Sent Items or Drafts left open: mail sent elsewhere shows up too.
   refreshOpenFolder();
+  loadTaskBoxes();
   if (missed) noteUnreachable(missed);
   else if (reachProblem || couldNotReach(authProblem)) clearReachProblem();
   if (!missed) replayQueuedActions();

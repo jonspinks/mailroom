@@ -1320,6 +1320,107 @@ test("multi-select, bulk delete and keyboard shortcuts", { fake: true }, async (
   expect(await p.$(".shortcuts-dialog"), "? shows the shortcuts");
 });
 
+test("All shows every account's mail beside Work and Personal, with account dots, and is kept (#134)", { fake: false }, async ({ p }) => {
+  const names = () => p.$$eval("#folder-nav .acct-label.section", bs => bs.map(b => b.textContent.replace(/\s+/g, " ").trim()));
+  const subjects = () => p.evaluate(() => [...document.querySelectorAll("#rows .subject")].map(s => s.textContent));
+  same(await p.$$eval(".profile-switch [data-set-profile]", bs => bs.map(b => b.dataset.setProfile)), ["all", "work", "personal"], "All, Work and Personal");
+  await p.click('[data-set-profile="all"]'); await wait(300);
+  const sections = await names();
+  expect(sections.includes("Timberworks") && sections.some(n => n === "Personal") && sections.some(n => n.includes("All accounts")), "every account, under All accounts", sections);
+  await p.click('#folder-nav [data-acct="all"][data-box="inbox"]'); await wait(300);
+  const all = await subjects();
+  expect(all.includes("Tickets for Saturday") && all.includes("Pipeline review moved to 10:00"), "All inboxes spans both profiles", all);
+  expect(await p.$$eval("#rows .acct-dot", d => d.length) > 0, "each line says whose it is");
+  const mark = await p.$eval("#rows .acct-dot", d => { const r = d.getBoundingClientRect(), row = d.closest(".row").getBoundingClientRect(), dot = d.closest(".row").querySelector(".unread-dot, .dot"); return { edge: Math.round(r.left - row.left), tall: r.height > r.width * 4, round: getComputedStyle(d).borderTopLeftRadius }; });
+  same([mark.edge, mark.tall, mark.round], [0, true, "0px"], "the account is a bar on the row's edge, not a dot like unread");
+  same(await p.evaluate(() => defaultAccountId()), await p.evaluate(() => (activeDefaultEmail() || {}).accountId || Object.keys(accounts)[0]), "new mail starts from the default account");
+  await p.reload({ waitUntil: "load" }); await wait(1500);
+  same(await p.$eval('[data-set-profile="all"]', b => b.getAttribute("aria-pressed")), "true", "All is kept after a reload");
+  await p.evaluate(() => setView("calendar")); await wait(400);
+  same(await p.$('[data-set-profile="all"]'), null, "Calendar keeps Work, Personal and Both");
+  same(await p.$eval('[data-set-calendar="both"]', b => b.getAttribute("aria-pressed")), "true", "with All chosen, Calendar shows both");
+  await p.evaluate(() => setView("mail")); await wait(300);
+  await p.click('[data-set-profile="work"]'); await wait(300);
+  expect(!(await subjects()).includes("Tickets for Saturday"), "Work still filters");
+});
+
+test("Flagged and Snoozed lead Favorites, span folders, and their row actions work (#135)", { fake: true }, async ({ p, calls, clear }) => {
+  const tasks = () => p.$$eval("#folder-nav .task-fav", bs => bs.map(b => b.querySelector(".folder-name").textContent + " " + b.querySelector(".count").textContent));
+  await p.evaluate(() => {
+    const id = Object.keys(accounts).find(k => accounts[k].signedIn);
+    window.__acct = id;
+    messages.filter(m => m.account === id).forEach(m => { m.flagged = false; });
+    // A flagged message in a folder that is not open, only in the cache.
+    window.__inbox.push({ id: "flag-old", thread: "conv-flag-old", subject: "Quote to chase", fromName: "Rita", fromEmail: "rita@example.org", received: "2026-06-01T09:00:00Z", preview: "Old one", bodyHtml: "", unread: false, flagged: true, hasAttachments: false, files: [], to: [], cc: [], bcc: [], categories: [], box: "archive" });
+    // A snoozed message in the account's Snoozed folder.
+    accounts[id].liveFolders.push({ id: "f-snoozed", parentId: "", name: "Snoozed", key: "f-snoozed", unread: 0, total: 1, depth: 0 });
+    const item = { id: "snz-1", thread: "conv-snz", subject: "Read on Monday", fromName: "Ola", fromEmail: "ola@example.org", received: "2026-11-20T09:00:00Z", preview: "Later", bodyHtml: "", unread: false, flagged: false, hasAttachments: false, files: [], to: [], cc: [], bcc: [], categories: [] };
+    window.__folderMail = { "f-snoozed": [item] };
+    saveSnoozes([{ account: id, email: accounts[id].email, ids: ["snz-1"], until: new Date(2030, 0, 7, 9, 0).getTime() }]);
+  });
+  await p.evaluate(() => loadTaskBoxes()); await wait(400);
+  let got = await tasks();
+  expect(got.includes("Flagged 1") && got.includes("Snoozed 1"), "Flagged and Snoozed show with counts", got);
+  same(await p.evaluate(() => { const fav = document.querySelector("#folder-nav .task-fav"); const own = document.querySelector("#folder-nav .fav"); return !own || !!(fav.compareDocumentPosition(own) & Node.DOCUMENT_POSITION_FOLLOWING); }), true, "above your own favorites");
+  await p.click('#folder-nav .task-fav[data-box="task:flagged"]'); await wait(400);
+  same(await p.$eval(".list-head h1", h => h.textContent.trim()), "Flagged", "the list is Flagged");
+  same(await p.$$eval("#rows .subject", s => s.map(x => x.textContent)), ["Quote to chase"], "flagged mail from a folder that was not open");
+  await clear();
+  await p.evaluate(() => document.querySelector('#rows [data-row-flag]').click()); await wait(400);
+  same((await calls("apply_mail")).map(a => a.kind), ["unflag"], "unflag from the list");
+  expect(!(await tasks()).some(t => t.startsWith("Flagged")), "Flagged hides once empty", await tasks());
+  await p.click('#folder-nav .task-fav[data-box="task:snoozed"]'); await wait(400);
+  same(await p.$$eval("#rows .subject", s => s.map(x => x.textContent)), ["Read on Monday"], "snoozed mail");
+  expect((await p.$eval("#rows .when", w => w.textContent)).startsWith("Back "), "with when it comes back");
+  await clear();
+  await p.evaluate(() => document.querySelector('#rows [data-row-unsnooze]').click()); await wait(400);
+  same((await calls("apply_mail")).map(a => a.kind), ["inbox"], "brought back to the Inbox");
+  same(await p.evaluate(() => loadSnoozes().length), 0, "and no longer waits to wake");
+});
+
+test("the rest of the 1.8 review: Reply all leads, one place per action, New mail, recipients, account marks, folders per view, short events (#140)", { fake: false }, async ({ p }) => {
+  // New mail keeps the accent but is not the widest thing.
+  const widths = await p.evaluate(() => [document.getElementById("compose").getBoundingClientRect().width, document.getElementById("folders").getBoundingClientRect().width]);
+  expect(widths[0] < widths[1] * 0.75, "New mail is narrower than the folder pane", widths);
+  // Account names carry their colour mark when several are in view.
+  await p.click('[data-set-profile="all"]'); await wait(300);
+  expect(await p.$$eval("#folder-nav .acct-label.section .acct-mark", m => m.length) >= 2, "each account heading has its mark");
+  // A thread: the newest message has no reply arrows of its own; earlier ones show theirs on hover.
+  const threadId = await p.evaluate(() => { const c = conversations().find(c => c.messages.length > 1); return c && c.latest.id; });
+  expect(threadId, "a thread to read");
+  await p.evaluate(id => { selected = id; render(); }, threadId); await wait(400);
+  const arrows = await p.evaluate((id) => [...document.querySelectorAll("#reading .thread-card")].filter(card => card.querySelector(".thread-actions")).map(card => [card.dataset.pick === id, card.querySelector(".thread-actions").hidden]), threadId);
+  same(arrows.filter(([latest]) => latest).map(([, h]) => h), [true], "the newest message's arrows are left to the toolbar");
+  expect(arrows.filter(([latest]) => !latest).every(([, h]) => h === false), "earlier messages keep theirs", arrows);
+  const vis = await p.evaluate(() => { const a = document.querySelector("#reading .thread-card .thread-actions:not([hidden])"); return a ? getComputedStyle(a).visibility : "hidden"; });
+  same(vis, "hidden", "until the pointer is over them");
+  // Recipients read as one line.
+  const line = await p.$eval("#reading .party-line", b => b.textContent);
+  expect(/^to (you|.+)( and .+)?$/.test(line) && !line.includes("Cc:"), "one line, as people say it", line);
+  // Reply all leads when it is on the bar.
+  const lead = await p.evaluate(() => { const r = document.getElementById("reply"), ra = document.querySelector(".tool-btn#reply-all"); return ra ? [getComputedStyle(ra).fontWeight, getComputedStyle(r).fontWeight] : null; });
+  if (lead) expect(Number(lead[0]) > Number(lead[1]), "Reply all is the bold one", lead);
+  // The folder pane remembers its state per view.
+  await p.click("#hide-folders"); await wait(200);
+  await p.click("#rail-cal"); await wait(300);
+  same(await p.evaluate(() => document.body.dataset.folders), "open", "Calendar keeps its own choice");
+  await p.click("#rail-mail"); await wait(300);
+  same(await p.evaluate(() => document.body.dataset.folders), "closed", "Mail is still closed");
+  same(await p.evaluate(() => JSON.parse(localStorage.getItem("mailroom-folders-open")).mail), false, "and it is saved");
+  // Under about 1100px Mail folds the folders away by itself.
+  await p.evaluate(() => setFoldersOpen(true)); await wait(100);
+  await p.setViewport({ width: 1050, height: 800 }); await wait(400);
+  same(await p.evaluate(() => document.body.dataset.folders), "closed", "folded at 1050px");
+  await p.setViewport({ width: 1400, height: 900 }); await wait(400);
+  same(await p.evaluate(() => document.body.dataset.folders), "open", "back at 1400px");
+});
+
+test("a short event shows its start time beside the title (#140)", { fake: true, tz: true }, async ({ p }) => {
+  await p.evaluate(() => { calFocus = new Date(Date.now() + 86400000); setView("calendar"); calView = "day"; render(); }); await wait(1000);
+  const got = await p.evaluate(() => { const b = document.querySelector('.event.compact[data-event="zoom-1"]'); return b && [b.querySelector("strong").textContent, (b.querySelector(".event-start") || {}).textContent]; });
+  same(got, ["Zoom call", "12:00"], "title, then its start");
+});
+
 test("Work and Personal keep their mail apart", { fake: false }, async ({ p }) => {
   const names = () => p.$$eval("#folder-nav .acct-label.section", bs => bs.map(b => b.textContent.replace(/\s+/g, " ").trim()));
   const subjects = () => p.evaluate(() => [...document.querySelectorAll("#rows .subject")].map(s => s.textContent));
@@ -3887,6 +3988,23 @@ test("on Omarchy: theme colours, font and corners follow, and change live", { fa
   await p.select("#theme-choice", "dark"); await wait(100);
   const kept = await p.evaluate(look => { applyOmarchyLook(look); return [localStorage.getItem("mailroom-theme"), document.documentElement.dataset.look || ""]; }, TOKYO);
   same(kept, ["dark", ""], "the choice is kept; a theme change does not take it back");
+});
+
+test("on Omarchy: the message list can take a proportional font, and keeps it (#137)", { fake: true, setup: `window.__omarchy = ${JSON.stringify(TOKYO)};` }, async ({ p }) => {
+  const fonts = () => p.evaluate(() => ({ rows: getComputedStyle(document.getElementById("rows")).fontFamily, folders: getComputedStyle(document.getElementById("folders")).fontFamily, when: (() => { const w = document.querySelector("#rows .when"); return w ? getComputedStyle(w).fontVariantNumeric : ""; })() }));
+  let f = await fonts();
+  expect(f.rows.includes("JetBrainsMono"), "monospace by default", f.rows);
+  await p.evaluate(() => showSettings("omarchy")); await wait(300);
+  same(await p.$eval("#omarchy-list-font", e => e.checked), false, "off by default");
+  await p.click("#omarchy-list-font"); await wait(100);
+  await p.evaluate(() => setView("mail")); await wait(300);
+  f = await fonts();
+  expect(f.rows.includes("Segoe UI") && !f.rows.includes("JetBrainsMono"), "the list takes the reading font", f.rows);
+  expect(f.folders.includes("JetBrainsMono"), "the folder pane keeps the monospace font", f.folders);
+  same(f.when, "tabular-nums", "times keep even figures");
+  await p.reload({ waitUntil: "load" }); await wait(1200);
+  f = await fonts();
+  expect(f.rows.includes("Segoe UI"), "kept after a reload", f.rows);
 });
 
 test("on Omarchy: Settings makes Mailroom the mail app and puts unread in the bar", { fake: true, setup: `window.__omarchy = ${JSON.stringify(TOKYO)};` }, async ({ p, calls, clear }) => {

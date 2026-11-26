@@ -711,8 +711,12 @@
     place-items: center;
   }
   .folder-tools > button:hover { background: var(--hover); color: var(--ink); }
+  /* The accent, but not the widest thing in the window (#140). */
   .new-mail {
-    width: 100%;
+    width: auto;
+    min-width: 120px;
+    padding: 0 18px;
+    align-self: flex-start;
     display: flex;
     align-items: center;
     justify-content: center;
@@ -1180,27 +1184,41 @@
     visibility: hidden;
   }
   .row.unread .unread-dot { visibility: visible; }
+  /* Whose mail it is, with several accounts in view: a bar in the
+     account's colour along the row's left edge. Not a dot, so it can't be
+     mistaken for the unread dot beside it (2.0). */
   .acct-dot {
-    flex: none;
-    width: 8px;
-    height: 8px;
-    margin-right: 6px;
-    border-radius: min(50%, var(--r-max));
+    position: absolute;
+    left: 0;
+    top: 6px;
+    bottom: 6px;
+    width: 3px;
+    border-radius: 0 min(2px, var(--r-max)) min(2px, var(--r-max)) 0;
     background: var(--work);
   }
-  .acct-dot.personal { background: var(--personal); }
-  .acct-dot.plum { background: var(--plum); }
-  .acct-dot.amber { background: var(--amber); }
-  .acct-dot.clay { background: var(--clay); }
-  .acct-dot.leaf { background: var(--leaf); }
-  .acct-dot.orange { background: var(--orange); }
-  .acct-dot.pink { background: var(--pink); }
-  .acct-dot.red { background: var(--red); }
-  .acct-dot.gold { background: var(--gold); }
-  .acct-dot.navy { background: var(--navy); }
-  .acct-dot.slate { background: var(--slate); }
-  .acct-dot.magenta { background: var(--magenta); }
-  .row .who:has(.acct-dot) { display: flex; align-items: center; }
+  /* The same bar beside each account's name in the folder pane (#140). */
+  .acct-mark {
+    display: inline-block;
+    flex: none;
+    width: 3px;
+    height: 12px;
+    margin-right: 8px;
+    border-radius: min(2px, var(--r-max));
+    background: var(--work);
+    vertical-align: -1px;
+  }
+  .acct-dot.personal, .acct-mark.personal { background: var(--personal); }
+  .acct-dot.plum, .acct-mark.plum { background: var(--plum); }
+  .acct-dot.amber, .acct-mark.amber { background: var(--amber); }
+  .acct-dot.clay, .acct-mark.clay { background: var(--clay); }
+  .acct-dot.leaf, .acct-mark.leaf { background: var(--leaf); }
+  .acct-dot.orange, .acct-mark.orange { background: var(--orange); }
+  .acct-dot.pink, .acct-mark.pink { background: var(--pink); }
+  .acct-dot.red, .acct-mark.red { background: var(--red); }
+  .acct-dot.gold, .acct-mark.gold { background: var(--gold); }
+  .acct-dot.navy, .acct-mark.navy { background: var(--navy); }
+  .acct-dot.slate, .acct-mark.slate { background: var(--slate); }
+  .acct-dot.magenta, .acct-mark.magenta { background: var(--magenta); }
   .row.child {
     gap: 8px;
     padding: 5px 14px 6px 48px;
@@ -1298,7 +1316,8 @@
   .thread-id { min-width: 0; }
   .thread-id .who-line { align-items: center; flex-wrap: wrap; row-gap: 2px; }
   .thread-side { display: flex; flex-direction: column; align-items: flex-end; gap: 2px; }
-  .thread-actions { display: flex; gap: 2px; flex-wrap: wrap; justify-content: flex-end; }
+  .thread-actions { display: flex; gap: 2px; flex-wrap: wrap; justify-content: flex-end; visibility: hidden; }
+  .thread-card:hover .thread-actions, .thread-card:focus-within .thread-actions { visibility: visible; }
   .thread-actions .icon-btn { width: 28px; height: 28px; color: var(--muted); }
   .thread-card .letter { margin-top: 12px; }
   .thread .inline-reply { margin: 0; }
@@ -1737,7 +1756,8 @@
   }
   .tool-btn:hover { color: var(--ink); }
   .tool-btn#reply, .tool-btn#reply-all { color: var(--ink); font-weight: var(--weight-semibold); }
-  .tool-btn#reply + .tool-btn#reply-all { font-weight: var(--weight-regular); color: var(--muted); }
+  /* With Reply all on the bar, it leads and Reply steps back (#140). */
+  .tool-btn#reply:has(+ .tool-btn#reply-all) { font-weight: var(--weight-regular); color: var(--muted); }
   .tool-sep { width: 1px; height: 18px; margin: 0 5px; background: var(--line-strong); flex: none; }
   .tool-sep:has(+ .tool-sep), .tool-sep:last-child { display: none; }
   .tool-more { position: relative; display: inline-flex; }
@@ -2024,6 +2044,9 @@
   .event-join:hover { filter: brightness(1.1); }
   .event-join:focus-visible { outline: 2px solid var(--ink); outline-offset: 1px; }
   .event.compact .event-join { margin-left: 6px; }
+  /* A short event shows its start beside the title (#140). */
+  .event-start { flex: none; margin-left: 6px; opacity: .85; font-variant-numeric: tabular-nums; }
+  @container (max-width: 110px) { .event-start { display: none; } }
   .empty-reading .empty-next-row { display: flex; align-items: center; justify-content: center; gap: 8px; margin: 8px 0 0; }
   .empty-reading .empty-next-row .empty-next { margin-top: 0; }
   .empty-reading .empty-join { padding: 6px 14px; border: 0; border-radius: min(4px, var(--r-max)); background: var(--blue); color: var(--on-accent); font-size: var(--text-ui); font-weight: var(--weight-semibold); }
@@ -4096,6 +4119,10 @@
 html[data-omarchy] .letter,
 html[data-omarchy] .html-body,
 html[data-omarchy] .history-body { font-family: var(--read-font); }
+/* Settings > Omarchy can give the message list the reading font (#137);
+   times stay in even figures so their column lines up. */
+html[data-omarchy][data-list-font="read"] #rows { font-family: var(--read-font); }
+html[data-omarchy][data-list-font="read"] #rows .when { font-variant-numeric: tabular-nums; }
 html[data-look="omarchy"] #app-mark stop { stop-color: var(--blue); }
 /* Avatars carry their account's colour inline; on the Omarchy theme they
    take the theme's version of it. */
