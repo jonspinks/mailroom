@@ -711,12 +711,8 @@
     place-items: center;
   }
   .folder-tools > button:hover { background: var(--hover); color: var(--ink); }
-  /* The accent, but not the widest thing in the window (#140). */
   .new-mail {
-    width: auto;
-    min-width: 120px;
-    padding: 0 18px;
-    align-self: flex-start;
+    width: 100%;
     display: flex;
     align-items: center;
     justify-content: center;

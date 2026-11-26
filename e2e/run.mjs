@@ -1378,10 +1378,7 @@ test("Flagged and Snoozed lead Favorites, span folders, and their row actions wo
   same(await p.evaluate(() => loadSnoozes().length), 0, "and no longer waits to wake");
 });
 
-test("the rest of the 1.8 review: Reply all leads, one place per action, New mail, recipients, account marks, folders per view, short events (#140)", { fake: false }, async ({ p }) => {
-  // New mail keeps the accent but is not the widest thing.
-  const widths = await p.evaluate(() => [document.getElementById("compose").getBoundingClientRect().width, document.getElementById("folders").getBoundingClientRect().width]);
-  expect(widths[0] < widths[1] * 0.75, "New mail is narrower than the folder pane", widths);
+test("the rest of the 1.8 review: Reply all leads, one place per action, recipients, account marks, folders per view, short events (#140)", { fake: false }, async ({ p }) => {
   // Account names carry their colour mark when several are in view.
   await p.click('[data-set-profile="all"]'); await wait(300);
   expect(await p.$$eval("#folder-nav .acct-label.section .acct-mark", m => m.length) >= 2, "each account heading has its mark");
