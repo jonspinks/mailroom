@@ -4175,6 +4175,116 @@ test("opening a .ics file adds its events to the calendar you pick, at the right
   expect((await p.$eval("#toast", e => e.textContent)).includes("no events"), "a file with no events says so");
 });
 
+// ---- 1.9: quieter chrome ----
+
+test("the short folder list shows the Inbox and what has something in it; the rest wait under More folders", { fake: true, folders: "short" }, async ({ p }) => {
+  const shown = () => p.$$eval("#folder-nav [data-acct][data-box], #folders [data-acct][data-box]", els => [...new Set(els.map(e => e.dataset.box))]);
+  const first = await shown();
+  expect(first.includes("inbox"), "the Inbox is always there", first);
+  expect(!first.includes("sent") && !first.includes("trash") && !first.includes("f-jobs"), "empty and read folders are put away", first);
+  await p.click("[data-more-folders]"); await wait(200);
+  const all = await shown();
+  expect(all.includes("sent") && all.includes("trash") && all.includes("f-jobs"), "More folders brings them back", all);
+  await p.click('[data-acct][data-box="sent"]'); await wait(400);
+  await p.click("[data-more-folders]"); await wait(200);
+  expect((await shown()).includes("sent"), "the folder you are in stays in view when the rest fold away");
+  await p.evaluate(() => showSettings("mail")); await wait(300);
+  await p.select("#folder-list", "full"); await wait(200);
+  await p.evaluate(() => setView("mail")); await wait(300);
+  expect((await shown()).includes("trash"), "Settings > Mail switches back to the full list");
+});
+
+test("the reading pane's main actions have words; the rest are under More", { fake: true }, async ({ p, calls, clear }) => {
+  await p.click('.row[data-id="m2"]'); await wait(500);
+  const labels = await p.$$eval(".read-head .toolbar > .tool-btn .tool-label", els => els.map(e => e.textContent));
+  same(labels, ["Reply", "Forward", "Archive", "Delete", "Snooze"], "five labelled actions for mail sent to you alone");
+  expect(await p.$eval("#more-menu", e => e.hidden), "More starts closed");
+  await clear();
+  await p.click("#flag"); await wait(400);
+  same((await calls("apply_mail")).map(a => a.kind), ["flag"], "an action under More still works, reached through More");
+  expect(await p.$eval("#more-menu", e => e.hidden).catch(() => true), "and choosing it closes the menu");
+  await p.evaluate(() => { const m = messages.find(x => x.id === "m1"); m.cc = "kim@example.org"; m.ccPeople = [{ name: "Kim", email: "kim@example.org" }]; });
+  await p.click('.row[data-id="m1"]'); await wait(500);
+  const wide = await p.$$eval(".read-head .toolbar > .tool-btn .tool-label", els => els.map(e => e.textContent));
+  expect(wide.includes("Reply all"), "Reply all joins the bar when there is someone else to answer", wide);
+});
+
+test("the list marks unread with a dot, keeps initials out of it, and shows whose mail a line is", { fake: false }, async ({ p }) => {
+  const r = await p.evaluate(() => {
+    activeProfile = "work"; account = "all"; box = "inbox"; render();
+    const one = { dots: document.querySelectorAll("#rows .acct-dot").length };
+    accounts.second = { name: "Second", email: "second@example.org", cls: "plum", profile: "work", yourName: "Jon", emails: [], calendars: [] };
+    render();
+    return {
+      one,
+      avatars: document.querySelectorAll("#rows .avatar").length,
+      unreadDots: [...document.querySelectorAll("#rows .row.unread .unread-dot")].every(d => getComputedStyle(d).visibility === "visible"),
+      readDots: [...document.querySelectorAll("#rows .row:not(.unread) .unread-dot")].every(d => getComputedStyle(d).visibility === "hidden"),
+      dots: document.querySelectorAll("#rows .acct-dot").length,
+      rows: document.querySelectorAll("#rows .row").length
+    };
+  });
+  same(r.avatars, 0, "no initials in the list");
+  expect(r.unreadDots && r.readDots, "a dot for unread, none for read");
+  same(r.one.dots, 0, "one account: no account dots");
+  expect(r.dots > 0 && r.dots === r.rows, "several accounts in view: every line carries its account's dot", r);
+});
+
+test("small grey text reaches 4.5:1 on an Omarchy theme, on the background and on a selected row", { fake: false }, async ({ p }) => {
+  const r = await p.evaluate(() => {
+    const themes = [["#a9b1d6", "#1a1b26", "#292e42"], ["#4c4f69", "#eff1f5", "#ccd0da"], ["#ebdbb2", "#282828", "#504945"], ["#657b83", "#fdf6e3", "#eee8d5"]];
+    return themes.map(([fg, bg, sel]) => { const faint = readableFaint(fg, bg, sel); return [Math.min(hexContrast(faint, bg), hexContrast(faint, sel)) >= 4.5 || faint === fg, faint]; });
+  });
+  expect(r.every(x => x[0]), "every theme tried gets readable faint text, or the foreground itself", r);
+});
+
+test("Ctrl+K opens the command bar: commands, folders and events in one box", { fake: true }, async ({ p }) => {
+  await p.keyboard.down("Control"); await p.keyboard.press("k"); await p.keyboard.up("Control"); await wait(200);
+  expect(await p.$("#command-input"), "the bar opens");
+  expect(await p.$$eval("#command-list [data-command]", els => els.length > 3), "with commands to start from");
+  await p.type("#command-input", "calendar"); await wait(150);
+  await p.keyboard.press("Enter"); await wait(400);
+  same(await p.evaluate(() => view), "calendar", "Enter runs the first match: Go to Calendar");
+  await p.click("#command-open"); await wait(200);
+  await p.type("#command-input", "jobs"); await wait(150);
+  const groups = await p.$$eval("#command-list .move-group", els => els.map(e => e.textContent));
+  expect(groups.includes("Folders"), "a folder name finds the folder", groups);
+  await p.keyboard.press("Enter"); await wait(500);
+  same(await p.evaluate(() => [view, box]), ["mail", "f-jobs"], "and Enter goes there");
+  await p.click("#command-open"); await wait(200);
+  await p.type("#command-input", "kiln"); await wait(150);
+  const last = await p.$$eval("#command-list [data-command]", els => els[els.length - 1].textContent);
+  expect(last.includes("Search mail for"), "the last line searches mail for what was typed", last);
+  await p.keyboard.press("Escape"); await wait(150);
+  expect(!(await p.$("#command-input")), "Escape closes it");
+});
+
+test("in Calendar the search box finds events, and Enter opens the nearest", { fake: false }, async ({ p }) => {
+  await p.click("#rail-cal"); await wait(400);
+  await p.type("#q", "review"); await wait(300);
+  const found = await p.$$eval("#q-suggest [data-suggest-event] span", els => els.map(e => e.textContent));
+  expect(found.length >= 1 && found.every(t => /review/i.test(t)), "matching events are listed", found);
+  same(await p.evaluate(() => [view, query]), ["calendar", ""], "the calendar stays, and mail is not searched");
+  await p.click("#q-suggest [data-suggest-event]"); await wait(500);
+  expect(await p.$("#pop-root .dialog, #pop-root form"), "choosing one opens the event");
+  await p.keyboard.press("Escape"); await wait(200);
+  await p.evaluate(() => closePop());
+  await p.click("#q"); await p.type("#q", "zzzz"); await wait(300);
+  same(await p.$eval("#q-suggest", e => e.textContent.trim()), "No events match.", "nothing found says so");
+});
+
+test("dates read the way people say them, with the whole date on the tooltip", { fake: false }, async ({ p }) => {
+  const r = await p.evaluate(() => {
+    const at = (days, h) => { const d = new Date(todayDate()); d.setDate(d.getDate() - days); d.setHours(h, 5, 0, 0); return d; };
+    const msg = (d) => ({ seq: d.getTime(), time: "x", received: d.toISOString(), date: "" });
+    return [messageStamp(msg(at(0, 9))), messageStamp(msg(at(1, 9))), messageStamp(msg(at(5, 9))), messageStampFull(msg(at(5, 9)))];
+  });
+  expect(/^Today 09:05$/.test(r[0]), "today", r[0]);
+  expect(/^Yesterday 09:05$/.test(r[1]), "yesterday", r[1]);
+  expect(/, 09:05$/.test(r[2]) && !/\d{4}/.test(r[2]), "this year: no year", r[2]);
+  expect(/\d{4}/.test(r[3]), "the tooltip has the year", r[3]);
+});
+
 // ---------------------------------------------------------------- runner
 
 const { server, url } = await serve();
@@ -4183,6 +4293,16 @@ let passed = 0, failed = 0;
 for (const t of tests.filter(t => t.name.includes(filter))) {
   const page = await browser.newPage();
   await page.setViewport({ width: 1400, height: 900 });
+  // An action kept under the toolbar's More is reached the way a person
+  // reaches it: open More, then choose it.
+  const rawClick = page.click.bind(page);
+  page.click = async (selector, options) => {
+    const under = await page.evaluate((sel) => {
+      try { const el = document.querySelector(sel); const menu = el && el.closest("#more-menu"); return !!(menu && menu.hidden); } catch (e) { return false; }
+    }, selector).catch(() => false);
+    if (under) { await rawClick("#more-actions"); await wait(60); }
+    return rawClick(selector, options);
+  };
   const errors = [];
   page.on("pageerror", e => errors.push(e.message));
   // A CSP block names the element that tried, so a failure says where.
@@ -4201,6 +4321,11 @@ for (const t of tests.filter(t => t.name.includes(filter))) {
   await page.evaluateOnNewDocument(() => {
     if (!sessionStorage.getItem("__fresh")) { localStorage.clear(); sessionStorage.setItem("__fresh", "1"); }
   });
+  // Tests reach folders by name, so they start with the full folder list
+  // unless they ask for the short one (opts.folders: "short").
+  await page.evaluateOnNewDocument((kind) => {
+    if (!localStorage.getItem("mailroom-folder-list")) localStorage.setItem("mailroom-folder-list", kind);
+  }, t.opts.folders || "full");
   if (t.opts.fake) await page.evaluateOnNewDocument(FAKE);
   if (t.opts.setup) await page.evaluateOnNewDocument(t.opts.setup);
   // Tauri tells the page which window it is in, by the label Rust gave it;
