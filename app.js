@@ -10448,6 +10448,7 @@ function previewable(file) {
 let viewerSerial = 0;
 let pdfLib = null;
 let viewerDoc = null;
+let viewerBlobUrl = "";
 let viewerWatch = null;
 
 function closeViewer() {
@@ -10456,6 +10457,7 @@ function closeViewer() {
   // destroyed (6.x has no destroy() on the document itself).
   if (viewerWatch) { viewerWatch.disconnect(); viewerWatch = null; }
   if (viewerDoc) { viewerDoc.loadingTask.destroy(); viewerDoc = null; }
+  if (viewerBlobUrl) { URL.revokeObjectURL(viewerBlobUrl); viewerBlobUrl = ""; }
   const layer = document.getElementById("viewer");
   if (layer) layer.remove();
   document.removeEventListener("keydown", viewerKeys, true);
@@ -10512,15 +10514,20 @@ async function openViewer(msg, file) {
     body.innerHTML = `<p class="viewer-note">${esc(String(err && err.message || err || "That file could not be previewed."))}</p>`;
     return;
   }
-  if (serial !== viewerSerial || !got) return;
-  const type = String(got.contentType || got.content_type || "");
-  const data = String(got.data || "");
-  if (/^image\/(png|jpeg|gif|webp|bmp)$/.test(type) && /^[A-Za-z0-9+/=]+$/.test(data)) {
+  const file2 = serial === viewerSerial ? unpackPreview(got) : null;
+  if (!file2) {
+    if (serial === viewerSerial) body.innerHTML = `<p class="viewer-note">That file could not be previewed.</p>`;
+    return;
+  }
+  const type = file2.type;
+  if (/^image\/(png|jpeg|gif|webp|bmp)$/.test(type)) {
     body.innerHTML = "";
     const img = document.createElement("img");
     img.className = "viewer-image";
     img.alt = file.name;
-    img.src = "data:" + type + ";base64," + data;
+    // A blob: URL, given back when the viewer closes.
+    viewerBlobUrl = URL.createObjectURL(new Blob([file2.bytes], { type }));
+    img.src = viewerBlobUrl;
     body.appendChild(img);
     return;
   }
@@ -10533,9 +10540,7 @@ async function openViewer(msg, file) {
       pdfLib = await import("./vendor/pdfjs/pdf.min.mjs");
       pdfLib.GlobalWorkerOptions.workerSrc = "./vendor/pdfjs/pdf.worker.min.mjs";
     }
-    const bin = atob(data);
-    const bytes = new Uint8Array(bin.length);
-    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    const bytes = file2.bytes;
     // The scan decoders (JBIG2/CCITT, JPEG 2000) live beside pdf.js, in
     // their JavaScript builds: the CSP allows no WebAssembly. Without them
     // pdf.js drops those images, which hold the text of most copier scans.
@@ -10684,15 +10689,66 @@ const lightView = new Set();
 const inlineImagesFor = new Map();
 const inlineLoading = new Set();
 
+// Files and pictures reach the page as bytes, not base64 in JSON (2.0, #75).
+function ipcBytes(got) {
+  if (got instanceof ArrayBuffer) return new Uint8Array(got);
+  if (ArrayBuffer.isView(got)) return new Uint8Array(got.buffer, got.byteOffset, got.byteLength);
+  if (Array.isArray(got)) return Uint8Array.from(got);
+  return null;
+}
+
+// attachment_preview: the type, a newline, then the file.
+function unpackPreview(got) {
+  const bytes = ipcBytes(got);
+  if (!bytes) return null;
+  const nl = bytes.subarray(0, 120).indexOf(10);
+  if (nl <= 0) return null;
+  return { type: new TextDecoder().decode(bytes.subarray(0, nl)), bytes: bytes.subarray(nl + 1) };
+}
+
+function blobDataUrl(blob) {
+  return new Promise((ok, fail) => {
+    const reader = new FileReader();
+    reader.onload = () => ok(String(reader.result || ""));
+    reader.onerror = () => fail(reader.error);
+    reader.readAsDataURL(blob);
+  });
+}
+
+// inline_images: a 4-byte length, the list as JSON, then each picture's
+// bytes in turn. Each becomes a data: URL natively (FileReader), since a
+// quoted reply carries the pictures on, and blob: URLs would not travel.
+async function unpackInlineImages(got) {
+  const bytes = ipcBytes(got);
+  if (!bytes || bytes.length < 4) return [];
+  const size = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint32(0);
+  if (4 + size > bytes.length) return [];
+  let list;
+  try { list = JSON.parse(new TextDecoder().decode(bytes.subarray(4, 4 + size))); } catch (e) { return []; }
+  if (!Array.isArray(list)) return [];
+  let at = 4 + size;
+  const out = [];
+  for (const img of list) {
+    const length = Number(img && img.length) || 0;
+    if (length <= 0 || at + length > bytes.length) break;
+    const part = bytes.subarray(at, at + length);
+    at += length;
+    try { out.push(Object.assign({}, img, { dataUrl: await blobDataUrl(new Blob([part], { type: String(img.contentType || "") })) })); } catch (e) {}
+  }
+  return out;
+}
+
 function withInlineImages(m, html) {
   const got = m && inlineImagesFor.get(m.id);
-  const found = got && got.byCid;
-  if (!found || !found.size || !/cid:/i.test(html || "")) return html;
+  const found = (got && got.byCid) || new Map();
+  if (!/cid:/i.test(html || "")) return html;
+  // A picture not here yet has no address at all, rather than a cid: one
+  // the page's CSP refuses; the body is painted again when it arrives.
   return String(html).replace(/(\b(?:src|background)\s*=\s*)(["']?)cid:([^"'\s>]+)\2/gi, (all, attr, quote, raw) => {
     let id = raw;
     try { id = decodeURIComponent(raw); } catch (e) {}
     const url = found.get(id) || found.get(id.toLowerCase());
-    return url ? attr + '"' + url + '"' : all;
+    return url ? attr + '"' + url + '"' : 'data-cid-wait=""';
   });
 }
 
@@ -10723,7 +10779,7 @@ function ensureInlineImages(m) {
   const acct = accounts[m.account];
   if (!acct || !acct.email) return;
   inlineLoading.add(m.id);
-  Promise.resolve(tauriInvoke("inline_images", { email: acct.email, messageId: m.id, message_id: m.id })).then(list => {
+  Promise.resolve(tauriInvoke("inline_images", { email: acct.email, messageId: m.id, message_id: m.id })).then(unpackInlineImages).then(list => {
     const map = new Map();
     const kept = [];
     (list || []).forEach(img => {

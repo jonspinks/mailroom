@@ -2267,14 +2267,15 @@ async fn ask_mail(provider: String, question: String, messages: Vec<ai::MailNote
 
 // A message's inline images, as data URLs by content id (inline.rs).
 #[tauri::command]
-async fn inline_images(email: String, message_id: String) -> Result<Vec<inline::InlineImage>, String> {
-    in_background(move || {
+async fn inline_images(email: String, message_id: String) -> Result<tauri::ipc::Response, String> {
+    let list = in_background(move || {
         if auth::is_google(email.trim()) {
             return google::inline_images(email.trim(), &message_id);
         }
         inline::inline_images(email.trim(), &message_id)
     })
-    .await
+    .await?;
+    Ok(tauri::ipc::Response::new(inline::pack_images(&list)))
 }
 
 // A mail picture the webview refused, fetched by the app (remoteimg.rs).
@@ -2321,14 +2322,15 @@ async fn forget_mail(email: String, message_ids: Vec<String>) -> Result<(), Stri
 
 // An attachment for the in-app viewer: a PDF or a picture (inline.rs).
 #[tauri::command]
-async fn attachment_preview(email: String, message_id: String, file_id: String, name: Option<String>, content_type: Option<String>) -> Result<inline::Preview, String> {
-    in_background(move || {
+async fn attachment_preview(email: String, message_id: String, file_id: String, name: Option<String>, content_type: Option<String>) -> Result<tauri::ipc::Response, String> {
+    let preview = in_background(move || {
         if auth::is_google(email.trim()) {
             return google::preview(email.trim(), &message_id, &file_id, &name.unwrap_or_default(), &content_type.unwrap_or_default());
         }
         inline::preview(email.trim(), &message_id, &file_id, &name.unwrap_or_default(), &content_type.unwrap_or_default())
     })
-    .await
+    .await?;
+    Ok(tauri::ipc::Response::new(preview.pack()))
 }
 
 // The text of the PDFs on these messages, for Ask (pdftext.rs).

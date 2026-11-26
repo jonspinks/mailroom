@@ -1770,7 +1770,8 @@ pub fn inline_images(email: &str, message_id: &str) -> Result<Vec<crate::inline:
             name: decode_words(part["filename"].as_str().unwrap_or("image")).chars().take(200).collect(),
             inline: !content_id.is_empty() && !disposition.starts_with("attachment"),
             content_id,
-            data_url: format!("data:{kind};base64,{}", STANDARD.encode(&bytes)),
+            content_type: kind.to_string(),
+            bytes,
         });
     }
     Ok(out)

@@ -30,7 +30,30 @@ pub struct InlineImage {
     /// Marked inline by the sender. One the body doesn't show, and every
     /// ordinary image attachment, is shown as a thumbnail, as Outlook does.
     pub inline: bool,
-    pub data_url: String,
+    /// image/png and friends (allowed_type).
+    pub content_type: String,
+    /// The picture itself. It goes to the page as bytes after the list, not
+    /// as base64 inside JSON (2.0, #75; see pack_images).
+    #[serde(skip)]
+    pub bytes: Vec<u8>,
+}
+
+/// The list for the page, as one binary answer: a 4-byte big-endian length,
+/// that many bytes of JSON (each picture's details and `length`), then the
+/// pictures' bytes one after another in the same order.
+pub fn pack_images(list: &[InlineImage]) -> Vec<u8> {
+    let meta: Vec<serde_json::Value> = list
+        .iter()
+        .map(|img| serde_json::json!({ "id": img.id, "name": img.name, "contentId": img.content_id, "inline": img.inline, "contentType": img.content_type, "length": img.bytes.len() }))
+        .collect();
+    let json = serde_json::to_vec(&meta).unwrap_or_else(|_| b"[]".to_vec());
+    let mut out = Vec::with_capacity(4 + json.len() + list.iter().map(|img| img.bytes.len()).sum::<usize>());
+    out.extend_from_slice(&(json.len() as u32).to_be_bytes());
+    out.extend_from_slice(&json);
+    for img in list {
+        out.extend_from_slice(&img.bytes);
+    }
+    out
 }
 
 /// image/png and friends; never SVG, which can carry script.
@@ -68,7 +91,8 @@ pub fn image_from(value: &serde_json::Value) -> Option<InlineImage> {
         name: value["name"].as_str().unwrap_or("image").chars().take(200).collect(),
         content_id,
         inline,
-        data_url: format!("data:{kind};base64,{}", base64::engine::general_purpose::STANDARD.encode(&bytes)),
+        content_type: kind.to_string(),
+        bytes,
     })
 }
 
@@ -156,12 +180,23 @@ fn in_order<J: Sync, R: Send>(jobs: &[J], workers: usize, work: impl Fn(&J) -> O
 }
 
 /// An attachment for the in-app viewer (2026-10-23): a PDF or a picture,
-/// as base64 with its type. Anything else is opened outside, as before.
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
+/// with its type. Anything else is opened outside, as before. Since 2.0
+/// (#75) it reaches the page as bytes (pack), not 40 MB of base64 in JSON.
+#[derive(Debug)]
 pub struct Preview {
     pub content_type: String,
-    pub data: String,
+    pub bytes: Vec<u8>,
+}
+
+impl Preview {
+    /// The type, a newline, then the file.
+    pub fn pack(self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(self.content_type.len() + 1 + self.bytes.len());
+        out.extend_from_slice(self.content_type.as_bytes());
+        out.push(b'\n');
+        out.extend(self.bytes);
+        out
+    }
 }
 
 const MAX_PREVIEW_BYTES: usize = 40 * 1024 * 1024;
@@ -197,7 +232,7 @@ pub fn preview_bytes(name: &str, content_type: &str, bytes: Vec<u8>) -> Result<P
         return Err("That file is too large to preview. Open it instead.".into());
     }
     let kind = preview_type(name, content_type, &bytes).ok_or("Mailroom can't preview that type of file. Open it instead.")?;
-    Ok(Preview { content_type: kind.into(), data: base64::engine::general_purpose::STANDARD.encode(&bytes) })
+    Ok(Preview { content_type: kind.into(), bytes })
 }
 
 #[cfg(test)]
@@ -273,7 +308,21 @@ mod tests {
         let png = base64::engine::general_purpose::STANDARD.encode([0x89, b'P', b'N', b'G', 1, 2, 3]);
         let got = image_from(&json!({ "isInline": true, "contentId": "<image001.png@01DB2A3C.5E6F7A80>", "contentType": "image/png", "contentBytes": png })).unwrap();
         assert_eq!(got.content_id, "image001.png@01DB2A3C.5E6F7A80");
-        assert!(got.data_url.starts_with("data:image/png;base64,"));
+        assert_eq!((got.content_type.as_str(), got.bytes.as_slice()), ("image/png", &[0x89, b'P', b'N', b'G', 1, 2, 3][..]));
+    }
+
+    #[test]
+    fn pictures_and_previews_pack_as_bytes() {
+        let img = |id: &str, bytes: &[u8]| InlineImage { id: id.into(), name: "a.png".into(), content_id: "c".into(), inline: true, content_type: "image/png".into(), bytes: bytes.to_vec() };
+        let packed = pack_images(&[img("1", b"abc"), img("2", b"de")]);
+        let len = u32::from_be_bytes([packed[0], packed[1], packed[2], packed[3]]) as usize;
+        let meta: serde_json::Value = serde_json::from_slice(&packed[4..4 + len]).unwrap();
+        assert_eq!(meta[0]["length"], 3);
+        assert_eq!(meta[1]["contentType"], "image/png");
+        assert_eq!(&packed[4 + len..], b"abcde");
+        assert_eq!(pack_images(&[]), [0, 0, 0, 2, b'[', b']']);
+        let preview = Preview { content_type: "application/pdf".into(), bytes: b"%PDF-1".to_vec() };
+        assert_eq!(preview.pack(), b"application/pdf\n%PDF-1");
     }
 
     #[test]
