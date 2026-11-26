@@ -11600,7 +11600,14 @@ function omarchyVars(look) {
     "--on-accent": bg, "--search-icon": mix(fg, bg, 70), "--toast-bg": fg, "--toast-ink": bg,
     "--danger": hue("red"), "--flag": hue("red"),
     "--shadow": light ? "0 8px 24px rgba(0, 0, 0, .16)" : "0 8px 24px rgba(0, 0, 0, .45)",
-    "--seam-shade": "none", "--card-shadow": "none", "--chip-shadow": "none",
+    // The same depth as Mailroom's own light and dark themes (styles.css).
+    "--seam-shade": light ? "4px 0 12px rgba(0, 0, 0, .16)" : "4px 0 14px rgba(0, 0, 0, .55)",
+    "--card-shadow": light
+      ? "0 0.3px 0.9px rgba(0, 0, 0, .08), 0 1.6px 3.6px rgba(0, 0, 0, .13)"
+      : "inset 0 1px 0 rgba(255, 255, 255, .05), 0 1px 2px rgba(0, 0, 0, .45), 0 3px 8px rgba(0, 0, 0, .40)",
+    "--chip-shadow": light
+      ? "0 1px 2px rgba(0, 0, 0, .10)"
+      : "inset 0 1px 0 rgba(255, 255, 255, .06), 0 1px 3px rgba(0, 0, 0, .55)",
     "--stripe": light ? "rgba(255, 255, 255, .55)" : "rgba(255, 255, 255, .12)"
   };
   // Account and category colours, each with its soft fill and its ink.
@@ -21644,7 +21651,7 @@ const folderBusy = new Set();
 let syncNote = "";
 const folderRun = new Map();
 const bodyLoads = new Set();
-const APP_VERSION = "2.0.2";
+const APP_VERSION = "2.0.3";
 let appVersion = APP_VERSION;
 
 prepareDesktopAccounts();
