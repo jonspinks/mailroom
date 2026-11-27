@@ -21785,6 +21785,24 @@ function settleOpenFolder() {
   }
 }
 
+// A sync's copy of a message carries no file list (a delta row has none), so
+// the files already fetched for it stay, as its body does (2026-11-27: an
+// opened message was marked read, the next sync replaced it, and its six
+// files became one "Attachment" that was never asked for again).
+function keepOpenedParts(prev, next) {
+  if (!prev || !next) return next;
+  if (next.needsBody && prev.bodyHtml && !prev.needsBody) {
+    next.bodyHtml = prev.bodyHtml;
+    next.needsBody = false;
+  }
+  if (!messageFiles(next).length && messageFiles(prev).length && next.hasAttachment !== false) {
+    next.files = prev.files;
+    next.attachments = prev.attachments;
+    next.hasAttachment = true;
+  }
+  return next;
+}
+
 function mergeFolderMessages(accountId, boxKey, items, removed) {
   const drop = new Set((removed || []).filter(Boolean));
   if (drop.size) {
@@ -21807,12 +21825,7 @@ function mergeFolderMessages(accountId, boxKey, items, removed) {
     if (at != null) {
       const prev = messages[at];
       if (prev && prev.pendingSend) return;
-      const next = liveMessage(accountId, item, boxKey);
-      if (next.needsBody && prev && prev.bodyHtml && !prev.needsBody) {
-        next.bodyHtml = prev.bodyHtml;
-        next.needsBody = false;
-      }
-      messages[at] = next;
+      messages[at] = keepOpenedParts(prev, liveMessage(accountId, item, boxKey));
       return;
     }
     const received = String(item.received || "");
@@ -22116,9 +22129,11 @@ async function loadCachedDrafts(accountId) {
 
 function replaceFolderMessages(accountId, boxKey, items) {
   const keptBodies = new Map();
+  const keptOpened = new Map();
   messages.forEach(message => {
     if (message.account !== accountId || messageBox(message) !== boxKey) return;
     if (message.bodyHtml && !message.needsBody) keptBodies.set(message.id, message.bodyHtml);
+    if (messageFiles(message).length) keptOpened.set(message.id, message);
   });
   const incoming = new Set((items || []).map(item => item && item.id).filter(Boolean));
   for (let i = messages.length - 1; i >= 0; i--) {
@@ -22135,7 +22150,7 @@ function replaceFolderMessages(accountId, boxKey, items) {
       message.bodyHtml = kept;
       message.needsBody = false;
     }
-    messages.push(message);
+    messages.push(keepOpenedParts(keptOpened.get(message.id), message));
   });
 }
 

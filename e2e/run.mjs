@@ -4618,6 +4618,26 @@ test("in Calendar the search box finds events, and Enter opens the nearest", { f
   expect(await p.$eval("#q-suggest", e => e.textContent.includes("Search mail for")), "and offers to search mail");
 });
 
+test("an opened message keeps its files when a sync brings it again without them", { fake: true }, async ({ p }) => {
+  await p.evaluate(() => {
+    const m = messages.find(x => x.id === "m3");
+    m.files = []; m.attachments = [];
+  });
+  await p.click('.row[data-id="m3"]'); await wait(900);
+  const names = () => p.$$eval("#reading .mail-files .file-name, #reading .mail-files [data-file-name]", els => els.map(e => e.dataset.fileName || e.textContent.trim()));
+  const before = await names();
+  expect(before.some(n => n.includes("plan.pdf")), "the files are fetched when it opens", before);
+  await p.evaluate(() => {
+    const acct = messages.find(x => x.id === "m3").account;
+    const row = Object.assign({}, window.__inbox.find(x => x.id === "m3"), { files: [], unread: false, bodyHtml: "" });
+    mergeFolderMessages(acct, "inbox", [row], []);
+    reading.dataset.paint = ""; render();
+  });
+  await wait(400);
+  const after = await names();
+  expect(after.some(n => n.includes("plan.pdf")) && !after.includes("Attachment"), "still the files, not one Attachment", after);
+});
+
 test("moving to another folder, or between Work and Personal, ends the search", { fake: true }, async ({ p }) => {
   await p.click("#q"); await p.type("#q", "kiln"); await p.keyboard.press("Enter"); await wait(300);
   expect(await p.evaluate(() => searchActive()), "searching");
