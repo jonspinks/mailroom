@@ -2937,6 +2937,23 @@ test("safe senders with a country domain survive a restart", { fake: true, setup
   same(await p.evaluate(() => JSON.parse(localStorage.getItem("mailroom-safe-senders"))), ["@akhurst.ca", "@anthropic.com", "@school.edu.sg"], "and is not written over");
 });
 
+test("a short note over a longer, smaller signature is read at the note's size", { fake: true, setup: () => {
+  const pt = (n, t) => `<p class="MsoNormal"><span style="font-size:${n}pt;font-family:Verdana,sans-serif">${t}</span></p>`;
+  const note = pt(11, "Indeed! The early bird gets the worm.") + pt(11, "You're most welcome!") + pt(11, "Have a great weekend!");
+  const sig = pt(10, "Sam Broker | RIBO, CAIB") + pt(9, "Client Advisor") + pt(8, "Mobile: 555-010-0199") + pt(8, "Email: sam@broker.example") + pt(8, "www.broker.example") + pt(8, "100 Main Street, Suite 300, Thornhill, Ontario L3T 0A0") + pt(8, "Your protection matters. New auto accident benefit rules take effect July 1, bringing major changes to coverage. Learn more: broker.example/rules");
+  const history = '<div style="border:none;border-top:solid #E1E1E1 1.0pt;padding:3.0pt 0in 0in 0in"><p class="MsoNormal"><b>From:</b> Jon<br><b>Sent:</b> Friday<br><b>Subject:</b> Re: Bind confirmation</p></div>' + pt(11, "The insurer has confirmed that the coverage has been bound as requested. Policy documents and the invoice will follow once received.");
+  window.__inbox.push({ id: "note-sig", thread: "conv-note-sig", subject: "RE: Bind confirmation", fromName: "Sam", fromEmail: "sam@broker.example", received: new Date().toISOString().replace(/\.\d+Z$/, "Z"), preview: "Indeed", bodyHtml: '<div class="WordSection1">' + note + sig + history + "</div>", unread: true, flagged: false, hasAttachments: false, files: [], to: [], cc: [], bcc: [], categories: [] });
+} }, async ({ p }) => {
+  await p.click('.row[data-id="note-sig"]'); await wait(800);
+  const got = await p.evaluate(() => {
+    const all = [...document.querySelectorAll("#reading .letter *")].reverse();
+    const by = t => { const e = all.find(e => (e.textContent || "").trim().startsWith(t)); return e ? parseFloat(getComputedStyle(e).fontSize) : 0; };
+    return { note: by("Indeed!"), phone: by("Mobile:") };
+  });
+  expect(got.note >= 15.5 && got.note <= 17, "the note comes up to the reading size, not past it", got);
+  expect(got.phone >= 11 && got.phone < got.note - 2, "the signature stays smaller than the note", got);
+});
+
 test("a forward with only a signature above it keeps the forwarded mail's size", { fake: true, setup: () => {
   const sig = '<table role="presentation"><tr><td style="width:52px"></td><td><div style="font-size:19px">Jordan Hart</div><div style="font-size:13px">289 218 8526</div><div style="font-size:13px">jordan@example.org</div><div style="font-size:11px">ENGINEERED TO BUILD BETTER.</div></td></tr></table>';
   const fwd = '<div id="divRplyFwdMsg"><b>From:</b> Bill<br><b>Subject:</b> Quotes</div><div><p style="font-size:12pt">Sorry for the delay in sending. We just got Outlook up and running an hour ago.</p><p style="font-size:10pt">Account Representative</p><p style="font-size:8pt">This e-mail message is confidential, may be privileged or otherwise protected by law and is intended for the exclusive use of the addressee. Any other person is strictly prohibited from disclosing it.</p></div>';
@@ -4731,3 +4748,4 @@ await browser.close();
 server.close();
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);
+
