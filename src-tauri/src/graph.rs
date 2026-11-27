@@ -1657,6 +1657,70 @@ pub fn search_mail(
     Ok(parse_search_page(page))
 }
 
+/// Ids only, for the folder's sync window: what a backfill compares with
+/// the cache. A thousand to a page; nothing else is asked for.
+pub fn window_ids_url(folder_id: &str, since: &str) -> Result<String, String> {
+    let id = folder_id.trim();
+    if id.is_empty() {
+        return Err("Choose a folder.".into());
+    }
+    let mut url = format!(
+        "https://graph.microsoft.com/v1.0/me/mailFolders/{}/messages?$top={WINDOW_ID_PAGE}&$select=id",
+        path_segment(id)
+    );
+    if let Some(stamp) = sync_stamp(since)? {
+        url.push_str("&$filter=");
+        url.push_str(&path_segment(&format!("receivedDateTime ge {stamp}")));
+    }
+    Ok(url)
+}
+
+const WINDOW_ID_PAGE: usize = 1000;
+/// Pages a window listing may walk: 20,000 ids.
+const WINDOW_ID_PAGES: usize = 20;
+
+/// Every message id in the folder's sync window, newest first as Graph
+/// sends them.
+pub fn window_ids(email: &str, folder_id: &str, since: &str) -> Result<Vec<String>, String> {
+    let mut url = window_ids_url(folder_id, since)?;
+    let token = auth::access_token_for(email)?;
+    let client = http_client()?;
+    let mut out = Vec::new();
+    for page_no in 0..WINDOW_ID_PAGES {
+        if page_no > 0 && !trusted_mail_link(&url) {
+            break;
+        }
+        let page = graph_get(&client, &token, &url)?;
+        for item in page["value"].as_array().cloned().unwrap_or_default() {
+            if let Some(id) = item["id"].as_str().map(str::trim).filter(|id| !id.is_empty()) {
+                out.push(id.to_string());
+            }
+        }
+        let Some(next) = page.get("@odata.nextLink").and_then(|v| v.as_str()).filter(|v| !v.is_empty()) else {
+            break;
+        };
+        url = next.to_string();
+    }
+    Ok(out)
+}
+
+/// List rows for these ids, with the folder each is in. One that has gone
+/// since is left out.
+pub fn messages_by_id(email: &str, ids: &[String]) -> Result<Vec<MailSearchHit>, String> {
+    let token = auth::access_token_for(email)?;
+    let client = http_client()?;
+    let mut out = Vec::new();
+    for id in ids {
+        let url = message_by_id_url(id)?;
+        match graph_get(&client, &token, &url) {
+            Ok(value) => out.extend(hit_from(value)),
+            Err(err) if id_not_found(&err) => {}
+            Err(err) => return Err(err),
+        }
+    }
+    Ok(out)
+}
+
 /// Every message in a conversation, from any folder, so a thread can show
 /// the replies that sit in Sent Items.
 pub fn conversation_url(conversation_id: &str) -> Result<String, String> {
@@ -3484,6 +3548,18 @@ pub fn delete_search_folder(email: &str, folder_id: &str) -> Result<(), String> 
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn window_ids_ask_only_for_ids_in_the_window() {
+        let url = window_ids_url("AQMk/inbox==", "2026-08-05T00:00:00Z").unwrap();
+        assert!(url.starts_with("https://graph.microsoft.com/v1.0/me/mailFolders/"));
+        assert!(url.contains("$select=id&") || url.ends_with("$select=id"));
+        assert!(url.contains("$top=1000"));
+        assert!(url.contains("receivedDateTime%20ge%202026-08-05T00%3A00%3A00Z") || url.contains("receivedDateTime ge 2026-08-05T00:00:00Z") || url.contains("receivedDateTime%20ge%202026-08-05T00:00:00Z"), "{url}");
+        assert!(!url.contains("$expand"));
+        assert!(window_ids_url(" ", "").is_err());
+        assert!(!window_ids_url("f", "").unwrap().contains("$filter"));
+    }
+
     #[test]
     fn a_message_keeps_its_size_and_its_flag_due_date() {
         let flagged = serde_json::json!({
