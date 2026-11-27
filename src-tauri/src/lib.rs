@@ -399,9 +399,109 @@ fn catch_up_folder(email: &str, folder_id: &str, full_since: &str) -> Result<Fol
         return catch_up_gmail(email, folder_id, full_since);
     }
     let caught = catch_up_graph(email, folder_id, full_since)?;
+    if !caught.replaced {
+        cache_current_threads(email, &caught.changed);
+    }
     let changed = caught.replaced || !caught.removed.is_empty() || !caught.changed.is_empty();
     keep_server_counts(email, folder_id, changed);
     Ok(caught)
+}
+
+/// A conversation's messages go into the cache, each in its own folder, so a
+/// current thread is whole for search and for the reading pane, wherever
+/// its messages are filed. A folder Mailroom doesn't list is left out.
+fn cache_conversation(email: &str, hits: &[graph::MailSearchHit]) {
+    let key = email.trim().to_lowercase();
+    let Ok(folders) = store::load_folders(&key) else { return };
+    let known: std::collections::HashSet<&str> = folders.iter().map(|f| f.id.as_str()).collect();
+    let mut by_folder: std::collections::BTreeMap<&str, Vec<LiveMessage>> = Default::default();
+    for hit in hits {
+        let folder = hit.parent_folder_id.as_str();
+        if known.contains(folder) {
+            by_folder.entry(folder).or_default().push(hit.message.clone());
+        }
+    }
+    for (folder, rows) in by_folder {
+        let _ = store::upsert_folder_messages(&key, folder, &rows);
+    }
+}
+
+/// Conversations cached whole lately, so a busy thread is asked for once in
+/// a while, not on every poll.
+static THREADS_CACHED: Mutex<Option<std::collections::HashMap<String, std::time::Instant>>> = Mutex::new(None);
+const THREAD_RECACHE: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+/// Conversations one sync may fill; the rest wait for the next poll.
+const THREADS_PER_SYNC: usize = 10;
+
+/// Which of these conversations are due a fill now; marks them taken.
+fn threads_due(email: &str, threads: &[String], now: std::time::Instant) -> Vec<String> {
+    let mut clock = THREADS_CACHED.lock().unwrap_or_else(|e| e.into_inner());
+    let map = clock.get_or_insert_with(Default::default);
+    map.retain(|_, at| now.saturating_duration_since(*at) < THREAD_RECACHE);
+    let mut due = Vec::new();
+    for thread in threads {
+        if due.len() >= THREADS_PER_SYNC {
+            break;
+        }
+        let mark = format!("{email}\n{thread}");
+        if thread.trim().is_empty() || map.contains_key(&mark) || due.contains(thread) {
+            continue;
+        }
+        map.insert(mark, now);
+        due.push(thread.clone());
+    }
+    due
+}
+
+/// New or changed mail makes its conversation current: cache the rest of it,
+/// on its own thread, newest first.
+fn cache_current_threads(email: &str, changed: &[LiveMessage]) {
+    let mut rows: Vec<&LiveMessage> = changed.iter().collect();
+    rows.sort_by(|a, b| b.received.cmp(&a.received));
+    let threads: Vec<String> = rows.iter().map(|m| m.thread.clone()).collect();
+    let due = threads_due(&email.trim().to_lowercase(), &threads, std::time::Instant::now());
+    if due.is_empty() {
+        return;
+    }
+    let email = email.to_string();
+    std::thread::spawn(move || {
+        for thread in due {
+            if let Ok(page) = graph::conversation_mail(&email, &thread) {
+                cache_conversation(&email, &page.messages);
+            }
+        }
+    });
+}
+
+/// A delta that removes more than this many messages at once is checked
+/// against the folder's listing before anything leaves the cache.
+const DELTA_REMOVE_CHECK: usize = 25;
+
+/// 2026-11-27: the Inbox cache lost every message in its sync window (814
+/// rows, August to November) while all of them were still on the server; a
+/// delta round that reported the whole window as removed is the likely
+/// cause. A big removal now drops only what the folder listing no longer
+/// has; if the listing can't be had, nothing is dropped this round.
+fn checked_removals(email: &str, folder_id: &str, since: &str, removed: Vec<String>) -> Vec<String> {
+    if removed.len() <= DELTA_REMOVE_CHECK {
+        return removed;
+    }
+    let asked = removed.len();
+    let kept = match graph::window_ids(email, folder_id, since) {
+        Ok(server) => filter_removals(removed, &server),
+        Err(err) => {
+            google::log(&format!("delta for a folder of {email} removed {asked} messages; listing failed ({err}), none dropped"));
+            return Vec::new();
+        }
+    };
+    google::log(&format!("delta for a folder of {email} removed {asked} messages; {} confirmed gone", kept.len()));
+    kept
+}
+
+/// Removals the server listing still has are not removals.
+fn filter_removals(removed: Vec<String>, server: &[String]) -> Vec<String> {
+    let still: std::collections::HashSet<&str> = server.iter().map(String::as_str).collect();
+    removed.into_iter().filter(|id| !still.contains(id.as_str())).collect()
 }
 
 fn catch_up_graph(email: &str, folder_id: &str, full_since: &str) -> Result<FolderCatchUp, String> {
@@ -409,7 +509,8 @@ fn catch_up_graph(email: &str, folder_id: &str, full_since: &str) -> Result<Fold
     if let Some(link) = store::load_delta_link(email, folder_id)? {
         if graph::trusted_delta_link(&link) {
             match graph::pull_mail_delta(&token, &link) {
-                Ok(delta) => {
+                Ok(mut delta) => {
+                    delta.removed = checked_removals(email, folder_id, full_since, delta.removed);
                     // Patches first: the delta link moves on in apply_delta.
                     let patched = store::patch_messages(email, folder_id, &delta.patched)?;
                     store::apply_delta(email, folder_id, &delta.removed, &delta.changed, &delta.link)?;
@@ -644,9 +745,12 @@ struct BackfillResult {
     remaining: usize,
 }
 
-/// Fill in the next batch of a Gmail folder that was first shown with only
-/// its newest messages. It keeps no state, so after a restart it carries on
-/// where it stopped. Microsoft folders arrive whole, so there is nothing to do.
+/// Fill in the next batch of a folder whose cache is missing mail in its sync
+/// window: a Gmail folder first shown with only its newest messages, or a
+/// Microsoft folder whose cache lost rows (2026-11-27: an Inbox cache held
+/// nothing from August to late November, and a delta only carries changes
+/// from now on, so the hole never closed). It only adds; it keeps no state,
+/// so after a restart it carries on where it stopped.
 #[tauri::command]
 async fn backfill_mail(email: String, folder_id: String, since: Option<String>) -> Result<BackfillResult, String> {
     in_background(move || {
@@ -655,8 +759,11 @@ async fn backfill_mail(email: String, folder_id: String, since: Option<String>) 
         let since = since.unwrap_or_default();
         let cached = store::load_folder_headers(&key, &folder)?;
         let done = BackfillResult { added: 0, have: cached.len(), total: cached.len(), remaining: 0 };
-        if key.is_empty() || folder.is_empty() || !auth::is_google(&key) {
+        if key.is_empty() || folder.is_empty() {
             return Ok(done);
+        }
+        if !auth::is_google(&key) {
+            return backfill_graph(&key, &folder, since.trim(), &cached);
         }
         let have: std::collections::BTreeSet<String> = cached.iter().map(|m| m.id.clone()).collect();
         let (messages, remaining, total) = google::backfill(&key, &folder, since.trim(), &have)?;
@@ -669,6 +776,34 @@ async fn backfill_mail(email: String, folder_id: String, since: Option<String>) 
         Ok(BackfillResult { added: messages.len(), have, total, remaining })
     })
     .await
+}
+
+/// Rows a Microsoft backfill fetches in one call. The page calls again
+/// while some remain.
+const GRAPH_BACKFILL_BATCH: usize = 40;
+
+fn backfill_graph(key: &str, folder: &str, since: &str, cached: &[graph::LiveMessage]) -> Result<BackfillResult, String> {
+    let have: std::collections::HashSet<&str> = cached.iter().map(|m| m.id.as_str()).collect();
+    let server = graph::window_ids(key, folder, since)?;
+    let missing: Vec<String> = server.iter().filter(|id| !have.contains(id.as_str())).cloned().collect();
+    if missing.is_empty() {
+        return Ok(BackfillResult { added: 0, have: cached.len(), total: server.len(), remaining: 0 });
+    }
+    let batch: Vec<String> = missing.iter().take(GRAPH_BACKFILL_BATCH).cloned().collect();
+    let rows: Vec<graph::LiveMessage> = graph::messages_by_id(key, &batch)?
+        .into_iter()
+        .filter(|hit| hit.parent_folder_id.is_empty() || hit.parent_folder_id == folder)
+        .map(|hit| hit.message)
+        .collect();
+    if !rows.is_empty() {
+        store::upsert_folder_messages(key, folder, &rows)?;
+    }
+    let have = store::load_folder_headers(key, folder)?.len();
+    // Ids that moved away before they were fetched are not asked for again
+    // in this call; the next one finds them gone from the window.
+    let remaining = missing.len().saturating_sub(batch.len());
+    google::log(&format!("graph backfill for a folder of {key}: +{} ({have} cached, {} in window, {remaining} to go)", rows.len(), server.len()));
+    Ok(BackfillResult { added: rows.len(), have, total: server.len(), remaining })
 }
 
 #[cfg(test)]
@@ -857,7 +992,9 @@ async fn conversation_mail(email: Option<String>, conversation_id: Option<String
         if auth::is_google(email.trim()) {
             return google::conversation_mail(email.trim(), &conversation_id.unwrap_or_default());
         }
-        graph::conversation_mail(email.trim(), &conversation_id.unwrap_or_default())
+        let page = graph::conversation_mail(email.trim(), &conversation_id.unwrap_or_default())?;
+        cache_conversation(email.trim(), &page.messages);
+        Ok(page)
     })
     .await
 }
@@ -2826,6 +2963,30 @@ mod tests {
         assert_eq!(reported_email("x@y.example", "", &signed), "x@y.example");
     }
     use crate::graph::LiveMessage;
+
+    #[test]
+    fn a_removal_the_server_still_lists_is_kept() {
+        let removed = vec!["a".to_string(), "b".to_string(), "c".to_string()];
+        let server = vec!["b".to_string(), "z".to_string()];
+        assert_eq!(super::filter_removals(removed, &server), vec!["a", "c"]);
+        assert!(super::filter_removals(Vec::new(), &server).is_empty());
+    }
+
+    #[test]
+    fn a_current_thread_is_filled_once_in_a_while_and_a_few_per_sync() {
+        let now = std::time::Instant::now();
+        let many: Vec<String> = (0..15).map(|n| format!("t-cap-{n}")).collect();
+        let first = super::threads_due("cap@example.com", &many, now);
+        assert_eq!(first.len(), super::THREADS_PER_SYNC);
+        assert_eq!(first[0], "t-cap-0", "newest first, in the order given");
+        let again = super::threads_due("cap@example.com", &many, now);
+        assert_eq!(again, vec!["t-cap-10", "t-cap-11", "t-cap-12", "t-cap-13", "t-cap-14"], "the rest on the next sync");
+        assert!(super::threads_due("cap@example.com", &many, now).is_empty(), "not again within ten minutes");
+        let later = now + super::THREAD_RECACHE + std::time::Duration::from_secs(1);
+        assert_eq!(super::threads_due("cap@example.com", &many, later).len(), super::THREADS_PER_SYNC, "after ten minutes, due again");
+        let dup = vec!["t-dup".to_string(), "t-dup".to_string(), " ".to_string()];
+        assert_eq!(super::threads_due("dup@example.com", &dup, now), vec!["t-dup"]);
+    }
 
     #[test]
     fn gmail_reconcile_waits_an_hour() {

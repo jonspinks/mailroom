@@ -462,6 +462,7 @@ test("a thread shows the replies you sent, from Sent Items", { fake: true, setup
   const at = mins => new Date(Date.now() - mins * 60000).toISOString().replace(/\.\d+Z$/, "Z");
   window.__thread = [
     { id: "s1", thread: "conv-m1", parentFolderId: "f-sent", subject: "RE: Kiln schedule", fromName: "Jon", fromEmail: "jon@example.com", received: at(5), preview: "Tuesday works", bodyHtml: "<p>Tuesday works for me.</p>", unread: false, flagged: false, hasAttachments: false, files: [], to: [{ name: "Ada", email: "ada@example.org" }], cc: [], bcc: [] },
+    { id: "j1", thread: "conv-m1", parentFolderId: "f-jobs", subject: "RE: Kiln schedule", fromName: "Ada Lovelace", fromEmail: "ada@example.org", received: at(25), preview: "Filed note", bodyHtml: "<p>Filed note about the kiln.</p>", unread: false, flagged: false, hasAttachments: false, files: [], to: [{ name: "Jon", email: "jon@example.com" }], cc: [], bcc: [] },
     { id: "x9", thread: "conv-m1", parentFolderId: "f-bin", subject: "RE: Kiln schedule", fromName: "Jon", fromEmail: "jon@example.com", received: at(4), preview: "binned", bodyHtml: "<p>binned</p>", unread: false, flagged: false, hasAttachments: false, files: [], to: [], cc: [], bcc: [] }
   ];
 } }, async ({ p, calls }) => {
@@ -473,10 +474,35 @@ test("a thread shows the replies you sent, from Sent Items", { fake: true, setup
     sent: [...document.querySelectorAll("#reading .from-folder")].map(el => el.textContent),
     text: document.querySelector("#reading").textContent
   }));
-  same(r.cards, 2, "the inbox message and the sent reply");
-  same(r.sent, ["Sent Items"], "the reply is marked as from Sent Items");
+  same(r.cards, 3, "the inbox message, the filed one and the sent reply");
+  same(r.sent, ["Sent Items", "Jobs"], "each is marked with the folder it is in, newest first");
   expect(r.text.includes("Tuesday works for me."), "the newest message, the reply, is open");
-  expect(!r.text.includes("binned"), "only Sent Items joins the thread");
+  expect(!r.text.includes("binned"), "Deleted Items stays out of the thread");
+});
+
+test("a thread opened from Sent Items shows the message it answered, from the Inbox", { fake: true, setup: () => {
+  const at = mins => new Date(Date.now() - mins * 60000).toISOString().replace(/\.\d+Z$/, "Z");
+  window.__thread = [
+    { id: "inv1", thread: "conv-inv", parentFolderId: "f-inbox", subject: "Invoice I-1", fromName: "Sunny Supplier", fromEmail: "ar@supplier.example", received: at(600), preview: "Please find attached", bodyHtml: "<p>Please find attached copy of invoice.</p>", unread: false, flagged: false, hasAttachments: false, files: [], to: [{ name: "Jon", email: "jon@example.com" }], cc: [], bcc: [] }
+  ];
+} }, async ({ p, calls }) => {
+  await p.evaluate(() => {
+    const at = new Date(Date.now() - 60000).toISOString().replace(/\.\d+Z$/, "Z");
+    const acct = Object.keys(accounts).find(id => accounts[id].signedIn);
+    const fw = liveMessage(acct, { id: "fw1", thread: "conv-inv", subject: "FW: Invoice I-1", fromName: "Jon", fromEmail: "jon@example.com", received: at, preview: "OK to pay?", bodyHtml: "<p>OK to pay?</p>", unread: false, flagged: false, hasAttachments: false, files: [], to: [{ name: "Jordan", email: "jordan@example.com" }], cc: [], bcc: [] }, "sent");
+    messages.push(fw);
+    box = "sent"; selected = "fw1"; render();
+  });
+  await wait(1200);
+  same((await calls("conversation_mail")).map(a => a.conversationId), ["conv-inv"], "asked for the whole conversation");
+  const r = await p.evaluate(() => ({
+    cards: document.querySelectorAll("#reading .thread-card").length,
+    folders: [...document.querySelectorAll("#reading .from-folder")].map(el => el.textContent),
+    text: document.querySelector("#reading").textContent
+  }));
+  same(r.cards, 2, "the forward and the invoice it forwarded");
+  same(r.folders, ["Inbox"], "the invoice is marked as from the Inbox");
+  expect(r.text.includes("Sunny Supplier"), "the sender is there to reply to", r.text.slice(0, 200));
 });
 
 test("the toolbar paperclip lists a thread's attachments", { fake: true }, async ({ p, calls }) => {
@@ -4590,6 +4616,19 @@ test("in Calendar the search box finds events, and Enter opens the nearest", { f
   await p.click("#q"); await p.type("#q", "zzzz"); await wait(300);
   same(await p.$eval("#q-suggest .suggest-none", e => e.textContent.trim()), "No events match.", "nothing found says so");
   expect(await p.$eval("#q-suggest", e => e.textContent.includes("Search mail for")), "and offers to search mail");
+});
+
+test("moving to another folder, or between Work and Personal, ends the search", { fake: true }, async ({ p }) => {
+  await p.click("#q"); await p.type("#q", "kiln"); await p.keyboard.press("Enter"); await wait(300);
+  expect(await p.evaluate(() => searchActive()), "searching");
+  const sent = await p.$('#folder-nav [data-box="sent"]');
+  expect(sent, "a Sent Items button");
+  await sent.click(); await wait(300);
+  same(await p.evaluate(() => [box, query, document.getElementById("q").value, searchActive()]), ["sent", "", "", false], "the folder opens without the search");
+  await p.click("#q"); await p.type("#q", "kiln"); await p.keyboard.press("Enter"); await wait(300);
+  await p.evaluate(() => { document.getElementById("search-files").value = "yes"; readSearchControls(); });
+  await p.evaluate(() => setActiveProfile(activeProfile === "personal" ? "work" : "personal")); await wait(300);
+  same(await p.evaluate(() => [query, document.getElementById("q").value, searchFiles, searchActive()]), ["", "", "", false], "switching profile ends it too");
 });
 
 test("dates read the way people say them, with the whole date on the tooltip", { fake: false }, async ({ p }) => {

@@ -1389,7 +1389,29 @@ function accountProfile(id) {
 }
 
 // Show one folder (or a favorite, a category, a search folder) and fetch it.
+// Moving to another folder, or between Work and Personal, ends the search,
+// as in Outlook: the terms belonged to where you were (2026-11-27).
+function endSearch() {
+  if (!query && !searchActive()) return;
+  query = "";
+  searchPick = "";
+  searchScope = searchAccount = searchFiles = searchFrom = searchTo = "";
+  folderScopeChosen = false;
+  searchScopeAuto = false;
+  const q = document.getElementById("q");
+  if (q) q.value = "";
+  ["search-scope", "search-account", "search-files", "search-from", "search-to"].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.value = "";
+  });
+  const toggle = document.getElementById("search-toggle");
+  if (toggle) toggle.dataset.on = "false";
+  const found = document.getElementById("q-suggest");
+  if (found) { found.hidden = true; found.innerHTML = ""; }
+}
+
 function openFolder(acct, folder, folderId, pick) {
+  endSearch();
   account = acct;
   box = folder;
   folderPick = pick || "folder";
@@ -1571,6 +1593,7 @@ function settleProfileSelection() {
 function setActiveProfile(next) {
   if ((next !== "work" && next !== "personal" && next !== "all") || next === activeProfile) return;
   capturePaneCompose();
+  endSearch();
   activeProfile = next;
   rememberActiveProfile();
   const ids = profileAccountIds();
@@ -4799,22 +4822,31 @@ function sameThreadDraft(conv) {
   return best;
 }
 
-// Replies you sent sit in Sent Items, so a thread opened from another folder
-// pulls them in, as Outlook does.
-function threadSent(conv) {
-  if (!conv || !conv.latest || messageBox(conv.latest) === "sent") return [];
-  const accountsInThread = new Set(conv.messages.map(m => m.account));
-  const own = new Set(conv.messages.map(m => m.id));
-  return threadMessages(conv.id).filter(m => m.thread === conv.id && messageBox(m) === "sent" && accountsInThread.has(m.account) && !own.has(m.id) && !m.pendingSend);
+// A conversation reaches across folders, as in Outlook: replies you sent sit
+// in Sent Items, and the message you answered may be in the Inbox or filed
+// away (2026-11-27: a forward opened from Sent showed without the invoice it
+// forwarded). Deleted, junk, drafts and the Outbox stay out.
+function threadJoins(m) {
+  const where = messageBox(m);
+  if (m.draft || where === "trash" || where === "drafts" || where === "outbox") return false;
+  const kind = folderKind(where, m.account);
+  return kind !== "junk" && kind !== "trash";
 }
 
-// When each conversation last asked Microsoft for its Sent Items. Opened
-// again a minute later, or after you send, it asks again.
+function threadElsewhere(conv) {
+  if (!conv || !conv.latest) return [];
+  const accountsInThread = new Set(conv.messages.map(m => m.account));
+  const own = new Set(conv.messages.map(m => m.id));
+  return threadMessages(conv.id).filter(m => m.thread === conv.id && accountsInThread.has(m.account) && !own.has(m.id) && !m.pendingSend && threadJoins(m));
+}
+
+// When each conversation last asked the server for its other messages.
+// Opened again a minute later, or after you send, it asks again.
 const threadFetched = new Map();
 const THREAD_REFETCH_MS = 60000;
 
-async function loadThreadSent(conv) {
-  if (!inDesktop() || !conv || !conv.latest || messageBox(conv.latest) === "sent") return;
+async function loadThread(conv) {
+  if (!inDesktop() || !conv || !conv.latest) return;
   const accountId = conv.latest.account;
   const acct = accounts[accountId];
   const mark = accountId + "\n" + conv.id;
@@ -4824,14 +4856,15 @@ async function loadThreadSent(conv) {
   try {
     const page = await tauriInvoke("conversation_mail", { email: acct.email, conversationId: conv.id, conversation_id: conv.id });
     const folders = acct.liveFolders || [];
-    const sent = folders.find(folder => folder.key === "sent");
     let added = false;
     ((page && page.messages) || []).forEach(item => {
       if (!item || !item.id || messages.some(m => m.id === item.id)) return;
       const parent = item.parentFolderId || item.parent_folder_id || "";
-      if (!sent || parent !== sent.id) return;
-      const message = liveMessage(accountId, item, "sent");
+      const folder = folders.find(entry => entry.id === parent);
+      if (!folder) return;
+      const message = liveMessage(accountId, item, folder.key);
       message.threadOnly = true;
+      if (!threadJoins(message)) return;
       messages.push(message);
       added = true;
     });
@@ -4850,7 +4883,7 @@ async function loadThreadSent(conv) {
 
 function threadShown(conv) {
   const draft = sameThreadDraft(conv);
-  const list = conv.messages.concat(threadSent(conv), draft ? [draft] : []);
+  const list = conv.messages.concat(threadElsewhere(conv), draft ? [draft] : []);
   list.sort((a, b) => (a.seq || 0) - (b.seq || 0));
   return list;
 }
@@ -7626,6 +7659,13 @@ function externalPill(m) {
   return senderExternal(m) ? `<span class="pill external">External</span>` : "";
 }
 
+// A message from another folder than the one shown says where it is filed.
+function fromFolderTag(m) {
+  const where = messageBox(m);
+  if (where === box || isCategoryBox(box) || isTaskBox(box) || isSearchBox(box)) return "";
+  return `<span class="from-folder">${esc(boxLabel(where, m.account))}</span>`;
+}
+
 function messageBlock(m, open, many, isLatest) {
   const chevron = `<svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path d="M4.2 2.2L8 6 4.2 9.8" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
   const stamp = messageStamp(m);
@@ -7635,7 +7675,7 @@ function messageBlock(m, open, many, isLatest) {
       <span class="thread-chevron" aria-hidden="true">${chevron}</span>
       <span class="avatar" style="background:${esc(m.color)}">${esc(m.initials)}</span>
       <span class="fold-copy"><span class="who">${esc(m.from)}</span><span class="preview">${esc(m.preview)}</span></span>
-      <span class="fold-side">${foldClip(m)}<span class="${whenClass}" title="${esc(messageStampFull(m))}">${esc(stamp)}</span></span>
+      <span class="fold-side">${fromFolderTag(m)}${foldClip(m)}<span class="${whenClass}" title="${esc(messageStampFull(m))}">${esc(stamp)}</span></span>
     </button>`;
   }
   const outgoing = !!m.meeting && (messageBox(m) === "sent" || ownAddresses().has((m.email || "").toLowerCase()));
@@ -7663,7 +7703,7 @@ function messageBlock(m, open, many, isLatest) {
       ${collapse}
       <span class="avatar" style="background:${esc(m.color)}">${esc(m.initials)}</span>
       <div class="thread-id">
-        <div class="who-line"><button class="party-name" type="button" data-party="${esc(m.id)}" data-party-role="from"><span class="who-name">${esc(m.from)}</span>${senderMail(m) ? `<span class="sender-mail">${esc(senderMail(m))}</span>` : ""}</button><span class="pill ${accounts[m.account].cls}">${esc(accounts[m.account].name)}</span>${externalPill(m)}${flagged}${messageBox(m) === "sent" && box !== "sent" ? `<span class="from-folder">Sent Items</span>` : ""}${categoryPills(m)}</div>
+        <div class="who-line"><button class="party-name" type="button" data-party="${esc(m.id)}" data-party-role="from"><span class="who-name">${esc(m.from)}</span>${senderMail(m) ? `<span class="sender-mail">${esc(senderMail(m))}</span>` : ""}</button><span class="pill ${accounts[m.account].cls}">${esc(accounts[m.account].name)}</span>${externalPill(m)}${flagged}${fromFolderTag(m)}${categoryPills(m)}</div>
         <button class="party-line" type="button" data-party="${esc(m.id)}" data-party-role="to">${esc(audience(m))}</button>
       </div>
       <div class="thread-side">
@@ -9962,7 +10002,7 @@ function readingThreadKey(conv, ordered, openMessage, where, held, showReply, sh
 }
 
 function warmOpenReading(conv, ordered, openMessage, folderDraft, showDraftCard, threadDraft) {
-  if (conv && !folderDraft) loadThreadSent(conv);
+  if (conv && !folderDraft) loadThread(conv);
   (ordered || []).forEach(m => {
     if (!openMessage(m)) return;
     ensureMessageFiles(m);
@@ -10023,7 +10063,7 @@ function renderReading() {
   // Your replies from Sent Items show in the thread too, and can be
   // answered or forwarded from their own card (2026-11-21: Forward on one
   // did nothing, because only conv.messages was searched).
-  const answerable = conv.messages.concat(threadSent(conv));
+  const answerable = conv.messages.concat(threadElsewhere(conv));
   const answering = replyDraft && answerable.some(m => m.id === replyDraft.msgId) && (!shownDraft || replyDraft.draftId !== shownDraft.id);
   if (shownDraft && !answering && (!replyDraft || replyDraft.draftId !== shownDraft.id)) {
     replyDraft = draftState(shownDraft);
@@ -10162,7 +10202,7 @@ function renderReading() {
   const closeBtn = document.getElementById("close-message");
   if (closeBtn) closeBtn.onclick = () => (readWindow ? closeComposeWindow() : backToList());
   bindMoreActions();
-  if (!folderDraft) loadThreadSent(conv);
+  if (!folderDraft) loadThread(conv);
   if ((folderDraft || showReply || showDraftCard) && reading.querySelector("#compose-form")) bindCompose(reading, { mode: "inline", kind: composeKind, draft: replyDraft });
   if (replyMsg) bindReplyTabs();
   const undo = document.getElementById("undo-send");
@@ -11477,7 +11517,7 @@ function withThreadSent(list) {
   const seen = new Set(out.map(m => m.id));
   new Set(list.map(m => m.thread)).forEach(thread => {
     const conv = conversations().find(c => c.id === thread);
-    threadSent(conv).forEach(m => { if (!seen.has(m.id)) { seen.add(m.id); out.push(m); } });
+    threadElsewhere(conv).forEach(m => { if (!seen.has(m.id)) { seen.add(m.id); out.push(m); } });
   });
   return out;
 }
@@ -23081,7 +23121,8 @@ function setSyncNote(text) {
 
 // A fresh Gmail folder first shows its newest messages. This fills the rest
 // into the local cache a batch at a time. The list reads those older rows
-// when the reader reaches the bottom. Microsoft folders come whole.
+// when the reader reaches the bottom. A Microsoft folder whose cache lost
+// rows in the window gets them back the same way.
 const backfilling = new Set();
 
 async function backfillFolder(accountId, key) {
