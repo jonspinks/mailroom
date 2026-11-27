@@ -15941,6 +15941,8 @@ function readMailType(nodes, start, end, sizes) {
 
 // Fewer characters than this above quoted mail is a signature, not a note.
 const QUOTED_NOTE_MIN = 120;
+// Text in one size, from the top, that makes it the body's size.
+const LEAD_TEXT_MIN = 40;
 
 function raiseSmallMailType(root, nodes, sizes) {
   const floor = mailTextFloor();
@@ -15949,6 +15951,12 @@ function raiseSmallMailType(root, nodes, sizes) {
   sizes.forEach(item => { if (item && item.text && item.size >= 6) weight.set(item.size, (weight.get(item.size) || 0) + item.text); });
   let body = 0, most = 0, own = 0, quoted = 0;
   weight.forEach((count, size) => { if (count > most) { most = count; body = size; } });
+  // A short note above a longer signature in smaller type: the note is the
+  // body, not the signature's address lines and notices (2026-11-27, an 11pt
+  // three-line reply over an 8pt signature was drawn at 22 px). The first
+  // size with a sentence's worth of text leads; a headline does not.
+  const lead = sizes.find(item => item && item.text && item.size >= 6 && (weight.get(item.size) || 0) >= LEAD_TEXT_MIN);
+  if (lead && lead.size > body && lead.size < 20) body = lead.size;
   sizes.forEach(item => { if (item) { own += item.text || 0; quoted += item.quoted || 0; } });
   // A forward with no note of its own, only the forwarder's signature: the
   // signature's small contact lines are not a body to size the forwarded
@@ -21688,7 +21696,7 @@ const folderBusy = new Set();
 let syncNote = "";
 const folderRun = new Map();
 const bodyLoads = new Set();
-const APP_VERSION = "2.0.6";
+const APP_VERSION = "2.0.7";
 let appVersion = APP_VERSION;
 
 prepareDesktopAccounts();
